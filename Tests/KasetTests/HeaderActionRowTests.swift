@@ -496,7 +496,7 @@ struct HeaderActionRowTests {
             !PlaylistDetailView.showsOverflowMenu(
                 available: everyAction,
                 inline: everyAction,
-                isEditable: false
+                showsManagement: false
             ),
             "An album's row would draw an empty overflow menu again."
         )
@@ -506,17 +506,43 @@ struct HeaderActionRowTests {
             PlaylistDetailView.showsOverflowMenu(
                 available: everyAction,
                 inline: [.radio, .playNext, .addToQueue],
-                isEditable: false
+                showsManagement: false
             ),
             "An action the row could not render would be unreachable."
         )
         #expect(
-            PlaylistDetailView.showsOverflowMenu(available: everyAction, inline: everyAction, isEditable: true),
+            PlaylistDetailView.showsOverflowMenu(available: everyAction, inline: everyAction, showsManagement: true),
             "A playlist the reader owns lost its own management actions."
         )
         #expect(
-            !PlaylistDetailView.showsOverflowMenu(available: [], inline: [], isEditable: false),
+            !PlaylistDetailView.showsOverflowMenu(available: [], inline: [], showsManagement: false),
             "A menu with no actions and no management behind it is a control that opens nothing."
+        )
+
+        // Liked Music is the page the two halves of the gate disagree about, and where the disagreement is
+        // visible: it offers the queue actions (and its radio) and nothing to manage — the library action is
+        // refused on it, and Rename and Delete are not its to offer — so a shape that renders everything it
+        // has leaves the menu nothing and the "…" goes with it. The page used to draw one whose only items
+        // were Rename and Delete, at the window widths where the row had something left over to put in it.
+        let likedMusic: PlaylistDetailView.HeaderAction = [.playNext, .addToQueue]
+        #expect(
+            !PlaylistDetailView.showsOverflowMenu(
+                available: likedMusic,
+                inline: likedMusic,
+                showsManagement: false
+            ),
+            """
+            Liked Music's row draws a "…" for a menu with nothing behind it: Rename and Delete are not that \
+            page's to offer, and every action it has is in the row.
+            """
+        )
+        #expect(
+            PlaylistDetailView.showsOverflowMenu(
+                available: likedMusic,
+                inline: [.playNext],
+                showsManagement: false
+            ),
+            "An action the row could not render would be unreachable on Liked Music."
         )
 
         // The gate is what the row draws through, and both the row and the ladder's measurement passes go
@@ -533,13 +559,38 @@ struct HeaderActionRowTests {
             """
         )
         #expect(
-            rowCode.contains("isEditable: detail.isEditable")
+            rowCode.contains("showsManagement: detail.supportsPlaylistManagement")
                 && rowCode.contains("available: self.availableHeaderActions(for: detail)"),
             """
             The row's menu gate no longer asks the same question the menu's contents answer: which actions the \
             page offers, which of them the row rendered, and whether the page has management actions at all.
             """
         )
+
+        // The management half of the gate: `!detail.isAlbum` drew Rename and Delete on every page that is
+        // not an album, which is how Liked Music — the library's own list of liked songs, neither renameable
+        // nor deletable — was offered both. The two actions have to sit inside the page's own rule.
+        let management = try #require(
+            rowCode.range(of: "if detail.supportsPlaylistManagement {"),
+            "The menu's Rename and Delete are no longer drawn through the page's own rule."
+        )
+        let menuLabel = try #require(
+            rowCode.range(
+                of: "} label: {\n            Image(systemName: \"ellipsis\")",
+                range: management.upperBound ..< rowCode.endIndex
+            ),
+            "The menu's own label no longer follows the management section."
+        )
+        let managementCode = rowCode[management.upperBound ..< menuLabel.lowerBound]
+        for action in ["Label(\"Rename Playlist\"", "Label(\"Delete Playlist\""] {
+            #expect(
+                managementCode.contains(action),
+                """
+                \(action)… is drawn outside the management gate again, so a page the reader cannot write to is \
+                offered a write the server answers with an error.
+                """
+            )
+        }
     }
 
     @Test("The row offers its library action only where the library can be written to")

@@ -253,6 +253,31 @@ struct PlaylistDetail: Identifiable {
         !self.isAlbum && !self.sortOptions.isEmpty && (self.isEditable || self.isLikedMusic)
     }
 
+    /// Whether the page's own management — Rename and Delete — means anything here.
+    ///
+    /// Both are owner-only writes: Rename sends `browse/edit_playlist` with `ACTION_SET_PLAYLIST_NAME`
+    /// and Delete sends `playlist/delete`, and the header marker that says the signed-in user owns a
+    /// playlist (`musicEditablePlaylistDetailHeaderRenderer`, `isEditable`) is the same one that gates
+    /// every other playlist write. A playlist the account does not own is therefore not offered them,
+    /// because the server would answer with an error and the menu would be offering a write that cannot
+    /// happen.
+    ///
+    /// Three kinds of page are refused by name as well as by the marker, because none of them is a playlist
+    /// the account manages:
+    ///
+    /// - **Liked Music.** It *is* the library's list of liked songs, which the account can reorder
+    ///   (`isSortable`) but can neither rename nor delete.
+    /// - **A mix or radio (`RD…`: `RDCLAK…`, `RDEM…`, `RDTMAK…`, `RDAMVM…`).** These are generated on
+    ///   request and stored nowhere — the same refusal `libraryId` makes — so there is nothing to rename or
+    ///   delete.
+    /// - **An album.** There is no playlist behind the page to write to.
+    var supportsPlaylistManagement: Bool {
+        if self.isAlbum || self.isLikedMusic || self.normalizedId.hasPrefix("RD") {
+            return false
+        }
+        return self.isEditable
+    }
+
     /// The option to mark as selected. Falls back to Manual — the documented server default — when
     /// the header did not name its current order.
     var effectiveSortOrder: PlaylistSortOrder {

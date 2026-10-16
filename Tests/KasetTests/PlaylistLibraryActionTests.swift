@@ -15,6 +15,12 @@ import Testing
 /// `PlaylistDetailView.offersLibraryAction(for:)` is the other half of the rule — a page the library
 /// already holds keeps the action, so it can be removed — and its source is guarded in
 /// `HeaderActionRowTests` because the view itself is private.
+///
+/// The same suite holds the page's *other* pair of writes, Rename and Delete, which the header's "…" menu
+/// offers behind its own gate (`PlaylistDetail.supportsPlaylistManagement`): they are owner-only, so a page
+/// the reader does not own is not offered them, and Liked Music — the page this was found on — is refused
+/// by name as well as by the marker because it is the library's own list of liked songs rather than a
+/// playlist to manage.
 @Suite("Playlist library action")
 struct PlaylistLibraryActionTests {
     /// `MainWindow`'s source, from the test file's own location.
@@ -243,6 +249,67 @@ struct PlaylistLibraryActionTests {
         for id in ["LM", "VLLM"] {
             let detail = self.detail(id)
             #expect(detail.isLikedMusic && !detail.supportsLibraryMembership)
+        }
+    }
+
+    // MARK: - Rename and Delete
+
+    /// The menu's management writes `browse/edit_playlist` with `ACTION_SET_PLAYLIST_NAME` and
+    /// `playlist/delete`, and both are owner-only: the header marker that says the signed-in user owns a
+    /// playlist is the same `musicEditablePlaylistDetailHeaderRenderer` that gates every other playlist
+    /// write. The `isEditable` column here is what the header said, so the rows that expect `false` while it
+    /// is `true` are the pages refused by name — which is what the marker alone cannot answer.
+    @Test(
+        "Rename and Delete are offered only on a page the reader can write to",
+        arguments: [
+            ("VLPLowned123", false, false), // their own playlist, but the header named no editable header
+            ("VLPLowned123", true, true), // the reader's own playlist
+            ("LM", false, false), // Liked Music: the library's own list of liked songs
+            ("LM", true, false), // …and still refused if a response ever carried the marker for it
+            ("VLLM", true, false),
+            ("RDCLAK5uy_curated-mix", false, false), // a mix: generated on request, stored nowhere
+            ("RDCLAK5uy_curated-mix", true, false),
+            ("MPREb_dai-dai", true, false), // an album: no playlist behind the page to write to
+            ("OLAK5uy_kJIcTYhPGkiDOlYfL3W8Q20RarHQC2d2I", true, false),
+        ]
+    )
+    func managementIsOfferedOnlyWhereItWouldBeAccepted(id: String, isEditable: Bool, expected: Bool) {
+        let detail = PlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: id),
+            tracks: [],
+            isEditable: isEditable
+        )
+        #expect(
+            detail.supportsPlaylistManagement == expected,
+            """
+            \(id) with an editable header of \(isEditable) resolves `supportsPlaylistManagement` to \
+            \(detail.supportsPlaylistManagement). Offering the pair on a page the reader cannot write to puts \
+            two writes in the menu that the server answers with an error, and on Liked Music they are not even \
+            writes that mean anything: it is the library's own list of liked songs, which the account can \
+            reorder but can neither rename nor delete.
+            """
+        )
+    }
+
+    /// The page the rule was found on, stated once more on its own: the header's menu offered Liked Music
+    /// Rename and Delete — and only at the window widths where the row had an action left over to put in the
+    /// menu, so the same page grew and lost its "…" as the window was resized.
+    @Test("Liked Music keeps the management actions off whatever its header says")
+    func likedMusicHasNoManagement() throws {
+        for id in ["LM", "VLLM"] {
+            let detail = PlaylistDetail(
+                playlist: TestFixtures.makePlaylist(id: id),
+                tracks: [],
+                isEditable: true
+            )
+            #expect(detail.isLikedMusic, "\(id) is no longer recognised as Liked Music.")
+            #expect(
+                !detail.supportsPlaylistManagement,
+                "Liked Music is offered Rename and Delete, which the account can do to neither."
+            )
+            // It is still a playlist the account can reorder, which is what makes refusing it by name more
+            // than a duplicate of the marker: `isSortable` reads the same header and says yes.
+            #expect(detail.isSortable, "Liked Music lost the one write it does support.")
         }
     }
 }

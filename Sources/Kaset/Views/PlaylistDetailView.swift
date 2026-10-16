@@ -549,6 +549,12 @@ struct PlaylistDetailView: View {
     }
 
     /// The actions this page can offer, in the order the row gives them room.
+    ///
+    /// Refine is offered only on a machine that can run it. Its control is hidden by
+    /// `.requiresIntelligence()` when Apple Intelligence is unavailable, and an action this set
+    /// advertises while nothing draws it is an action the row's menu counts as left out of the row —
+    /// which is how the Liked Music page, where every other action fits, came to draw a "…" whose only
+    /// item was a control that is not on screen.
     private func availableHeaderActions(for detail: PlaylistDetail) -> HeaderAction {
         var actions: HeaderAction = [.playNext, .addToQueue]
         if self.offersLibraryAction(for: detail) {
@@ -557,7 +563,7 @@ struct PlaylistDetailView: View {
         if detail.mixPlaylistId != nil {
             actions.insert(.radio)
         }
-        if !detail.isAlbum {
+        if !detail.isAlbum, FoundationModelsService.shared.isAvailable {
             actions.insert(.refine)
         }
         return actions
@@ -630,20 +636,30 @@ struct PlaylistDetailView: View {
                     .lineLimit(2)
             }
         }
-        .task(id: detail.id) { self.logLibraryControl(detail) }
+        .task(id: detail.id) { self.logHeaderDecision(detail) }
     }
 
-    /// States what the header resolved for its library control, so a wrong label can be told apart from a
-    /// missing snapshot without a debugger: `listing` is what the window's library holds, `matches` the
-    /// spellings the page asked it about, and `inLibrary` what the control reads from the two.
-    private func logLibraryControl(_ detail: PlaylistDetail) {
+    /// States what the header resolved, so a control that should not be there can be told apart from one
+    /// whose inputs are missing, without a debugger.
+    ///
+    /// The library control's half: `listing` is what the window's library holds, `matches` the spellings
+    /// the page asked it about, and `inLibrary` what the control reads from the two. The row's half:
+    /// `management` whether the page is offered Rename and Delete at all, `refine` whether the refine
+    /// action is on offer on this machine, and `overflow` one flag per shape of the ladder — `1` where
+    /// that shape of the row would draw its "…" menu, widest first. That last one is the whole of "the
+    /// '…' shows at some window widths and not others": it is drawn in the shapes that leave an action
+    /// over, and a shape that renders everything the page offers has nothing to put in a menu.
+    private func logHeaderDecision(_ detail: PlaylistDetail) {
         let listing = self.libraryViewModel?.libraryPlaylistIds ?? []
         let matches = self.libraryMatchIds
         let overlap = matches.filter { match in
             listing.contains { $0.hasPrefix(String(match.prefix(4))) }
         }.count
+        let overflow = Self.shapeLadder.indices.map { index in
+            self.hasOverflowItems(for: detail, inline: Self.shapeLadder[index].actions) ? "1" : "0"
+        }.joined()
         self.logger.info(
-            "Library control: vm=\(self.libraryViewModel != nil, privacy: .public) listing=\(listing.count, privacy: .public) matches=\(matches.map { String($0.prefix(4)) }.joined(separator: "|"), privacy: .public) overlap=\(overlap, privacy: .public) inLibrary=\(self.isInLibrary, privacy: .public) write=\(self.libraryWriteId.map { String($0.prefix(6)) } ?? "none", privacy: .public) album=\(detail.isAlbum, privacy: .public) editable=\(detail.isEditable, privacy: .public)"
+            "Header decision: vm=\(self.libraryViewModel != nil, privacy: .public) listing=\(listing.count, privacy: .public) matches=\(matches.map { String($0.prefix(4)) }.joined(separator: "|"), privacy: .public) overlap=\(overlap, privacy: .public) inLibrary=\(self.isInLibrary, privacy: .public) write=\(self.libraryWriteId.map { String($0.prefix(6)) } ?? "none", privacy: .public) album=\(detail.isAlbum, privacy: .public) editable=\(detail.isEditable, privacy: .public) management=\(detail.supportsPlaylistManagement, privacy: .public) refine=\(FoundationModelsService.shared.isAvailable, privacy: .public) actions=\(self.availableHeaderActions(for: detail).rawValue, privacy: .public) overflow=\(overflow, privacy: .public)"
         )
     }
 
@@ -863,26 +879,26 @@ struct PlaylistDetailView: View {
 
     /// Whether the row's overflow menu would hold anything.
     ///
-    /// An album that fits whole — its radio, its two queue actions and the library action all in the row —
-    /// leaves the menu with nothing: the management section below is for a playlist the reader owns. A
-    /// `Menu` with no items is a control that opens nothing, and that is exactly how it reads on an album.
+    /// Two things decide it, and they are the two the menu itself would draw: the actions the row had no
+    /// room for, and the page's own management.
     private func hasOverflowItems(for detail: PlaylistDetail, inline: HeaderAction) -> Bool {
         Self.showsOverflowMenu(
             available: self.availableHeaderActions(for: detail),
             inline: inline,
-            isEditable: detail.isEditable
+            showsManagement: detail.supportsPlaylistManagement
         )
     }
 
     /// Whether the overflow menu would hold anything: what the row had no room for, or the page's own
     /// management actions.
     ///
-    /// An album that fits whole — its radio, its two queue actions and the library action all in the row —
-    /// leaves the menu with nothing, because an album has no playlist to rename or delete. A `Menu` with no
-    /// items is a control that opens nothing, and that is exactly how it read on an album page: the three
-    /// dots took a click and answered with an empty menu. The row draws it only when something is behind it.
-    static func showsOverflowMenu(available: HeaderAction, inline: HeaderAction, isEditable: Bool) -> Bool {
-        !available.subtracting(inline).isEmpty || isEditable
+    /// A page that fits whole and has nothing to manage — an album, whose radio, two queue actions and
+    /// library action all fit in the row — leaves the menu with nothing, and a `Menu` with no items is a
+    /// control that opens nothing: that is how it read on an album page, where the three dots took a click
+    /// and answered with an empty menu. The management half is `showsManagement` and not "is this an
+    /// album": Liked Music is not an album, and it is the page this gate used to put Rename and Delete on.
+    static func showsOverflowMenu(available: HeaderAction, inline: HeaderAction, showsManagement: Bool) -> Bool {
+        !available.subtracting(inline).isEmpty || showsManagement
     }
 
     /// The row's overflow menu: the actions the row had no room for, then the playlist's own actions.
@@ -964,9 +980,11 @@ struct PlaylistDetailView: View {
                 .requiresIntelligence()
             }
 
-            // An album has no playlist to manage, and a playlist that cannot be written to is not
-            // offered writes it would answer `HTTP 400` for.
-            if !detail.isAlbum {
+            // An album has no playlist to manage, and a page the reader cannot write to is not offered
+            // writes the server answers with an error — see `PlaylistDetail.supportsPlaylistManagement`.
+            // Liked Music is the page this section read wrong: it is the library's own list of liked
+            // songs, not a playlist, and the account can neither rename nor delete it.
+            if detail.supportsPlaylistManagement {
                 Divider()
 
                 Button {

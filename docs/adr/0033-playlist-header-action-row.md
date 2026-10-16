@@ -165,7 +165,8 @@ where it used to sit. The error lines a playlist action can produce stay directl
 to the control that produced them.
 
 **The playlist-management menu is merged into the More menu** — Rename Playlist (which opens the
-`popover`) and Delete Playlist (which opens the `alert`), after a separator, playlists only. Both
+`popover`) and Delete Playlist (which opens the `alert`), after a separator, and only on a playlist the reader
+can write to (see §*Amendment: what the menu's management section is offered on*). Both
 presentations hang off the header rather than off the menu that opens them: the row lays out and measures
 every shape of the ladder at once (`shapeMeasurers`), so a presentation attached inside the row would be
 built once per shape and every copy would answer the same binding.
@@ -221,9 +222,9 @@ library already holds, the ID the library lists it under. An album page ID is re
 **The More menu is drawn only when it holds something.** `HeaderAction` is the whole set the page offers, and
 the menu holds what the row could not render — which on an album that fits *whole* is nothing: an album has
 no playlist to rename or delete, so its management section is empty too. A `Menu` with no items still draws,
-takes the click, and opens onto nothing, so the row states `showsOverflowMenu(available:inline:isEditable:)`
-and draws the control only when the answer is true. The measurement passes go through the same row builder,
-so the shapes the row measures are the shapes it draws.
+takes the click, and opens onto nothing, so the row states
+`showsOverflowMenu(available:inline:showsManagement:)` and draws the control only when the answer is true. The
+measurement passes go through the same row builder, so the shapes the row measures are the shapes it draws.
 
 **Membership is read from the window's library, which has to be in the page's environment and has to be
 loaded.** Both halves were wrong at once, and each is enough on its own to make the control lie:
@@ -240,8 +241,37 @@ loaded.** Both halves were wrong at once, and each is enough on its own to make 
   its own playlist list from the same snapshot), and a playlist/album page calls it beside its own load.
 
 Both failures are silent: neither a missing injection nor an empty snapshot throws, and the read-back is a
-`Bool` that means "no" for "unknown". The page therefore logs what it resolved — `Library control: vm=…
-listing=… matches=… inLibrary=… write=…` — so the console can tell a wrong label apart from a stale library.
+`Bool` that means "no" for "unknown". The page therefore logs what it resolved — `Header decision: vm=…
+listing=… matches=… inLibrary=… write=… management=… refine=… actions=… overflow=…` — so the console can tell a
+wrong label apart from a stale library.
+
+`overflow` is one flag per shape of the ladder, widest first, saying whether that shape of the row draws its
+"…" menu. That is the whole of "the menu shows at some window widths and not others": it is drawn in the shapes
+that leave an action over, and a shape that renders everything the page offers has nothing to put in a menu.
+On the Liked Music page above it reads `00000111` — the menu is there for the three narrowest shapes, where the
+queue actions no longer fit, and absent from the wide ones.
+
+## Amendment: what the menu's management section is offered on
+
+The More menu's Rename and Delete were gated on "this is not an album", and Liked Music is the page that
+gate read wrong.
+
+**Rename and Delete are offered only where the account can write them.** Both are owner-only writes —
+`browse/edit_playlist` with `ACTION_SET_PLAYLIST_NAME`, and `playlist/delete` — and the header marker that says
+the signed-in user owns a playlist (`musicEditablePlaylistDetailHeaderRenderer`) is the same one that gates
+every other playlist write. `PlaylistDetail.supportsPlaylistManagement` is that rule, and it is what the menu's
+management section and the row's gate both ask: Liked Music is refused by name as well as by the marker,
+because it *is* the library's list of liked songs — the account can reorder it (`isSortable`) but can neither
+rename nor delete it — and a mix (`RD…`) and an album are refused for the plain reason that there is no stored
+playlist behind the page. The old gate put the two actions on Liked Music, and — because the page had nothing
+else to put in a menu — they were the only items in the "…" it drew, at the window widths where the row had a
+leftover action to justify one at all.
+
+**The refine action is advertised only while it can run.** Its control hides itself when Apple Intelligence is
+unavailable (`.requiresIntelligence()`). An action in `availableHeaderActions` with no control on screen is an
+action the menu counts as left out of the row, which is how the Liked Music page came to draw a "…" for an item
+that was not there; the set and the control now agree. On a machine whose model is unavailable, that page's
+menu is gone entirely at the shapes that render everything it offers.
 
 ## Consequences
 
@@ -275,7 +305,9 @@ listing=… matches=… inLibrary=… write=…` — so the console can tell a w
   the price of measuring the shapes in the first place.
 - `.requiresIntelligence()` hides its subject (`EmptyView`) rather than dimming it, so the Refine
   control — in the row or in the menu — appears and disappears with availability. No separator is
-  placed around it, so nothing is orphaned when it goes.
+  placed around it, so nothing is orphaned when it goes. The action is advertised only while it is
+  available as well, so a row measured before the model is ready folds for a control that is not on
+  screen and then folds again once it is.
 - The menu's items come and go with the window's width, so two users on different window sizes see a
   different menu.
 - Loading the library costs one more request (`FEmusic_liked_albums`), and saved albums now share the
@@ -287,7 +319,13 @@ listing=… matches=… inLibrary=… write=…` — so the console can tell a w
 - An album page whose actions all fit has no "…" at all, where it used to end in one that opened onto
   nothing. Consistent with the ladder — the row shows what it has room for — but it does mean the menu is
   not the one stable control in the row: on a wide window it may be absent entirely, and what it holds
-  depends on the width as well.
+  depends on the width as well. Liked Music reads the same way now that Rename and Delete are no longer
+  offered on it: the menu is there for the shapes that cannot fit its queue actions, and gone from the
+  shapes that can.
+- Rename and Delete are unreachable on a playlist whose header carries no editable marker, even if the
+  server would in fact accept the write: the marker is the only ownership signal the app has, and a read
+  that is missing is not a write to make. The alternative — offering the pair everywhere and reporting the
+  error after the click — is what put them on Liked Music in the first place.
 - The library is fetched for every window that opens, signed in, before anything asks for it, rather than on
   the way into the Library. It is one browse (cached by `APICache.TTL.library`) and it is what the sidebar's
   own playlist list needs to be drawn at all — the list was empty until the Library page had been visited.
@@ -316,9 +354,13 @@ control's size constant, the plain style, the hidden indicator, the glass capsul
 and hit shape, that the swap carries no animation and no `ViewThatFits`, that the library action is gated
 on a page the library can hold and on Liked Music being refused first, the actions split out of one option
 set, and the shape list it is measured against. It also holds the empty menu: `showsOverflowMenu` is exercised
-directly — an album that fits whole draws no menu, an action the row could not render keeps it, and a page
-the reader owns keeps it for its management actions — and the row's source is guarded to draw the control
-through that gate and no other way. `PlaylistLibraryActionTests` guards the pane's own injection, which is
+directly — an album that fits whole draws no menu, an action the row could not render keeps it, a page the
+reader owns keeps it for its management actions, and Liked Music, which has neither, keeps it only for the
+actions the row could not render — and the row's source is guarded to draw the control through that gate, to
+ask for the management with `detail.supportsPlaylistManagement`, and to draw Rename and Delete inside that
+same rule rather than on "this is not an album". `PlaylistLibraryActionTests` holds what the rule answers:
+the reader's own playlist has management, and a playlist without the marker, Liked Music (marker or not), a
+mix and an album do not. `PlaylistLibraryActionTests` guards the pane's own injection, which is
 the half a test of the page cannot reach: `MainWindow.detailView(for:)` has to state `.environment(
 self.libraryViewModel)` around every branch of the content pane, the sidebar's playlist branch included.
 `LibraryViewModelTests` holds `loadIfNeeded` — it fetches for a window that has no snapshot, does not
@@ -345,6 +387,8 @@ it — the row's own spacing, where the size and the hit shape its label states 
   action row's alignment to the thumbnail.
 - `Sources/Kaset/Views/PlaylistDetailView.swift` — `HeaderAction`, `headerActionRow(_:inline:)` and
   `moreActionsMenu(_:inline:)`.
+- `Sources/Kaset/Models/Playlist.swift` — `PlaylistDetail.supportsPlaylistManagement`, `isEditable` and
+  `isLikedMusic`.
 - `Sources/Kaset/Views/QueueSidePanelView.swift` — `QueueFooterActions`, the same
   `ViewThatFits`-with-glyph-fallback shape for a row that has to survive a narrow container.
 - `Sources/Kaset/Views/SharedViews/StartRadioContextMenu.swift` — the radio action the row starts.
