@@ -46,6 +46,7 @@ enum AccessibilityID {
         static let castStopButton = "playerBar.castStopButton"
         static let castRefreshButton = "playerBar.castRefreshButton"
         static let volumeSlider = "playerBar.volumeSlider"
+        static let seekSlider = "playerBar.seekSlider"
         static let trackTitle = "playerBar.trackTitle"
         static let trackArtist = "playerBar.trackArtist"
         static let thumbnail = "playerBar.thumbnail"

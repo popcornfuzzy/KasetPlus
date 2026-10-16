@@ -12,10 +12,6 @@ struct FullscreenNowPlayingView: View {
     let client: any YTMusicClientProtocol
 
     private enum Layout {
-        /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
-        /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
-        /// artwork surface in the app — render slightly upscaled from its own downloaded data.
-        static let artworkMaxDimension: CGFloat = 380
         /// Corner radius of the artwork card. Apple Music's full-screen artwork is only gently rounded —
         /// noticeably squarer than the 22pt card this replaced.
         static let artworkCornerRadius: CGFloat = 14
@@ -178,7 +174,10 @@ struct FullscreenNowPlayingView: View {
                     identity: self.playerService.currentTrack?.videoId,
                     // Same decode target as the artwork card: the two views share one fetch per URL, so
                     // matching targets keeps that shared decode at the size the card needs.
-                    targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
+                    targetSize: CGSize(
+                        width: FullscreenArtworkGeometry.maxSide,
+                        height: FullscreenArtworkGeometry.maxSide
+                    )
                 ) { image in
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: { Rectangle().fill(.black) }
@@ -194,14 +193,15 @@ struct FullscreenNowPlayingView: View {
 
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
         let columnSpacing = max(10, min(16, availableHeight * 0.018))
-        let artworkMaxHeight = min(max(200, availableHeight * 0.46), Layout.artworkMaxDimension)
-        let contentWidth = min(width, 440)
-        let mediaWidth = min(contentWidth, artworkMaxHeight)
+        // The art takes the height the column has *left*, not a share of the stage. A share cannot know
+        // what the meta and the transport need, and they need the same in a short window as in a tall one —
+        // see `FullscreenArtworkGeometry`, which is where that arithmetic lives now.
+        let mediaWidth = FullscreenArtworkGeometry(columnWidth: width, stageHeight: availableHeight).side
         return VStack(alignment: .center, spacing: columnSpacing) {
             // The art and the song's name move as one on a skip: Apple Music hands the new
             // song in from the side it was skipped from instead of cutting to it.
             VStack(alignment: .center, spacing: columnSpacing) {
-                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight).padding(.bottom, 12)
+                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: mediaWidth).padding(.bottom, 12)
                 self.trackMeta.frame(width: mediaWidth, alignment: .leading)
             }
             .offset(x: self.trackArrivalOffset)
@@ -301,7 +301,10 @@ struct FullscreenNowPlayingView: View {
             url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
             fallbackURL: self.playerService.currentTrack?.thumbnailURL,
             identity: self.playerService.currentTrack?.videoId,
-            targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
+            targetSize: CGSize(
+                width: FullscreenArtworkGeometry.maxSide,
+                height: FullscreenArtworkGeometry.maxSide
+            )
         ) { image in
             image.resizable().aspectRatio(contentMode: .fill)
         } placeholder: {
@@ -820,6 +823,63 @@ struct FullscreenNowPlayingView: View {
         if SettingsManager.shared.syncedLyricsEnabled { await self.syncedLyricsService.fetchLyrics(for: info, forceRefresh: forceRefresh) } else { self.syncedLyricsService.currentLyrics = .unavailable; self.syncedLyricsService.activeProvider = nil; self.syncedLyricsService.currentLyricsVideoId = videoId }
         guard self.lastLoadedVideoId == videoId, self.playerService.currentTrack?.videoId == videoId else { return }
         if case .unavailable = self.syncedLyricsService.currentLyrics { self.isLoadingFallback = false; return }
+    }
+}
+
+// MARK: - FullscreenArtworkGeometry
+
+/// How wide and tall the fullscreen player's artwork card ends up, given the column it lives in.
+///
+/// Pulled out of the view as a plain value because the size *is* arithmetic here, and because the
+/// arithmetic was wrong in a way a layout hides: the card was sized as a share of the stage
+/// (`availableHeight * 0.46`), which reserved over half the column for the meta and the transport —
+/// except those are a fixed height, not a share. So the art only reached its cap once the stage itself
+/// was ~826pt (a window ~922pt tall): below that it was handed less than the room that was left over,
+/// and the column sat with empty space above and below it. Making the window taller was therefore the
+/// only way to get the artwork to the size it should have had all along. It takes what is left instead
+/// (the same rule the Now Playing sidebar's artwork follows, see
+/// ``NowPlayingSidebarLayout/reservedHeight``).
+struct FullscreenArtworkGeometry {
+    /// Width the column gives the artwork — 40% of the stage, which is what the view passes in.
+    var columnWidth: CGFloat
+    /// Height the column is given: the window's, minus the room the player's own chrome takes above and
+    /// below it (see the stage arithmetic in `body`).
+    var stageHeight: CGFloat
+
+    /// Height of the meta under the artwork: a title that can wrap to two lines at 30pt, the artist
+    /// line under it, and the spacing between them.
+    static let metaHeight: CGFloat = 100
+    /// Height of the transport under that: the scrubber row, the 54pt button row, the spacing between
+    /// them and the padding above the two.
+    static let transportHeight: CGFloat = 110
+    /// The artwork's own bottom padding, plus the spacing the column puts above and below it.
+    static let undrawnInsets: CGFloat = 40
+
+    /// What the column needs besides the artwork, so the art can be given the rest rather than a share
+    /// of the stage. A constant because it is one: these are fixed fonts and fixed rows, and how tall
+    /// they are does not depend on the window.
+    static var reservedHeight: CGFloat {
+        self.metaHeight + self.transportHeight + self.undrawnInsets
+    }
+
+    /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
+    /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
+    /// artwork surface in the app — render slightly upscaled from its own downloaded data.
+    static let maxSide: CGFloat = 380
+    /// The smallest the art is allowed to get. A very short window is the only way here, and the column
+    /// would rather overflow its stage than shrink the art further.
+    static let minSide: CGFloat = 200
+
+    /// Side of the square the artwork card gets: what is left of the stage once the meta and the
+    /// transport have theirs, capped by the column's width and by ``maxSide``, and floored at
+    /// ``minSide``.
+    var side: CGFloat {
+        let leftover = self.stageHeight - Self.reservedHeight
+        return min(
+            self.columnWidth,
+            Self.maxSide,
+            max(Self.minSide, leftover)
+        )
     }
 }
 

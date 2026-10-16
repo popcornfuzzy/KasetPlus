@@ -24,7 +24,42 @@ struct PlayerBar: View {
     /// Namespace for glass effect morphing and unioning.
     @Namespace private var playerNamespace
 
-    @State private var isHovering = false
+    /// How long the expanded seek bar takes to arrive and to fold away again.
+    private static let revealAnimation = Animation.easeInOut(duration: 0.15)
+    /// How wide the scrubber would like to be, and how much bar is left for the ends it does not cover.
+    ///
+    /// A scrubber is only worth summoning if it is long enough to aim at — 460pt is roughly a third of a
+    /// wide window's bar and the length a slider wants — but never at the cost of the buttons that stay
+    /// outside it: `scrubberEndRoom` is what the transport controls on the left and the actions, volume
+    /// and fullscreen on the right keep, and the scrubber takes what is left on either side of the title.
+    private static let preferredScrubberWidth: CGFloat = 460
+    private static let scrubberEndRoom: CGFloat = 92
+    /// Below this the scrubber stops being a scrubber, so a bar squeezed into a very narrow pane gives
+    /// it this and lets the space at the ends go rather than growing it down to a sliver again.
+    private static let minimumScrubberWidth: CGFloat = 240
+    /// How far the controls the scrubber covers fade out at either end of it. This is the gradient the
+    /// row dissolves into, and the reason a covered control is faded and not clipped: an edge would give
+    /// the scrubber a surface of its own to sit on, and it is meant to be a part of the bar.
+    private static let dissolveRamp: CGFloat = 26
+
+    /// The bar's controls row, and the track info inside it, as measured off the layout: the row is what
+    /// the scrubber is sized against (it spans the bar minus its insets) and the title is what it is
+    /// centred on. Both are read in `.global`, as they are only ever compared with each other.
+    @State private var controlsFrame: CGRect = .zero
+    @State private var titleFrame: CGRect = .zero
+
+    /// Whether the pointer is resting on the bar's track info.
+    ///
+    /// The track info is the bar's **only** hover hotspot: the expanded seek bar is a large layer to
+    /// put under the pointer, so the pointer opts into it by resting on the track it seeks in, rather
+    /// than by being anywhere on the bar at all.
+    @State private var isHoveringTrackInfo = false
+
+    /// Whether the pointer is on the expanded seek bar itself.
+    ///
+    /// Once the layer is up the pointer is over the *slider*, which is far wider than the track info it
+    /// came from; without this the bar would fold the slider away from under the hand dragging it.
+    @State private var isHoveringExpandedSeekBar = false
 
     /// Local seek value for smooth slider dragging without network calls on every change.
     @State private var seekValue: Double = 0
@@ -62,7 +97,7 @@ struct PlayerBar: View {
 
                     Spacer()
 
-                    // Center section: Track info OR seek bar (on hover)
+                    // Center section: Track info — and the hotspot the seek bar is summoned from
                     self.centerSection
 
                     Spacer()
@@ -72,21 +107,36 @@ struct PlayerBar: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
+                // Measured before the mask is applied, so the frame is the row's own; the bar's width is
+                // read off it (the row spans the bar minus its insets) rather than measured separately.
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                    self.controlsFrame = frame
+                }
+                // The controls the scrubber has grown over are **dissolved, not covered**: no surface is
+                // laid on the bar for the scrubber to sit on — the bar's own glass is what shows behind it
+                // — and the row fades out over a gradient across the scrubber's span, so what goes with it
+                // goes softly. See `controlsMask`.
+                .mask(self.controlsMask)
             }
             // Pinned here rather than on the controls: the wash is a flexible layer, and an inset's
             // content is offered a tall proposal, which without this it would take.
             .frame(height: Self.height)
+            // The seek bar is a *layer above* the bar rather than a column in it, which is what lets it
+            // be a scrubber with something to grab — as wide as the bar can afford to lend it — instead
+            // of the sliver the buttons either side of it left over. An overlay is offered the bar's size
+            // and cannot give one back, so the slider's width is never the bar's minimum and hovering can
+            // no longer widen the pane: the middle column it used to be had to be laid out in both hover
+            // states for exactly that reason, and paid for it with a slider too small to drag.
+            .overlay {
+                if self.showsExpandedSeekBar {
+                    self.expandedSeekBar
+                }
+            }
             .modifier(PlayerBarGlassModifier(namespace: self.playerNamespace))
             .animation(AppAnimation.standard, value: self.playerService.playerBarLoading)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                self.isHovering = hovering
-            }
-        }
-
         .background {
             // Keyboard shortcuts for media controls.
             //
@@ -184,50 +234,141 @@ struct PlayerBar: View {
         }
     }
 
-    // MARK: - Center Section (track info blurs, seek bar appears on hover)
+    // MARK: - Center Section (the track info, and the seek bar's hotspot)
 
-    /// The track info, and — laid out in **both** states and only faded in on hover — the seek bar (or the
-    /// LIVE badge) that takes its place.
+    /// The track info at rest, and the hotspot the expanded seek bar is summoned from.
     ///
-    /// It used to be an `if` on hover, and that made the bar's *minimum* width a function of the pointer:
-    /// the seek bar's minimum is wider than the track info's, and a view's minimum is what its pane, the
-    /// split view and eventually the window are held to. Measured in the running app, the split view's own
-    /// width grew from 900 to 965 while the bar was hovered — past the 900pt window it lives in, so the page
-    /// was laid out 65pt wider than the window and cropped, and dropped back on un-hover. Laid out in both
-    /// states, the bar's footprint is a constant and hovering changes nothing but opacity.
+    /// A hotspot spans the track info's whole frame, not just the glyphs in it, so it is one rectangle
+    /// that reads as "the track that is playing" rather than a text run the pointer has to find. It is
+    /// deliberately no wider than that: the seek bar is a layer over the bar, so the pointer asks for it
+    /// from the track, and only from the track.
     private var centerSection: some View {
-        ZStack {
+        Group {
             // Error state display with retry option
             if case let .error(message) = playerService.state {
                 self.errorView(message: message)
             } else {
-                // Track info (blurred when hovering and track is playing)
                 self.trackInfoView
-                    .blur(radius: self.hoverRevealsSeekBar ? 8 : 0)
-                    .opacity(self.hoverRevealsSeekBar ? 0 : 1)
-
-                // The seek bar for normal tracks, the LIVE badge for live streams. Present either way, so
-                // neither the bar's height nor its width can depend on the pointer.
-                Group {
-                    if self.playerService.isCurrentItemLive {
-                        self.liveIndicatorView
-                    } else {
-                        self.seekBarView
+                    .contentShape(.rect)
+                    .onHover { hovering in
+                        withAnimation(Self.revealAnimation) {
+                            self.isHoveringTrackInfo = hovering
+                        }
                     }
-                }
-                .opacity(self.hoverRevealsSeekBar ? 1 : 0)
-                // Invisible is not inert: the hidden slider must not be draggable, nor reachable by
-                // VoiceOver or the keyboard, while the track info is what the reader is looking at.
-                .allowsHitTesting(self.hoverRevealsSeekBar)
-                .accessibilityHidden(!self.hoverRevealsSeekBar)
             }
         }
         .frame(maxWidth: 400)
+        // Where the title sits, which is not the bar's middle: the scrubber is aligned to *this*, so the
+        // pointer that asked for it from the track finds it under the track and not wherever the bar's
+        // centre happens to be.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            self.titleFrame = frame
+        }
     }
 
-    /// Whether the hover state swaps the track info for the seek bar (or the LIVE badge).
-    private var hoverRevealsSeekBar: Bool {
-        self.isHovering && self.playerService.currentTrack != nil
+    /// Whether the seek bar — or, on a live stream, the LIVE badge — is expanded over the bar.
+    ///
+    /// True while the pointer is on the track info or on the layer it summoned, and for as long as a
+    /// seek is in flight — a drag can leave both behind, and the slider going away under the pointer
+    /// mid-drag is the one thing this must never do.
+    private var showsExpandedSeekBar: Bool {
+        guard self.playerService.currentTrack != nil else { return false }
+        // A bar that failed and is offering Retry is not a scrubber: its middle belongs to the message.
+        if case .error = self.playerService.state { return false }
+        return self.isHoveringTrackInfo || self.isHoveringExpandedSeekBar || self.isSeeking
+    }
+
+    // MARK: - Expanded Seek Bar (the scrubber laid over the bar, aligned to the title)
+
+    /// The seek bar — or, for a live stream, the LIVE badge — laid over the bar, aligned to the title.
+    ///
+    /// It is a scrubber, not a second bar: it takes the width the bar can lend around the track info (see
+    /// ``scrubberWidth``) and sits where that track info is, rather than filling the bar or centring itself
+    /// on it. The buttons it does not reach — the transport on the left, the actions, volume and fullscreen
+    /// on the right — keep both their places and their clicks, which is the point of leaving the ends alone.
+    ///
+    /// It has no surface of its own: what it covers is dissolved out of the row instead (`controlsMask`),
+    /// so the bar keeps its own glass and the scrubber reads as the bar becoming a scrubber rather than as
+    /// a pill dropped on the bar — which is what it looked like with one, whatever the pill was made of.
+    ///
+    /// It arrives by growing out of the track info (`scale` from a little over half its width, about what
+    /// the title is), so the reader watches it come rather than finding it there.
+    @ViewBuilder
+    private var expandedSeekBar: some View {
+        if self.playerService.isCurrentItemLive {
+            self.liveIndicatorView
+                .offset(x: self.titleOffsetFromBarCentre)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // A label, not a target: the controls stay reachable underneath it.
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        } else if self.scrubberWidth > 0 {
+            self.seekBarView
+                .frame(width: self.scrubberWidth, height: Self.height)
+                // The capsule is the whole scrubber's shape, not just the slider's: everything it covers is
+                // the scrubber's to answer for, so a click on a dissolved button cannot get past it.
+                .contentShape(.capsule)
+                // Hover is this view's own shape too, which is what lets the pointer leave it for a button
+                // at either end and get that button back without the scrubber staying up over it.
+                .onHover { hovering in
+                    withAnimation(Self.revealAnimation) {
+                        self.isHoveringExpandedSeekBar = hovering
+                    }
+                }
+                // Anchored to the title rather than to the bar: it is the track's scrubber, and the title
+                // is only the bar's middle when the controls either side of it are the same width.
+                .offset(x: self.titleOffsetFromBarCentre)
+                .transition(.scale(scale: 0.55).combined(with: .opacity))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// How far the title sits from the bar's centre — where the scrubber is centred, and how wide it may be.
+    private var titleOffsetFromBarCentre: CGFloat {
+        self.titleFrame.midX - self.controlsFrame.midX
+    }
+
+    /// The bar's own width, read off the controls row, which spans it minus its insets.
+    private var barWidth: CGFloat {
+        self.controlsFrame.width + 40
+    }
+
+    /// How wide the scrubber is where the bar can afford it.
+    ///
+    /// It grows about the *track info*, so what it needs is not the bar's width but the room from the title
+    /// to the nearer end of the bar — half of the bar on a bar whose controls are even either side of it,
+    /// and less when they are not (the actions and volume take more than the transport does). Zero until the
+    /// row has been measured, which is what keeps it off the bar until there is a width to give it.
+    private var scrubberWidth: CGFloat {
+        guard self.controlsFrame.width > 0, self.titleFrame.width > 0 else { return 0 }
+        let roomToEnd = self.barWidth / 2 - abs(self.titleOffsetFromBarCentre)
+        let roomy = min(Self.preferredScrubberWidth, 2 * (roomToEnd - Self.scrubberEndRoom))
+        // `roomToEnd` also caps it: a scrubber wider than the room about the title would hang off the bar.
+        return min(max(Self.minimumScrubberWidth, roomy), 2 * roomToEnd - 16)
+    }
+
+    /// What is left of the bar's controls once the scrubber has grown over them.
+    ///
+    /// A mask, so the row keeps its layout — and with it the bar's footprint and the pane's width — while
+    /// the controls under the scrubber fade out rather than being cut out. Black is shown, clear is hidden,
+    /// and the two gradients at either end of the clear span are what make the dissolve a gradient: only
+    /// the span's core is fully gone, so a button the scrubber only half reaches is half there, which is
+    /// what the pointer sees as it arrives.
+    private var controlsMask: some View {
+        let ramp = self.showsExpandedSeekBar ? Self.dissolveRamp : 0
+        let core = self.showsExpandedSeekBar ? self.scrubberWidth - ramp * 2 : 0
+        // Where the span starts, in the row's own coordinates. It is placed by its leading edge rather than
+        // by its width, so it grows out from the title on both sides as the width animates.
+        let leading = self.titleFrame.midX - self.scrubberWidth / 2 - self.controlsFrame.minX
+        return HStack(spacing: 0) {
+            Color.black.frame(width: max(0, leading))
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: ramp)
+            Color.clear.frame(width: max(0, core))
+            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: ramp)
+            Color.black
+        }
     }
 
     // MARK: - Live Indicator View (replaces seek bar for live streams)
@@ -320,10 +461,15 @@ struct PlayerBar: View {
         }
     }
 
-    // MARK: - Seek Bar View (replaces track info on hover)
+    // MARK: - Seek Bar View (the expanded seek bar's row)
 
+    /// Elapsed time, the slider, remaining time — laid out inside the scrubber once it has grown into the
+    /// space the bar lent it, rather than in whatever the buttons either side of the middle left over.
+    ///
+    /// The row is inset by exactly the dissolve's ramp, so the times and the ends of the slider sit on the
+    /// part of the span the mask clears completely, rather than over a control that is still half there.
     private var seekBarView: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             // Elapsed time - use cached formatted string when not seeking
             Text(self.isSeeking ? self.formatTime(self.seekValue * self.playerService.duration) : self.formattedProgress)
                 .font(.system(size: 11))
@@ -341,8 +487,12 @@ struct PlayerBar: View {
                     self.performSeek()
                 }
             }
-            .controlSize(.small)
+            // Full size, unlike the volume slider: this is the bar's scrubber, and it now has the room
+            // for a track and a knob the pointer can land on.
+            .controlSize(.regular)
             .tint(Self.brandAccent)
+            .accessibilityIdentifier(AccessibilityID.PlayerBar.seekSlider)
+            .accessibilityLabel(String(localized: "Playback Position"))
 
             // Remaining time - use cached formatted string when not seeking
             Text(self.isSeeking ? "-\(self.formatTime(self.playerService.duration - self.seekValue * self.playerService.duration))" : self.formattedRemaining)
@@ -351,6 +501,7 @@ struct PlayerBar: View {
                 .frame(minWidth: 45, alignment: .leading)
                 .monospacedDigit()
         }
+        .padding(.horizontal, Self.dissolveRamp)
     }
 
     /// Performs the actual seek operation after slider interaction ends.
