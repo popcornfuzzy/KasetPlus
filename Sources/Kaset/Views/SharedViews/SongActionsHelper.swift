@@ -169,12 +169,14 @@ enum SongActionsHelper {
         }
     }
 
-    /// Adds a playlist to the library.
+    /// Adds a playlist to the library, reporting whether the write landed. The caller's control shows
+    /// what the server holds, so a failure must reach it instead of being swallowed here.
+    @discardableResult
     static func addPlaylistToLibrary(
         _ playlist: Playlist,
         client: any YTMusicClientProtocol,
         libraryViewModel: LibraryViewModel?
-    ) async {
+    ) async -> Bool {
         do {
             try await client.subscribeToPlaylist(playlistId: playlist.id)
             self.invalidateLibraryResponseCaches()
@@ -193,17 +195,42 @@ enum SongActionsHelper {
                 }
             }
             DiagnosticsLogger.api.info("Added playlist to library: \(playlist.title)")
+            return true
         } catch {
-            DiagnosticsLogger.api.error("Failed to add playlist to library: \(error.localizedDescription)")
+            DiagnosticsLogger.api.error("Failed to add playlist to library: \(Self.writeFailure(error), privacy: .public)")
+            return false
         }
     }
 
-    /// Removes a playlist from the library.
+    /// A log-safe summary of a failed library write: the error's kind and any HTTP or URL code, never
+    /// the message the service sent back.
+    ///
+    /// The log is read over a shared console, so a failure has to say *how* it failed without restating
+    /// what the service said about the ID the write named. Logged as plain text the whole description is
+    /// `<private>`, which is how a control that failed every time it was clicked left no trace at all.
+    static func writeFailure(_ error: Error) -> String {
+        switch error {
+        case YTMusicError.authExpired: "authExpired"
+        case YTMusicError.notAuthenticated: "notAuthenticated"
+        case let YTMusicError.networkError(underlying as URLError): "networkError(URLError \(underlying.code.rawValue))"
+        case let YTMusicError.networkError(underlying): "networkError(\(type(of: underlying)))"
+        case let YTMusicError.apiError(_, code): "apiError(\(code.map { "HTTP \($0)" } ?? "no code"))"
+        case YTMusicError.parseError(_): "parseError"
+        case YTMusicError.playbackError(_): "playbackError"
+        case YTMusicError.invalidInput(_): "invalidInput"
+        case YTMusicError.unknown(_): "unknown"
+        default: "\(type(of: error))"
+        }
+    }
+
+    /// Removes a playlist from the library, reporting whether the write landed (see
+    /// `addPlaylistToLibrary`).
+    @discardableResult
     static func removePlaylistFromLibrary(
         _ playlist: Playlist,
         client: any YTMusicClientProtocol,
         libraryViewModel: LibraryViewModel?
-    ) async {
+    ) async -> Bool {
         do {
             try await client.unsubscribeFromPlaylist(playlistId: playlist.id)
             self.invalidateLibraryResponseCaches()
@@ -222,8 +249,10 @@ enum SongActionsHelper {
                 }
             }
             DiagnosticsLogger.api.info("Removed playlist from library: \(playlist.title)")
+            return true
         } catch {
-            DiagnosticsLogger.api.error("Failed to remove playlist from library: \(error.localizedDescription)")
+            DiagnosticsLogger.api.error("Failed to remove playlist from library: \(Self.writeFailure(error), privacy: .public)")
+            return false
         }
     }
 

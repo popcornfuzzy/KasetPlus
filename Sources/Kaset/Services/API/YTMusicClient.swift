@@ -605,8 +605,9 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         let landingContent = PlaylistParser.parseLibraryContent(landingData)
         let (artists, artistsSource) = try await self.fetchLibraryArtists(fallback: landingContent.artists)
+        let albums = await self.fetchLibraryAlbums()
         let content = PlaylistParser.LibraryContent(
-            playlists: landingContent.playlists,
+            playlists: Self.mergingLibraryItems(landingContent.playlists + albums),
             artists: artists,
             podcastShows: landingContent.podcastShows,
             artistsSource: artistsSource
@@ -616,6 +617,35 @@ final class YTMusicClient: YTMusicClientProtocol {
             "Parsed \(content.playlists.count) library playlists, \(content.artists.count) artists, and \(content.podcastShows.count) podcasts"
         )
         return content
+    }
+
+    /// Fetches the account's saved albums.
+    ///
+    /// The landing does not carry them: saved albums live behind their own filter
+    /// (`FEmusic_liked_albums`), the way followed artists have theirs, so a library built only from
+    /// the landing loses every album the account saved — including one just added, which made "Add
+    /// to Library" look like it undid itself on the next refresh. Failures are non-fatal: a library
+    /// without its albums is still a library.
+    private func fetchLibraryAlbums() async -> [Playlist] {
+        do {
+            let albumsData = try await self.request(
+                "browse",
+                body: ["browseId": "FEmusic_liked_albums"],
+                ttl: APICache.TTL.library
+            )
+
+            return PlaylistParser.parseLibraryContent(albumsData).playlists.filter(\.isAlbum)
+        } catch {
+            self.logger.warning("Library albums endpoint failed, continuing without albums: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Merges library items into one list, one entry per normalized playlist ID. The landing and the
+    /// albums filter can name the same album, and the same item must not be listed twice.
+    private static func mergingLibraryItems(_ items: [Playlist]) -> [Playlist] {
+        var seenIds: Set<String> = []
+        return items.filter { seenIds.insert($0.normalizedId).inserted }
     }
 
     /// Fetches followed artists with graceful fallback to the library landing preview.
@@ -1365,7 +1395,10 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// This is equivalent to the "Add to Library" action in YouTube Music.
     /// - Parameter playlistId: The playlist ID to add to library
     func subscribeToPlaylist(playlistId: String) async throws {
-        self.logger.info("Adding playlist to library: \(playlistId)")
+        // The ID is logged publicly on purpose: a library write that fails with `HTTP 404` fails
+        // because of the ID it was sent, and which ID that was has to be readable from a log after the
+        // fact. Playlist IDs are public identifiers, and never a credential.
+        self.logger.info("Adding playlist to library: \(playlistId, privacy: .public)")
 
         // Remove VL prefix if present for the API call
         let cleanId = playlistId.hasPrefix("VL") ? String(playlistId.dropFirst(2)) : playlistId
@@ -1385,7 +1418,7 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// This is equivalent to the "Remove from Library" action in YouTube Music.
     /// - Parameter playlistId: The playlist ID to remove from library
     func unsubscribeFromPlaylist(playlistId: String) async throws {
-        self.logger.info("Removing playlist from library: \(playlistId)")
+        self.logger.info("Removing playlist from library: \(playlistId, privacy: .public)")
 
         // Remove VL prefix if present for the API call
         let cleanId = playlistId.hasPrefix("VL") ? String(playlistId.dropFirst(2)) : playlistId

@@ -421,7 +421,9 @@ Right-click the mini player → "Inspect Element" to debug JavaScript.
 
 ## Infinite Mix
 
-When playing artist mixes (`RDEM...` playlists), the app supports infinite queue loading:
+When playing artist mixes (`RDEM...` playlists) or a playlist's / album's radio (`RDAMPL…`, the
+"Start mix" the browse header names — see [api-discovery.md](api-discovery.md)), the app supports
+infinite queue loading:
 
 ### How It Works
 
@@ -448,6 +450,11 @@ The continuation token is cleared when:
 - Clearing the queue (`clearQueue`)
 
 This prevents infinite fetch from triggering on non-mix playback.
+
+The playlist and album pages' **Start Radio** action (in the header's "…" menu) calls
+`playWithMix(playlistId:startVideoId:)` with the mix playlist their header named — or, for a
+playlist, the `RDAMPL` + playlist-ID target YouTube Music builds when the header names none. It
+shuffles the mix and starts on a random track, the same way the artist page's **Mix** button does.
 
 ## Google Cast
 

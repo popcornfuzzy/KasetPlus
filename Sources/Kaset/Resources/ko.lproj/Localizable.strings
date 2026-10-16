@@ -160,6 +160,10 @@
 
 "Could not create AI session" = "AI 세션을 생성할 수 없음";
 
+"Couldn't add this to your library. Try again." = "보관함에 추가할 수 없음. 다시 시도하세요.";
+
+"Couldn't remove this from your library. Try again." = "보관함에서 삭제할 수 없음. 다시 시도하세요.";
+
 "Couldn't search for music" = "음악을 검색할 수 없음";
 
 "Create or save playlists on YouTube Music to see them here." = "여기에서 보려면 YouTube Music에서 재생목록을 만들거나 저장하세요.";
@@ -430,6 +434,8 @@
 "Refine" = "다듬기";
 
 "Refine Playlist" = "재생목록 다듬기";
+
+"Remove from Library" = "보관함에서 삭제";
 
 "Release Notes" = "릴리스 노트";
 

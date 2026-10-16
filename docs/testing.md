@@ -565,7 +565,7 @@ after a run reports nothing even when the run was in mock mode.
 `XCUIElement.frame` is in screen coordinates, and for these windows the `windows.firstMatch` frame is
 the *content* area, below the toolbar. An element that reports a `minY` above it is not merely
 misaligned: the page is taller than the window and SwiftUI is centring the overflow, which slides the
-top of the page — toolbar controls included — out of the window. `testHeaderActionRowSitsOnTheThumbnail`
+top of the page — toolbar controls included — out of the window. `testHeaderActionRowSitsOnTheArtworkBottomEdge`
 asserts exactly that containment, and prints the relevant frames as a test activity.
 
 For sizes the accessibility tree cannot show (a container's height, what a `List` decided to take),

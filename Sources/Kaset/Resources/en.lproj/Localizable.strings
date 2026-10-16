@@ -202,6 +202,10 @@
 
 "Could not create AI session" = "Could not create AI session";
 
+"Couldn't add this to your library. Try again." = "Couldn't add this to your library. Try again.";
+
+"Couldn't remove this from your library. Try again." = "Couldn't remove this from your library. Try again.";
+
 "Couldn't search for music" = "Couldn't search for music";
 
 "Create or save playlists on YouTube Music to see them here." = "Create or save playlists on YouTube Music to see them here.";
@@ -561,6 +565,8 @@
 "Refine" = "Refine";
 
 "Refine Playlist" = "Refine Playlist";
+
+"Remove from Library" = "Remove from Library";
 
 "Release Notes" = "Release Notes";
 

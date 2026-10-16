@@ -91,6 +91,52 @@ struct PlaylistDetailViewModelTests {
         #expect(self.viewModel.loadingState == .loaded)
     }
 
+    // MARK: - Radio
+
+    @Test("The header's radio playlist survives paging")
+    func radioPlaylistSurvivesPaging() async {
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            tracks: TestFixtures.makeSongs(count: 5),
+            mixPlaylistId: "RDAMPLPL-radio-source"
+        )
+        self.mockClient.playlistContinuationTracks["VL-test-playlist"] = [
+            [TestFixtures.makeSong(id: "cont-1")],
+        ]
+
+        await self.viewModel.load()
+        #expect(self.viewModel.playlistDetail?.mixPlaylistId == "RDAMPLPL-radio-source")
+
+        await self.viewModel.loadMore()
+
+        #expect(self.viewModel.playlistDetail?.tracks.count == 6)
+        #expect(self.viewModel.playlistDetail?.mixPlaylistId == "RDAMPLPL-radio-source")
+    }
+
+    @Test("The header's radio playlist survives a partial header merge")
+    func radioPlaylistSurvivesHeaderMerge() async {
+        // A header the parser could not fully read is merged with the playlist the navigation carried,
+        // which rebuilds the detail — the radio has to be carried across with it.
+        let sparsePlaylist = Playlist(
+            id: "VL-test-playlist",
+            title: "Unknown Playlist",
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: nil,
+            author: nil
+        )
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: sparsePlaylist,
+            tracks: TestFixtures.makeSongs(count: 3),
+            mixPlaylistId: "RDAMPLPL-radio-source"
+        )
+
+        await self.viewModel.load()
+
+        #expect(self.viewModel.playlistDetail?.title == "Test Playlist")
+        #expect(self.viewModel.playlistDetail?.mixPlaylistId == "RDAMPLPL-radio-source")
+    }
+
     // MARK: - Load More Tests
 
     @Test("Load more appends tracks")

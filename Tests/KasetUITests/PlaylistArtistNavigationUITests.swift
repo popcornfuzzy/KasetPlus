@@ -120,16 +120,25 @@ final class PlaylistArtistNavigationUITests: KasetUITestCase {
 
     // MARK: - Header layout
 
-    /// The header's action row lines up with the thumbnail, the header does not stretch, and the page
-    /// stays inside the window.
+    /// The header's action row is pinned to the thumbnail's bottom edge, its controls share one
+    /// height, and the actions that fit beside Play and Shuffle are in the row instead of the "…" menu.
     ///
     /// The header used to be the list's first row, so the table fixed its height. Above the list it
     /// became a flexible child of the page's stack, and the stack shared the space the tracks list
     /// left over with it: the buttons drifted ~140 pt down and the header grew to ~310 pt. Forcing
     /// the header to its ideal height then made the list claim the container's full height, so the
     /// page measured 961 pt in a 734 pt window, and the stack centred the overflow — the header slid
-    /// up until its top half, and the toolbar's controls over it, were clipped off the window.
-    func testHeaderActionRowSitsOnTheThumbnail() {
+    /// up until its top half, and the toolbar's controls over it, was clipped off the window.
+    ///
+    /// The row is *aligned* to the thumbnail's bottom edge — nothing in the header is a `Spacer`, so
+    /// the header stays its own height — and this test pins that down: the row starts at or below the
+    /// metadata line, ends on the artwork's bottom edge, and never leaves the window. It also covers
+    /// the two things the row itself got wrong: the "…" menu sits on the glass buttons' centre line, and
+    /// the actions with room in the row are drawn there rather than only in that menu (one set of actions
+    /// split between a row of shapes and the menu — see ADR-0033). Since the actions appear in one shape of
+    /// the row at a time, each is asserted once: a duplicate would mean a shape the row is not drawing is
+    /// in the accessibility tree, and VoiceOver reads the same action several times.
+    func testHeaderActionRowSitsOnTheArtworkBottomEdge() {
         self.executionTimeAllowance = 240
 
         self.launchDefault()
@@ -148,12 +157,26 @@ final class PlaylistArtistNavigationUITests: KasetUITestCase {
         let play = self.app.buttons[TestAccessibilityID.PlaylistDetail.playButton].firstMatch
         XCTAssertTrue(self.waitQuietly(play, timeout: 15), "the header should show the play button")
 
+        let shuffle = self.app.buttons[TestAccessibilityID.PlaylistDetail.shuffleButton].firstMatch
+        XCTAssertTrue(self.waitQuietly(shuffle, timeout: 15), "the header should show the shuffle button")
+
+        // Addressed by identifier rather than as a button: the "…" is an `AXMenuButton`, which
+        // `app.buttons` does not match — the same reason the artwork above is looked up this way.
+        let more = self.app.descendants(matching: .any)[TestAccessibilityID.PlaylistDetail.moreButton].firstMatch
+        XCTAssertTrue(self.waitQuietly(more, timeout: 15), "the header should show the actions menu")
+
         let credit = self.artistCredit
         XCTAssertTrue(self.waitQuietly(credit, timeout: 15), "the header should show the artist credit")
 
+        let metadata = self.app.staticTexts[TestAccessibilityID.PlaylistDetail.metadata].firstMatch
+        XCTAssertTrue(self.waitQuietly(metadata, timeout: 15), "the header should show the track count and duration")
+
         let window = self.app.windows.firstMatch
         XCTContext.runActivity(
-            named: "window=\(window.frame) artwork=\(artwork.frame) play=\(play.frame) credit=\(credit.frame)"
+            named: """
+            window=\(window.frame) artwork=\(artwork.frame) play=\(play.frame) \
+            shuffle=\(shuffle.frame) more=\(more.frame) credit=\(credit.frame) metadata=\(metadata.frame)
+            """
         ) { _ in }
 
         // The header has to be *inside* the window. When the header+list need more height than the
@@ -172,19 +195,112 @@ final class PlaylistArtistNavigationUITests: KasetUITestCase {
             "The header is \(artwork.frame.height) pt tall for a \(Self.artworkSize) pt thumbnail, so it is absorbing the tracks list's leftover height."
         )
 
-        XCTAssertLessThanOrEqual(
-            play.frame.maxY,
-            artwork.frame.maxY + 8,
-            "The action row (\(play.frame)) should end with the thumbnail (\(artwork.frame)) instead of being pushed below it."
+        // Below the text it belongs with: the row comes after the metadata line, and a large gap is
+        // the dead space a stretched header leaves behind.
+        XCTAssertGreaterThanOrEqual(
+            play.frame.minY,
+            metadata.frame.maxY - 2,
+            "The action row (\(play.frame)) should start below the metadata line (\(metadata.frame))."
+        )
+        XCTAssertLessThan(
+            play.frame.minY - metadata.frame.maxY,
+            60,
+            "\(play.frame.minY - metadata.frame.maxY) pt of empty space between the metadata and the buttons: the header is stretching."
         )
 
-        // The buttons are bottom-aligned on purpose, so a large gap here means the header stretched
-        // and the spacer absorbed the difference.
-        XCTAssertLessThan(
-            play.frame.minY - credit.frame.maxY,
-            100,
-            "\(play.frame.minY - credit.frame.maxY) pt of empty space between the credits and the buttons: the header is stretching."
+        // But at the thumbnail's bottom edge: the row is aligned there, so the buttons line up with
+        // the artwork's trailing corner instead of floating in the header's middle.
+        XCTAssertLessThanOrEqual(
+            abs(play.frame.maxY - artwork.frame.maxY),
+            6,
+            "The action row (\(play.frame)) should sit on the thumbnail's bottom edge (\(artwork.frame))."
         )
+
+        // One row, one control size, one centre line. The "…" is drawn by the row itself — a plain `Menu`
+        // with no indicator whose label states its own 46 × 26 pt and makes that whole frame its hit shape.
+        // Measured in the running app, the label's `contentShape` is what accessibility reports: before it,
+        // the menu's frame was the ellipsis' ink (12 × 2 pt) and only a click on the dots opened the menu;
+        // now the control reports its full 46 × 26 pt like the glyph buttons beside it.
+        XCTAssertLessThanOrEqual(
+            abs(more.frame.midY - shuffle.frame.midY),
+            2,
+            "The actions menu's centre (\(more.frame.midY)) is not on the shuffle button's (\(shuffle.frame.midY))."
+        )
+        XCTAssertLessThanOrEqual(
+            abs(more.frame.width - shuffle.frame.width),
+            1.5,
+            "The actions menu is \(more.frame.width) pt wide against the \(shuffle.frame.width) pt glyph button beside it."
+        )
+        XCTAssertLessThanOrEqual(
+            abs(more.frame.height - shuffle.frame.height),
+            1.5,
+            "The actions menu is \(more.frame.height) pt tall against the \(shuffle.frame.height) pt glyph button beside it."
+        )
+
+        // The row ends inside the window: an over-wide row is clipped rather than folded into the menu.
+        XCTAssertLessThanOrEqual(
+            more.frame.maxX,
+            window.frame.maxX,
+            "The action row runs past the window edge: the menu ends at \(more.frame.maxX) in a window \(window.frame)."
+        )
+
+        // What has room in the row is in the row. Liked Music is not an album, so it can offer all
+        // five secondary actions; the default window is wide enough for some of them, and each shows
+        // as one glass button beside Shuffle. They appear in one shape of the row at a time, so a
+        // count above one means a shape the row is not drawing is in the accessibility tree.
+        let secondaryActions = [
+            TestAccessibilityID.PlaylistDetail.radioButton: "Start Radio",
+            TestAccessibilityID.PlaylistDetail.playNextButton: "Play Next",
+            TestAccessibilityID.PlaylistDetail.addToQueueButton: "Add to Queue",
+            TestAccessibilityID.PlaylistDetail.libraryButton: "Add to Library",
+            TestAccessibilityID.PlaylistDetail.refineButton: "Refine Playlist",
+        ]
+        var inline = [String]()
+        var inlineButtons = [XCUIElement]()
+        var duplicated = [String]()
+        for (identifier, title) in secondaryActions.sorted(by: { $0.key < $1.key }) {
+            let matches = self.app.buttons.matching(identifier: identifier)
+            if matches.count > 1 {
+                duplicated.append("\(title) (\(matches.count)×)")
+            }
+            let button = matches.firstMatch
+            guard button.exists else { continue }
+            inline.append(title)
+            inlineButtons.append(button)
+            XCTAssertTrue(
+                window.frame.intersects(button.frame),
+                "\(title) is in the row but outside the window: \(button.frame) in \(window.frame)."
+            )
+        }
+
+        // And it is spaced like one of them: the row spaces its controls 10 pt apart, so the control starts
+        // 10 pt after the one in front of it ends. A menu left to macOS is 61.5 pt of pull-down chrome and
+        // would run wider than its neighbours as well as leaving a gap in front of it.
+        let preceding = ([shuffle] + inlineButtons)
+            .filter { $0.frame.maxX <= more.frame.minX }
+            .max { $0.frame.maxX < $1.frame.maxX }
+        if let preceding {
+            let gap = more.frame.minX - preceding.frame.maxX
+            XCTAssertEqual(
+                gap,
+                10,
+                accuracy: 1.5,
+                """
+                The actions menu starts \(gap) pt after the control in front of it ends (\(preceding.frame)) \
+                where the row spaces its controls 10 pt apart.
+                """
+            )
+        }
+
+        XCTAssertTrue(
+            duplicated.isEmpty,
+            "These header actions are drawn more than once because more than one shape of the action row is in the tree: \(duplicated.joined(separator: ", "))."
+        )
+        XCTAssertFalse(
+            inline.isEmpty,
+            "No header action is shown beside Play and Shuffle in a \(window.frame.width) pt window, so the row is not filling up with the actions that fit."
+        )
+        XCTContext.runActivity(named: "inline header actions: \(inline.joined(separator: ", "))") { _ in }
 
         // The header belongs to the scrolling content. It spent a while pinned above the list, which
         // is what this pins down: swiping the list has to carry the thumbnail with it.

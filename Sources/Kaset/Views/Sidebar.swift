@@ -5,6 +5,7 @@ import SwiftUI
 struct Sidebar: View {
     @Binding var selection: SidebarSelection?
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(AuthService.self) private var authService
     @Environment(\.colorScheme) private var colorScheme
     @State private var isPlaylistsExpanded = false
 
@@ -133,6 +134,15 @@ struct Sidebar: View {
             SidebarProfileView()
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 300)
+        // The sidebar's own Playlists list is drawn from the library, and every page's library control
+        // states membership from it too (see `loadIfNeeded`): the sidebar is the surface that exists in
+        // every window, so this is where the snapshot is filled in, once, for both. It waits for the
+        // session: asked before sign-in is restored the fetch is answered with an expired session, and
+        // the Library page would open on that error instead of its content.
+        .task(id: self.authService.state) {
+            guard self.authService.state.isLoggedIn else { return }
+            await self.libraryViewModel?.loadIfNeeded()
+        }
     }
 
     /// A navigation row: the label in full contrast, the icon in the app's red, and the row itself

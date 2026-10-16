@@ -832,6 +832,13 @@ struct MainWindow: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The library goes in here, around *every* page the content pane can show, because that is what
+        // asks for it: a playlist or album page states its library action from this window's snapshot, and
+        // a page that reached the pane through a branch that never injected it — a playlist opened straight
+        // from the sidebar was the one — read `nil` and answered "Add to Library" about items the account
+        // owned, with no write behind the click. The sidebar pane states the same injection for its own copy
+        // of the list; one statement per pane, and both panes are told.
+        .environment(self.libraryViewModel)
     }
 
     private func viewForSidebarSelection(_ selection: SidebarSelection) -> some View {
@@ -923,7 +930,6 @@ struct MainWindow: View {
                 if let vm = historyViewModel { HistoryView(viewModel: vm) }
             }
         }
-        .environment(self.libraryViewModel)
     }
 
     /// View shown while checking initial login status.

@@ -68,3 +68,4 @@ What becomes easier or more difficult because of this change?
 | [0030](0030-appkit-window-shell.md) | AppKit Window Shell (Split View + App-Owned Toolbar) | Accepted |
 | [0031](0031-window-model-and-player-surface-ownership.md) | Window Model and Single-Owner Player Surface | Accepted |
 | [0032](0032-two-singer-lyrics.md) | Two Singers in Synced Lyrics (Opposite Turns) | Accepted |
+| [0033](0033-playlist-header-action-row.md) | Playlist/Album Header Action Row (Primary Actions + One Overflow Menu) | Accepted |

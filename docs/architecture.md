@@ -123,8 +123,9 @@ Makes authenticated requests to YouTube Music's internal API:
 - `rateSong(videoId:rating:)` → Like/dislike a song
 - `subscribeToArtist(channelId:)` → Subscribe to an artist
 - `unsubscribeFromArtist(channelId:)` → Unsubscribe from an artist
-- `subscribeToPlaylist(playlistId:)` → Add playlist to library
-- `unsubscribeFromPlaylist(playlistId:)` → Remove playlist from library
+- `getLibraryContent()` → Library shelves; fetches the landing, the artists corpus and `FEmusic_liked_albums`, because saved albums are not in the landing
+- `subscribeToPlaylist(playlistId:)` → Add playlist to library (`like/like`, playlist IDs only: `PlaylistDetail.libraryId` prefers the target the page's own save action names, and falls back through the album's `OLAK5uy_…` audio playlist, never the `MPREb_…` page the album is browsed by)
+- `unsubscribeFromPlaylist(playlistId:)` → Remove playlist from library (`like/removelike`, same ID rule)
 
 ### API Parsers
 
@@ -908,6 +909,7 @@ The app uses Apple's **Liquid Glass** design language introduced in macOS 26.
 | `QueueView` / `LyricsView` | `.glassEffectTransition(.materialize)` |
 | Search field | `.glassEffect(.regular, in: .capsule)` |
 | Search suggestions | `.glassEffect(.regular, in: .rect(cornerRadius: 8))` |
+| Playlist/album header action row | `.buttonStyle(.glassProminent)` (Play) and `.buttonStyle(.glass)` (Shuffle, the secondary actions); the overflow "…" control is drawn by the row — `.buttonStyle(.plain)` + `.menuIndicator(.hidden)` + `.glassEffect(.regular.interactive(), in: .capsule)` on a labelled `Image` whose `.contentShape(.rect)` is what makes the whole 46 × 26 pt capsule clickable rather than just the glyph — because no menu or button style gives a `Menu` that look. See [ADR-0033](adr/0033-playlist-header-action-row.md) |
 
 ### Glass Effect Best Practices
 
@@ -1156,7 +1158,7 @@ Reusable components used across the app:
 | `InteractiveCardStyle` | Hover/press effects for cards |
 | `NavigationDestinationsModifier` | Centralized navigation destination handling |
 | `ShareContextMenu` | Context menu for sharing content |
-| `StartRadioContextMenu` | Context menu for starting radio/mix |
+| `StartRadioContextMenu` | Radio controls: context menu items for a song, plus the playlist/album radio action (see [ADR-0033](adr/0033-playlist-header-action-row.md)) |
 | `FavoritesSection` | Horizontal scrolling favorites row |
 | `FavoritesContextMenu` | Context menu for favorites management |
 | `SongActionsHelper` | Common song action handlers |

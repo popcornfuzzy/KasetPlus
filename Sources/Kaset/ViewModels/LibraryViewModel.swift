@@ -202,11 +202,36 @@ final class LibraryViewModel {
 
     /// Checks if a playlist is in the user's library.
     func isInLibrary(playlistId: String) -> Bool {
-        let normalizedId = Self.normalizedPlaylistId(playlistId)
+        self.isInLibrary(anyOf: [playlistId])
+    }
+
+    /// Checks whether the library holds an item known by any of these IDs.
+    ///
+    /// An item is not always the same ID on both sides: the library lists a saved album by its page
+    /// (`MPREb_…`) while the page itself is saved under its `OLAK5uy_…` audio playlist, so asking
+    /// with either spelling alone reports an album the account owns as unsaved.
+    func isInLibrary(anyOf playlistIds: some Sequence<String>) -> Bool {
+        let normalizedIds = Set(playlistIds.flatMap { Self.identityIds(for: $0) })
+        guard !normalizedIds.isEmpty else { return false }
+
         return self.libraryPlaylistIds.contains { storedId in
-            let normalizedStoredId = Self.normalizedPlaylistId(storedId)
-            return normalizedId == normalizedStoredId || playlistId == storedId
+            !normalizedIds.isDisjoint(with: Self.identityIds(for: storedId))
         }
+    }
+
+    /// The ID the library lists this item under, when it holds it, or `nil` when it does not.
+    func storedLibraryId(matching playlistIds: some Sequence<String>) -> String? {
+        let normalizedIds = Set(playlistIds.flatMap { Self.identityIds(for: $0) })
+        guard !normalizedIds.isEmpty else { return nil }
+
+        return self.libraryPlaylistIds.first { storedId in
+            !normalizedIds.isDisjoint(with: Self.identityIds(for: storedId))
+        }
+    }
+
+    /// Every spelling an ID can be stored under: the ID itself and its `VL`-stripped form.
+    private static func identityIds(for playlistId: String) -> Set<String> {
+        [playlistId, Self.normalizedPlaylistId(playlistId)]
     }
 
     /// Checks if a podcast show is in the user's library.
@@ -365,6 +390,17 @@ final class LibraryViewModel {
         self.pendingRemovedArtistIds.insert(normalizedArtistId)
         self.pendingRemovedArtistMatchCounts[normalizedArtistId] = 0
         self.libraryArtistIds.remove(normalizedArtistId)
+    }
+
+    /// Loads the library when this window has no snapshot of it yet.
+    ///
+    /// Membership — is this playlist in the library? — is answered from the snapshot, and a window that has
+    /// never shown the Library has none: `load()` runs on login and when the Library view appears, so every
+    /// other page answered "not in the library" about items the account owned, and offered to add them
+    /// again. A page that has to state membership fills it in; a snapshot already in hand is left alone.
+    func loadIfNeeded() async {
+        guard !self.hasLibrarySnapshot, self.loadingState != .loading else { return }
+        await self.load()
     }
 
     /// Loads library content (playlists, artists, and podcasts).

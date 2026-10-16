@@ -291,7 +291,9 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
             playlist: playlist,
             tracks: Self.defaultSongs(count: 10),
             duration: "30 minutes",
-            artists: [Artist(id: Self.mockCreditArtistId, name: Self.mockCreditArtistName)]
+            artists: [Artist(id: Self.mockCreditArtistId, name: Self.mockCreditArtistName)],
+            // The mix playlist a real header names, so the page's radio control is reachable here.
+            mixPlaylistId: "RDAMPL\(playlist.id)"
         )
         return PlaylistTracksResponse(detail: detail, continuationToken: nil)
     }

@@ -22,11 +22,24 @@ enum PlaylistParser {
         var availableSortOrders: [PlaylistSortOrder] = []
         /// The sort option the server currently has selected.
         var sortOrder: PlaylistSortOrder?
+        /// Mix playlist behind the header's "Start mix" action, when it advertised one.
+        var mixPlaylistId: String?
+        /// Playlist the header's own save/remove action targets, when it carried one.
+        var libraryPlaylistId: String?
     }
 
-    /// Parses library playlists from browse response.
+    /// Parses library playlists (and saved albums) from browse response.
     static func parseLibraryPlaylists(_ data: [String: Any]) -> [Playlist] {
         self.parseLibraryContent(data).playlists
+    }
+
+    /// Whether a library item's browse ID names an album rather than a playlist.
+    ///
+    /// The library lists a saved album by its page (`MPREb_…`) — or, in responses that carry the
+    /// audio playlist instead, by `OLAK5uy_…`. Both were dropped here before, which is why a saved
+    /// album never survived the refresh that followed adding it.
+    private static func isAlbumBrowseId(_ browseId: String) -> Bool {
+        browseId.hasPrefix("MPRE") || browseId.hasPrefix("OLAK")
     }
 
     /// Result type for library content parsing containing playlists, artists, and podcast shows.
@@ -352,6 +365,18 @@ enum PlaylistParser {
             )
             podcastShows.append(show)
             Self.logger.info("parseLibraryItem: Added podcast show: \(title)")
+        } else if Self.isAlbumBrowseId(browseId) {
+            // Saved album
+            let album = Playlist(
+                id: browseId,
+                title: title,
+                description: nil,
+                thumbnailURL: thumbnailURL,
+                trackCount: nil,
+                author: subtitle
+            )
+            playlists.append(album)
+            Self.logger.info("parseLibraryItem: Added album: \(title)")
         } else if browseId.hasPrefix("VL") || browseId.hasPrefix("PL") || browseId.hasPrefix("RDCLAK") {
             // Playlist (VL prefix for saved playlists, PL for playlist IDs, RDCLAK for radio playlists)
             let playlist = Playlist(
@@ -409,6 +434,18 @@ enum PlaylistParser {
             )
             podcastShows.append(show)
             Self.logger.info("parseLibraryItemFromResponsive: Added podcast show: \(title)")
+        } else if Self.isAlbumBrowseId(browseId) {
+            // Saved album
+            let album = Playlist(
+                id: browseId,
+                title: title,
+                description: nil,
+                thumbnailURL: thumbnailURL,
+                trackCount: nil,
+                author: subtitle
+            )
+            playlists.append(album)
+            Self.logger.info("parseLibraryItemFromResponsive: Added album: \(title)")
         } else if browseId.hasPrefix("VL") || browseId.hasPrefix("PL") {
             // Playlist
             let playlist = Playlist(
@@ -436,7 +473,7 @@ enum PlaylistParser {
 
     /// Parses playlist detail from browse response.
     static func parsePlaylistDetail(_ data: [String: Any], playlistId: String) -> PlaylistDetail {
-        let header = self.parsePlaylistHeader(data)
+        let header = self.parsePlaylistHeader(data, playlistId: playlistId)
 
         // Parse tracks
         let tracks = self.parsePlaylistTracks(data, fallbackThumbnailURL: header.thumbnailURL)
@@ -458,13 +495,15 @@ enum PlaylistParser {
             artists: header.artists,
             sortOrder: header.sortOrder,
             availableSortOrders: header.availableSortOrders,
-            isEditable: header.isEditable
+            isEditable: header.isEditable,
+            mixPlaylistId: header.mixPlaylistId,
+            libraryPlaylistId: header.libraryPlaylistId
         )
     }
 
     /// Parses playlist detail from browse response with pagination support.
     static func parsePlaylistWithContinuation(_ data: [String: Any], playlistId: String) -> PlaylistTracksResponse {
-        let header = self.parsePlaylistHeader(data)
+        let header = self.parsePlaylistHeader(data, playlistId: playlistId)
 
         // Parse tracks
         let tracks = self.parsePlaylistTracks(data, fallbackThumbnailURL: header.thumbnailURL)
@@ -486,7 +525,9 @@ enum PlaylistParser {
             artists: header.artists,
             sortOrder: header.sortOrder,
             availableSortOrders: header.availableSortOrders,
-            isEditable: header.isEditable
+            isEditable: header.isEditable,
+            mixPlaylistId: header.mixPlaylistId,
+            libraryPlaylistId: header.libraryPlaylistId
         )
         let continuationToken = Self.extractPlaylistContinuationToken(from: data)
 
@@ -963,11 +1004,13 @@ enum PlaylistParser {
 
     // MARK: - Header Parsing
 
-    private static func parsePlaylistHeader(_ data: [String: Any]) -> HeaderData {
+    private static func parsePlaylistHeader(_ data: [String: Any], playlistId: String) -> HeaderData {
         var header = HeaderData()
 
         header.isEditable = Self.hasEditableHeader(data)
         (header.availableSortOrders, header.sortOrder) = Self.parseSortState(data)
+        header.mixPlaylistId = Self.parseRadioPlaylistId(data, playlistId: playlistId)
+        header.libraryPlaylistId = Self.advertisedLibraryPlaylistId(in: data)
 
         if let headerDict = data["header"] as? [String: Any] {
             // Try each header renderer type in order of preference
@@ -988,6 +1031,164 @@ enum PlaylistParser {
         }
 
         return header
+    }
+
+    // MARK: - Radio ("Start mix")
+
+    /// The mix playlist behind this item's radio.
+    ///
+    /// Two sources, in order:
+    /// 1. The target the item's own header advertised. Verified against the signed-out browse
+    ///    responses for public playlists and an album: the actions menu carries a mix item beside
+    ///    "Shuffle play", whose `watchPlaylistEndpoint.playlistId` is `RDAMPL` + the item's audio
+    ///    playlist ID (`RDAMPLPL…` for a playlist, `RDAMPLOLAK5uy_…` for an album). The item's label
+    ///    is localized and its position is not fixed, so the ID's prefix is what identifies it — the
+    ///    sibling shuffle item points at the item itself. The endpoint's opaque `params` (`wAEB`) is
+    ///    dropped: probing `next` with and without it returns the same mix queue (songs, continuation
+    ///    and tuning chips).
+    /// 2. For a playlist, the ID YouTube Music builds for it — `RDAMPL` + the raw playlist ID.
+    ///    Confirmed as that literal target on three public playlists, and it is what an owned
+    ///    playlist's header leaves out (an owned header's own mix item has not been observed).
+    ///    Albums must not use this path: their mix names the `OLAK5uy_…` audio playlist, which only
+    ///    the header carries.
+    private static func parseRadioPlaylistId(_ data: [String: Any], playlistId: String) -> String? {
+        Self.advertisedMixPlaylistId(in: data) ?? Self.derivedPlaylistMixId(playlistId)
+    }
+
+    /// The mix target the item's own header advertised, wherever YouTube Music nested that header.
+    ///
+    /// A header can sit at `header` (owned playlists wrap theirs in
+    /// `musicEditablePlaylistDetailHeaderRenderer`) or inside the browse contents as a
+    /// `musicResponsiveHeaderRenderer`, so the header renderers are collected by name rather than
+    /// addressed by a fixed path — the same shape-agnostic scan the sort menu uses.
+    private static func advertisedMixPlaylistId(in data: [String: Any]) -> String? {
+        for renderer in Self.headerRenderers(in: data) {
+            if let playlistId = Self.firstMixPlaylistId(in: renderer) {
+                return playlistId
+            }
+        }
+
+        return nil
+    }
+
+    /// Keys under which YouTube Music stores a page's header renderer.
+    private static let headerRendererKeys = [
+        "musicResponsiveHeaderRenderer",
+        "musicEditablePlaylistDetailHeaderRenderer",
+        "musicDetailHeaderRenderer",
+        "musicImmersiveHeaderRenderer",
+        "musicVisualHeaderRenderer",
+    ]
+
+    /// Every header renderer anywhere in the response, including headers nested in a wrapping one.
+    private static func headerRenderers(in node: Any) -> [[String: Any]] {
+        var renderers: [[String: Any]] = []
+        Self.collectHeaderRenderers(in: node, into: &renderers)
+        return renderers
+    }
+
+    private static func collectHeaderRenderers(in node: Any, into renderers: inout [[String: Any]]) {
+        if let array = node as? [Any] {
+            for item in array {
+                Self.collectHeaderRenderers(in: item, into: &renderers)
+            }
+            return
+        }
+
+        guard let dictionary = node as? [String: Any] else { return }
+
+        for key in Self.headerRendererKeys {
+            if let renderer = dictionary[key] as? [String: Any] {
+                renderers.append(renderer)
+                Self.collectHeaderRenderers(in: renderer, into: &renderers)
+            }
+        }
+
+        // The response is walked in full: the header is the only place a mix target lives, but it can
+        // sit at any depth (a two-column page keeps it in its first section, an owned playlist wraps
+        // it one level deeper).
+        for (key, value) in dictionary where !Self.headerRendererKeys.contains(key) {
+            Self.collectHeaderRenderers(in: value, into: &renderers)
+        }
+    }
+
+    /// First `RDAMPL…` watch-playlist target anywhere inside a header subtree.
+    private static func firstMixPlaylistId(in node: Any) -> String? {
+        if let array = node as? [Any] {
+            for item in array {
+                if let playlistId = Self.firstMixPlaylistId(in: item) { return playlistId }
+            }
+            return nil
+        }
+
+        guard let dictionary = node as? [String: Any] else { return nil }
+
+        if let endpoint = dictionary["watchPlaylistEndpoint"] as? [String: Any],
+           let playlistId = endpoint["playlistId"] as? String,
+           playlistId.hasPrefix("RDAMPL")
+        {
+            return playlistId
+        }
+
+        for value in dictionary.values {
+            if let playlistId = Self.firstMixPlaylistId(in: value) { return playlistId }
+        }
+
+        return nil
+    }
+
+    // MARK: - Library action target
+
+    /// The playlist the header's own save/remove action names.
+    ///
+    /// The menu item that saves an item to the library carries its target under a `likeEndpoint`
+    /// (`target.playlistId`) — the ID YouTube Music itself writes. For an album that is its
+    /// `OLAK5uy_…` audio playlist rather than its `MPREb_…` page, which is exactly the distinction a
+    /// write has to get right. Only the header is scanned: a related item further down the page
+    /// carries a save action of its own, and its target would name that item instead.
+    private static func advertisedLibraryPlaylistId(in data: [String: Any]) -> String? {
+        for renderer in Self.headerRenderers(in: data) {
+            if let playlistId = Self.firstLikePlaylistId(in: renderer) {
+                return playlistId
+            }
+        }
+
+        return nil
+    }
+
+    /// First `likeEndpoint` playlist target anywhere inside a header subtree.
+    private static func firstLikePlaylistId(in node: Any) -> String? {
+        if let array = node as? [Any] {
+            for item in array {
+                if let playlistId = Self.firstLikePlaylistId(in: item) { return playlistId }
+            }
+            return nil
+        }
+
+        guard let dictionary = node as? [String: Any] else { return nil }
+
+        if let endpoint = dictionary["likeEndpoint"] as? [String: Any],
+           let target = endpoint["target"] as? [String: Any],
+           let playlistId = target["playlistId"] as? String,
+           !playlistId.isEmpty
+        {
+            return playlistId
+        }
+
+        for value in dictionary.values {
+            if let playlistId = Self.firstLikePlaylistId(in: value) { return playlistId }
+        }
+
+        return nil
+    }
+
+    /// Mix playlist YouTube Music names for a playlist: `RDAMPL` + the playlist's raw ID.
+    /// `nil` for anything that is not a user playlist — an album's radio needs the header's own
+    /// target, because it names the album's `OLAK5uy_…` audio playlist rather than its `MPREb_…` ID.
+    private static func derivedPlaylistMixId(_ playlistId: String) -> String? {
+        let rawId = playlistId.hasPrefix("VL") ? String(playlistId.dropFirst(2)) : playlistId
+        guard rawId.hasPrefix("PL") else { return nil }
+        return "RDAMPL\(rawId)"
     }
 
     // MARK: - Sort Order

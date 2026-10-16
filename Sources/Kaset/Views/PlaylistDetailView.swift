@@ -75,9 +75,101 @@ struct PlaylistDetailView: View {
     /// the action row lines up with the thumbnail's bottom edge.
     private static let artworkSize: CGFloat = 180
 
+    /// Height of every control in the header's action row.
+    ///
+    /// A `.controlSize(.large)` glass control is not one height: measured on macOS 26, a labelled glass
+    /// button comes out 28 pt tall while an icon-only one is 26, so the row's icon buttons sat 2 pt
+    /// short of the Play button beside them. The row fixes every control to the labelled height rather
+    /// than mixing the two (see ADR-0033 and `HeaderActionRowTests`).
+    private static let actionRowControlHeight: CGFloat = 28
+
+    /// The size of the overflow control, which the row draws itself.
+    ///
+    /// Measured in the running app, a `.controlSize(.large)` glyph glass button comes out 46 by 26 pt.
+    /// A `Menu` cannot be given that size by a menu or button style: left alone, macOS draws its own
+    /// pull-down chrome over the row (a flat pill, 61.5 pt wide, with a chevron), and under
+    /// `.menuStyle(.button)` that indicator costs another 27.5 pt (74.5 against 47 without) while the
+    /// row's `.buttonStyle(.glass)` still does not reach the control. So the overflow control is plain
+    /// and states its own size and material — see `moreActionsMenu`. `HeaderActionRowTests` holds it to
+    /// the size the glyph buttons beside it come out at.
+    private static let overflowControlSize = CGSize(width: 46, height: 26)
+
+    /// The shapes the action row can take, widest first.
+    ///
+    /// The two widest name their actions; every shape after them shows the same actions as glyphs. The
+    /// list is one source of both the row that is drawn and the widths it is measured as, so the ladder
+    /// cannot drift from what the row can show (`HeaderActionRowTests` walks it).
+    private static let shapeLadder: [HeaderRowShape] = [
+        HeaderRowShape(actions: [.radio, .playNext, .addToQueue, .library], showsTitles: true),
+        HeaderRowShape(actions: [.radio, .playNext, .addToQueue], showsTitles: true),
+        HeaderRowShape(actions: [.radio, .playNext, .addToQueue, .library, .refine], showsTitles: false),
+        HeaderRowShape(actions: [.radio, .playNext, .addToQueue, .library], showsTitles: false),
+        HeaderRowShape(actions: [.radio, .playNext, .addToQueue], showsTitles: false),
+        HeaderRowShape(actions: [.radio, .playNext], showsTitles: false),
+        HeaderRowShape(actions: [.radio], showsTitles: false),
+        HeaderRowShape(actions: [], showsTitles: false),
+    ]
+
+    /// One shape of the action row: which of the page's secondary actions it renders inline, and whether
+    /// it gives them their names.
+    private struct HeaderRowShape {
+        let actions: HeaderAction
+        let showsTitles: Bool
+    }
+
+    /// The width the header offers the action row, and the width each shape of the ladder came out at,
+    /// both measured by the row itself. `shapeWidths` starts empty: until a shape has been measured the
+    /// row shows the narrowest one, which is the only shape that cannot overflow a row it has not been
+    /// measured against.
+    @State private var rowAvailableWidth: CGFloat = 0
+    @State private var shapeWidths: [CGFloat] = Array(repeating: 0, count: PlaylistDetailView.shapeLadder.count)
+    @State private var rowShapeIndex: Int = PlaylistDetailView.shapeLadder.count - 1
+
+    /// Every ID the library could know this page by. Until the detail's header has loaded there is nothing
+    /// to derive, and the page's own ID stands in — which is what the playlist case wants anyway.
+    private var libraryMatchIds: [String] {
+        self.viewModel.playlistDetail?.libraryMatchIds.sorted() ?? [self.playlist.id]
+    }
+
     /// Computed property to check if playlist is in library.
     private var isInLibrary: Bool {
-        self.libraryViewModel?.isInLibrary(playlistId: self.playlist.id) ?? false
+        self.libraryViewModel?.isInLibrary(anyOf: self.libraryMatchIds) ?? false
+    }
+
+    /// The ID a library write goes to, or `nil` when this page has nothing the library can be told.
+    ///
+    /// The detail's own `libraryId` first — a playlist's own ID, or an album's `OLAK5uy_…` audio playlist,
+    /// named by the page's own save action or its radio target. Failing that, the ID the library *already*
+    /// lists this page under, which is what lets a radio playlist the library's listing carries be dropped
+    /// again. An album's page ID is refused as a target in both cases: `like/like` answers `MPREb_…` with
+    /// `HTTP 404`, so writing it is the dead control this action used to be (see ADR-0033).
+    private var libraryWriteId: String? {
+        if let libraryId = self.viewModel.playlistDetail?.libraryId {
+            return libraryId
+        }
+
+        guard let storedId = self.libraryViewModel?.storedLibraryId(matching: self.libraryMatchIds),
+              !Playlist.isAlbumPageId(storedId)
+        else {
+            return nil
+        }
+
+        return storedId
+    }
+
+    /// The page as the library addresses it, which is not always as the page addresses itself.
+    private var libraryPlaylist: Playlist {
+        guard let writeId = self.libraryWriteId, writeId != self.playlist.id else {
+            return self.playlist
+        }
+        return Playlist(
+            id: writeId,
+            title: self.playlist.title,
+            description: self.playlist.description,
+            thumbnailURL: self.playlist.thumbnailURL,
+            trackCount: self.playlist.trackCount,
+            author: self.playlist.author
+        )
     }
 
     private let logger = DiagnosticsLogger.ai
@@ -129,8 +221,17 @@ struct PlaylistDetailView: View {
             }
         }
         .task {
-            if self.viewModel.loadingState == .idle {
-                await self.viewModel.load()
+            // The header's library control states membership, which is read off the window's library
+            // snapshot — and a window that has never shown the Library has none, so the control read "Add
+            // to Library" on pages the account already owned. The two loads go together: the page never
+            // waits on the library.
+            await withTaskGroup(of: Void.self) { group in
+                if let libraryViewModel = self.libraryViewModel {
+                    group.addTask { await libraryViewModel.loadIfNeeded() }
+                }
+                if self.viewModel.loadingState == .idle {
+                    group.addTask { await self.viewModel.load() }
+                }
             }
         }
         .refreshable {
@@ -285,6 +386,11 @@ struct PlaylistDetailView: View {
     /// the box is then a definite size, so the row's height is the 180 pt thumbnail plus the insets and
     /// the buttons land on its baseline. A `Spacer` left the header free to absorb the row's height and
     /// the buttons drifted ~140 pt below the credits (see ADR-0023).
+    ///
+    /// The rename popover and the delete alert hang off the header rather than off the action button
+    /// that opens them: `ViewThatFits` measures every shape of the row at once (see `headerActionRow`),
+    /// so a presentation attached inside the row would be built once per shape and every copy would
+    /// answer the same binding.
     private func headerView(_ detail: PlaylistDetail) -> some View {
         ZStack(alignment: .bottomLeading) {
             HStack(alignment: .top, spacing: 20) {
@@ -307,7 +413,8 @@ struct PlaylistDetailView: View {
                 .fadeIn(duration: 0.3)
                 .accessibilityIdentifier(AccessibilityID.PlaylistDetail.artwork)
 
-                // Info
+                // Info. Type, title, credits, then the track count and duration — the same order
+                // Apple Music's album and playlist headers read in.
                 VStack(alignment: .leading, spacing: 8) {
                     Text(detail.isAlbum ? String(localized: "Album") : String(localized: "Playlist"))
                         .font(.subheadline)
@@ -320,12 +427,31 @@ struct PlaylistDetailView: View {
                         .foregroundStyle(.primary)
 
                     self.creditsView(detail)
+
+                    Text(self.metadataText(for: detail))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(AccessibilityID.PlaylistDetail.metadata)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             self.headerButtons(detail)
                 .padding(.leading, Self.artworkSize + 20)
+        }
+        .popover(isPresented: self.$showRenamePlaylistPopover, arrowEdge: .top) {
+            self.renamePlaylistPopover
+        }
+        .alert("Delete Playlist?", isPresented: self.$showDeletePlaylistAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                Task {
+                    await self.deletePlaylist()
+                }
+            }
+            .disabled(self.isDeletingPlaylist)
+        } message: {
+            Text("This removes the playlist from YouTube Music. This action cannot be undone.")
         }
     }
 
@@ -405,128 +531,90 @@ struct PlaylistDetailView: View {
         }
     }
 
+    // MARK: - Header Actions
+
+    /// A secondary action the header can offer.
+    ///
+    /// The row and its overflow menu split one set of these: whichever actions fit beside Play and
+    /// Shuffle stay in the row as controls, and the rest move into the menu. Nothing is unreachable at
+    /// a narrow width, and nothing sits in a menu while the row has room to show it (ADR-0033).
+    struct HeaderAction: OptionSet {
+        let rawValue: Int
+
+        static let radio = HeaderAction(rawValue: 1 << 0)
+        static let playNext = HeaderAction(rawValue: 1 << 1)
+        static let addToQueue = HeaderAction(rawValue: 1 << 2)
+        static let library = HeaderAction(rawValue: 1 << 3)
+        static let refine = HeaderAction(rawValue: 1 << 4)
+    }
+
+    /// The actions this page can offer, in the order the row gives them room.
+    private func availableHeaderActions(for detail: PlaylistDetail) -> HeaderAction {
+        var actions: HeaderAction = [.playNext, .addToQueue]
+        if self.offersLibraryAction(for: detail) {
+            actions.insert(.library)
+        }
+        if detail.mixPlaylistId != nil {
+            actions.insert(.radio)
+        }
+        if !detail.isAlbum {
+            actions.insert(.refine)
+        }
+        return actions
+    }
+
+    /// Whether this page is offered the library action at all.
+    ///
+    /// The action is a `like/like` write with an ID as a `playlistId` (`YTMusicClient.subscribeToPlaylist`),
+    /// so the page needs an ID the library accepts: a playlist's own ID, or an album's `OLAK5uy_…` audio
+    /// playlist (`PlaylistDetail.libraryId`), or — for a page the library already holds, whose control is
+    /// then "Remove from Library" — the ID the library lists it under. A page with none of those is not
+    /// offered the action: a generated mix (`RD…`), Liked Music, and an album whose header named no target.
+    ///
+    /// Liked Music is refused first: its ID can appear in the library listing without there being a
+    /// membership behind it, and "Remove from Library" beside the library's own list of liked songs reads
+    /// as a way to empty it.
+    private func offersLibraryAction(for detail: PlaylistDetail) -> Bool {
+        if detail.isLikedMusic {
+            return false
+        }
+        return self.libraryWriteId != nil
+    }
+
+    /// The header's action row: Play, Shuffle, every action that fits beside them, and one overflow
+    /// menu holding the actions that did not.
+    ///
+    /// The row is one of a fixed ladder of shapes, widest first. It measures every shape offscreen (see
+    /// `shapeMeasurers`) and draws the widest one that fits the width the header offers it, so the row
+    /// fills up as the window widens and folds back into the menu as it narrows. Each shape ends in the
+    /// same "…" menu, and each shape's menu carries exactly the actions its own row left out.
+    ///
+    /// The shapes are graded rather than just trimmed: the two widest name their actions and every shape
+    /// after them shows the same actions as glyphs. Measured, naming a secondary action costs 134 pt of
+    /// row where the same action as a glyph costs 53: the four named actions need 735 pt of row, the same
+    /// four as glyphs 408, all five as glyphs 465. That grade is what gives the row something to give back
+    /// while the window is still wide — without it the ladder's widest shape is 465 pt of a row that is
+    /// already 650 pt at the app's narrowest window, so nothing would ever move.
+    ///
+    /// The shape is measured here rather than left to `ViewThatFits`, which picks a shape by laying all of
+    /// them out and keeps its choice to itself — it cannot say what it picked, and every shape it holds
+    /// stays in the layout and the accessibility tree. Measuring makes the choice the row's own state, so
+    /// only the shape on show is built for display. `HeaderActionRowTests` walks the ladder and holds the two things
+    /// the choice relies on: every shape fits the row it is offered, and no shape is wider than the one
+    /// above it (a ladder out of order makes the widest fitting shape the wrong one).
     private func headerButtons(_ detail: PlaylistDetail) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 16) {
-                // Play all button
-                Button {
-                    let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    self.playAll(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
-                } label: {
-                    Label("Play", systemImage: "play.fill")
+        let shape = Self.shapeLadder[self.rowShapeIndex]
+
+        return VStack(alignment: .leading, spacing: 10) {
+            self.headerActionRow(detail, inline: shape.actions, showsTitles: shape.showsTitles)
+                // The frame takes the width it is offered rather than the width its content wants, which is
+                // what makes the measurement below the header's width: a shape that outgrows the row cannot
+                // widen the row it is being measured against, so the choice cannot chase its own tail.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(alignment: .leading) { self.shapeMeasurers(detail) }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    self.setRowWidth(width)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(detail.tracks.isEmpty)
-                .accessibilityIdentifier(AccessibilityID.PlaylistDetail.playButton)
-
-                // Shuffle button
-                Button {
-                    let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    self.playShuffled(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
-                } label: {
-                    Image(systemName: "shuffle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(detail.tracks.isEmpty)
-
-                // Play Next button
-                Button {
-                    let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    SongActionsHelper.addSongsToQueueNext(
-                        detail.tracks,
-                        playerService: self.playerService,
-                        fallbackArtist: detail.author,
-                        fallbackAlbum: fallbackAlbum
-                    )
-                } label: {
-                    Label("Play Next", systemImage: "text.insert")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(detail.tracks.isEmpty)
-
-                // Add to Queue button
-                Button {
-                    let fallbackAlbum = self.makeFallbackAlbum(from: detail)
-                    SongActionsHelper.addSongsToQueueLast(
-                        detail.tracks,
-                        playerService: self.playerService,
-                        fallbackArtist: detail.author,
-                        fallbackAlbum: fallbackAlbum
-                    )
-                } label: {
-                    Label("Add to Queue", systemImage: "text.append")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(detail.tracks.isEmpty)
-
-                // Add/Remove Library button
-                let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
-                if !currentlyInLibrary {
-                    Button {
-                        self.toggleLibrary()
-                    } label: {
-                        Label(String(localized: "Add to Library"), systemImage: "plus.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                }
-
-                // Refine Playlist button (AI-powered)
-                if !detail.isAlbum {
-                    Menu {
-                        Button {
-                            self.playlistTitleDraft = detail.title
-                            self.playlistActionError = nil
-                            self.showRenamePlaylistPopover = true
-                        } label: {
-                            Label("Rename Playlist", systemImage: "pencil")
-                        }
-
-                        Button(role: .destructive) {
-                            self.playlistActionError = nil
-                            self.showDeletePlaylistAlert = true
-                        } label: {
-                            Label("Delete Playlist", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(self.isRenamingPlaylist || self.isDeletingPlaylist)
-                    .popover(isPresented: self.$showRenamePlaylistPopover, arrowEdge: .top) {
-                        self.renamePlaylistPopover
-                    }
-                    .alert("Delete Playlist?", isPresented: self.$showDeletePlaylistAlert) {
-                        Button("Cancel", role: .cancel) {}
-                        Button("Delete", role: .destructive) {
-                            Task {
-                                await self.deletePlaylist()
-                            }
-                        }
-                        .disabled(self.isDeletingPlaylist)
-                    } message: {
-                        Text("This removes the playlist from YouTube Music. This action cannot be undone.")
-                    }
-
-                    Button {
-                        self.showRefineSheet = true
-                    } label: {
-                        Label("Refine", systemImage: "sparkles")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .requiresIntelligence()
-                }
-            }
-
-            Text(self.metadataText(for: detail))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
 
             if let playlistActionError {
                 Text(playlistActionError)
@@ -542,6 +630,377 @@ struct PlaylistDetailView: View {
                     .lineLimit(2)
             }
         }
+        .task(id: detail.id) { self.logLibraryControl(detail) }
+    }
+
+    /// States what the header resolved for its library control, so a wrong label can be told apart from a
+    /// missing snapshot without a debugger: `listing` is what the window's library holds, `matches` the
+    /// spellings the page asked it about, and `inLibrary` what the control reads from the two.
+    private func logLibraryControl(_ detail: PlaylistDetail) {
+        let listing = self.libraryViewModel?.libraryPlaylistIds ?? []
+        let matches = self.libraryMatchIds
+        let overlap = matches.filter { match in
+            listing.contains { $0.hasPrefix(String(match.prefix(4))) }
+        }.count
+        self.logger.info(
+            "Library control: vm=\(self.libraryViewModel != nil, privacy: .public) listing=\(listing.count, privacy: .public) matches=\(matches.map { String($0.prefix(4)) }.joined(separator: "|"), privacy: .public) overlap=\(overlap, privacy: .public) inLibrary=\(self.isInLibrary, privacy: .public) write=\(self.libraryWriteId.map { String($0.prefix(6)) } ?? "none", privacy: .public) album=\(detail.isAlbum, privacy: .public) editable=\(detail.isEditable, privacy: .public)"
+        )
+    }
+
+    /// Every shape of the ladder at its own ideal width, laid out invisibly so the row can measure what it
+    /// has room for.
+    ///
+    /// `fixedSize` is what keeps a shape's width its own instead of the row's: the row is wide enough for
+    /// the widest shape, and without it every shape would be measured as that one width. The shapes are
+    /// hidden and out of the accessibility tree — they are layouts, not controls, and a second copy of
+    /// every action in the tree would read as the same action twice.
+    private func shapeMeasurers(_ detail: PlaylistDetail) -> some View {
+        HStack(spacing: 10) {
+            ForEach(Self.shapeLadder.indices, id: \.self) { index in
+                let shape = Self.shapeLadder[index]
+                self.headerActionRow(detail, inline: shape.actions, showsTitles: shape.showsTitles)
+                    .fixedSize()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                        self.recordShapeWidth(index: index, width: width)
+                    }
+            }
+        }
+        .hidden()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The row's width, and the shape that fits it.
+    private func setRowWidth(_ width: CGFloat) {
+        guard abs(width - self.rowAvailableWidth) > 0.25 else { return }
+        self.rowAvailableWidth = width
+        self.applyFittingShape()
+    }
+
+    /// One shape's measured width, and the shape that fits with it on hand.
+    private func recordShapeWidth(index: Int, width: CGFloat) {
+        guard self.shapeWidths.indices.contains(index), abs(self.shapeWidths[index] - width) > 0.25 else { return }
+        self.shapeWidths[index] = width
+        self.applyFittingShape()
+    }
+
+    /// Switches the row to the widest shape that fits it.
+    ///
+    /// The switch is deliberately not animated. Dragged across the rungs, a window resizes continuously, and
+    /// interpolating the row through its shapes made every resize a moving picture of buttons growing and
+    /// shrinking under the pointer — the row read as squirming rather than as a row that has changed what it
+    /// shows. Stated in one step the row still changes shape while the window is dragged; it just does it at
+    /// the moment a rung is crossed instead of drawing the way there.
+    private func applyFittingShape() {
+        let index = Self.fittingShapeIndex(for: self.rowAvailableWidth, widths: self.shapeWidths)
+        guard index != self.rowShapeIndex else { return }
+        self.rowShapeIndex = index
+    }
+
+    /// The widest shape in `widths` that fits `width`, or the narrowest shape when none of them fits or
+    /// none has been measured yet.
+    ///
+    /// The ladder is widest-first, which is what makes the first shape that fits the widest one that does.
+    static func fittingShapeIndex(for width: CGFloat, widths: [CGFloat]) -> Int {
+        widths.indices.first { index in
+            widths[index] > 0 && widths[index] <= width
+        } ?? widths.count - 1
+    }
+
+    /// One shape of the action row: the primary controls, the requested actions this page has, and a
+    /// menu for the rest.
+    private func headerActionRow(
+        _ detail: PlaylistDetail,
+        inline requested: HeaderAction,
+        showsTitles: Bool = false
+    ) -> some View {
+        let inline = self.availableHeaderActions(for: detail).intersection(requested)
+
+        return HStack(spacing: 10) {
+            self.playButton(detail)
+            self.shuffleButton(detail)
+
+            if inline.contains(.radio), let mixPlaylistId = detail.mixPlaylistId {
+                self.headerActionButton(
+                    title: String(localized: "Start Radio"),
+                    systemImage: StartRadioContextMenu.systemImage,
+                    identifier: AccessibilityID.PlaylistDetail.radioButton,
+                    showsTitle: showsTitles
+                ) {
+                    StartRadioContextMenu.startMix(
+                        mixPlaylistId: mixPlaylistId,
+                        playerService: self.playerService
+                    )
+                }
+            }
+
+            if inline.contains(.playNext) {
+                self.headerActionButton(
+                    title: String(localized: "Play Next"),
+                    systemImage: "text.insert",
+                    identifier: AccessibilityID.PlaylistDetail.playNextButton,
+                    showsTitle: showsTitles,
+                    isDisabled: detail.tracks.isEmpty
+                ) {
+                    SongActionsHelper.addSongsToQueueNext(
+                        detail.tracks,
+                        playerService: self.playerService,
+                        fallbackArtist: detail.author,
+                        fallbackAlbum: self.makeFallbackAlbum(from: detail)
+                    )
+                }
+            }
+
+            if inline.contains(.addToQueue) {
+                self.headerActionButton(
+                    title: String(localized: "Add to Queue"),
+                    systemImage: "text.append",
+                    identifier: AccessibilityID.PlaylistDetail.addToQueueButton,
+                    showsTitle: showsTitles,
+                    isDisabled: detail.tracks.isEmpty
+                ) {
+                    SongActionsHelper.addSongsToQueueLast(
+                        detail.tracks,
+                        playerService: self.playerService,
+                        fallbackArtist: detail.author,
+                        fallbackAlbum: self.makeFallbackAlbum(from: detail)
+                    )
+                }
+            }
+
+            if inline.contains(.library) {
+                let isInLibrary = self.isInLibrary || self.isAddedToLibrary
+                self.headerActionButton(
+                    title: isInLibrary ? String(localized: "Remove from Library") : String(localized: "Add to Library"),
+                    systemImage: isInLibrary ? "minus.circle" : "plus.circle",
+                    identifier: AccessibilityID.PlaylistDetail.libraryButton,
+                    showsTitle: showsTitles
+                ) {
+                    self.toggleLibrary()
+                }
+            }
+
+            if inline.contains(.refine) {
+                self.headerActionButton(
+                    title: String(localized: "Refine Playlist"),
+                    systemImage: "sparkles",
+                    identifier: AccessibilityID.PlaylistDetail.refineButton,
+                    showsTitle: showsTitles
+                ) {
+                    self.showRefineSheet = true
+                }
+                .requiresIntelligence()
+            }
+
+            // Only when it holds something: on an album the row can fit every action the page has, and an
+            // empty menu is a control that opens nothing.
+            if self.hasOverflowItems(for: detail, inline: inline) {
+                self.moreActionsMenu(detail, inline: inline)
+            }
+        }
+    }
+
+    private func playButton(_ detail: PlaylistDetail) -> some View {
+        Button {
+            let fallbackAlbum = self.makeFallbackAlbum(from: detail)
+            self.playAll(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
+        } label: {
+            Label("Play", systemImage: "play.fill")
+        }
+        .buttonStyle(.glassProminent)
+        .controlSize(.large)
+        .frame(height: Self.actionRowControlHeight)
+        .disabled(detail.tracks.isEmpty)
+        .accessibilityIdentifier(AccessibilityID.PlaylistDetail.playButton)
+    }
+
+    private func shuffleButton(_ detail: PlaylistDetail) -> some View {
+        Button {
+            let fallbackAlbum = self.makeFallbackAlbum(from: detail)
+            self.playShuffled(detail.tracks, fallbackArtist: detail.author, fallbackAlbum: fallbackAlbum)
+        } label: {
+            Image(systemName: "shuffle")
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(height: Self.actionRowControlHeight)
+        .disabled(detail.tracks.isEmpty)
+        .help("Shuffle")
+        .accessibilityLabel("Shuffle")
+        .accessibilityIdentifier(AccessibilityID.PlaylistDetail.shuffleButton)
+    }
+
+    /// One action of the row, styled exactly like the controls beside it.
+    ///
+    /// `showsTitle` is the row's own responsiveness: its widest shapes name their actions and its
+    /// narrower shapes show the same actions as glyphs. Measured, naming a secondary action costs
+    /// 134 pt of row where the same action as a glyph costs 53, so the named shapes are the ones with
+    /// room to give back as the window narrows. A glyph keeps its action's name as the tooltip and as
+    /// its accessibility label, so a narrower shape loses pixels, not meaning.
+    private func headerActionButton(
+        title: String,
+        systemImage: String,
+        identifier: String,
+        showsTitle: Bool,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            if showsTitle {
+                Label(title, systemImage: systemImage)
+            } else {
+                Image(systemName: systemImage)
+            }
+        }
+        .buttonStyle(.glass)
+        .controlSize(.large)
+        .frame(height: Self.actionRowControlHeight)
+        .disabled(isDisabled)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
+    }
+
+    /// Whether the row's overflow menu would hold anything.
+    ///
+    /// An album that fits whole — its radio, its two queue actions and the library action all in the row —
+    /// leaves the menu with nothing: the management section below is for a playlist the reader owns. A
+    /// `Menu` with no items is a control that opens nothing, and that is exactly how it reads on an album.
+    private func hasOverflowItems(for detail: PlaylistDetail, inline: HeaderAction) -> Bool {
+        Self.showsOverflowMenu(
+            available: self.availableHeaderActions(for: detail),
+            inline: inline,
+            isEditable: detail.isEditable
+        )
+    }
+
+    /// Whether the overflow menu would hold anything: what the row had no room for, or the page's own
+    /// management actions.
+    ///
+    /// An album that fits whole — its radio, its two queue actions and the library action all in the row —
+    /// leaves the menu with nothing, because an album has no playlist to rename or delete. A `Menu` with no
+    /// items is a control that opens nothing, and that is exactly how it read on an album page: the three
+    /// dots took a click and answered with an empty menu. The row draws it only when something is behind it.
+    static func showsOverflowMenu(available: HeaderAction, inline: HeaderAction, isEditable: Bool) -> Bool {
+        !available.subtracting(inline).isEmpty || isEditable
+    }
+
+    /// The row's overflow menu: the actions the row had no room for, then the playlist's own actions.
+    ///
+    /// The playlist's management — Rename and Delete — is always here: it is a menu's business rather
+    /// than a row's, and the popover and alert it presents belong to the header (see `headerView`).
+    ///
+    /// It has to read as the button it sits beside, and a `Menu` cannot be given that look by a menu or
+    /// button style. Left alone it keeps macOS's own pull-down chrome — a flat pill, measured 61.5 pt
+    /// wide, with a chevron — over the row's glass. Under `.menuStyle(.button)` the chevron costs 27.5 pt
+    /// (74.5 against 47 without) and the row's `.buttonStyle(.glass)` still does not reach the control.
+    /// So the control is plain: no chrome of its own, no indicator, and a stated size and material — the
+    /// same 46 by 26 pt Liquid Glass capsule the glyph buttons beside it come out at, measured in the
+    /// running app. See ADR-0033.
+    private func moreActionsMenu(_ detail: PlaylistDetail, inline: HeaderAction) -> some View {
+        let fallbackAlbum = self.makeFallbackAlbum(from: detail)
+        let isInLibrary = self.isInLibrary || self.isAddedToLibrary
+        let inMenu = self.availableHeaderActions(for: detail).subtracting(inline)
+
+        return Menu {
+            if inMenu.contains(.radio), let mixPlaylistId = detail.mixPlaylistId {
+                Button {
+                    StartRadioContextMenu.startMix(
+                        mixPlaylistId: mixPlaylistId,
+                        playerService: self.playerService
+                    )
+                } label: {
+                    Label("Start Radio", systemImage: StartRadioContextMenu.systemImage)
+                }
+                .accessibilityIdentifier(AccessibilityID.PlaylistDetail.radioButton)
+            }
+
+            if inMenu.contains(.playNext) {
+                Button {
+                    SongActionsHelper.addSongsToQueueNext(
+                        detail.tracks,
+                        playerService: self.playerService,
+                        fallbackArtist: detail.author,
+                        fallbackAlbum: fallbackAlbum
+                    )
+                } label: {
+                    Label("Play Next", systemImage: "text.insert")
+                }
+                .disabled(detail.tracks.isEmpty)
+            }
+
+            if inMenu.contains(.addToQueue) {
+                Button {
+                    SongActionsHelper.addSongsToQueueLast(
+                        detail.tracks,
+                        playerService: self.playerService,
+                        fallbackArtist: detail.author,
+                        fallbackAlbum: fallbackAlbum
+                    )
+                } label: {
+                    Label("Add to Queue", systemImage: "text.append")
+                }
+                .disabled(detail.tracks.isEmpty)
+            }
+
+            if inMenu.contains(.library) {
+                Button {
+                    self.toggleLibrary()
+                } label: {
+                    if isInLibrary {
+                        Label(String(localized: "Remove from Library"), systemImage: "minus.circle")
+                    } else {
+                        Label(String(localized: "Add to Library"), systemImage: "plus.circle")
+                    }
+                }
+            }
+
+            if inMenu.contains(.refine) {
+                Button {
+                    self.showRefineSheet = true
+                } label: {
+                    Label("Refine Playlist", systemImage: "sparkles")
+                }
+                .requiresIntelligence()
+            }
+
+            // An album has no playlist to manage, and a playlist that cannot be written to is not
+            // offered writes it would answer `HTTP 400` for.
+            if !detail.isAlbum {
+                Divider()
+
+                Button {
+                    self.playlistTitleDraft = detail.title
+                    self.playlistActionError = nil
+                    self.showRenamePlaylistPopover = true
+                } label: {
+                    Label("Rename Playlist", systemImage: "pencil")
+                }
+
+                Button(role: .destructive) {
+                    self.playlistActionError = nil
+                    self.showDeletePlaylistAlert = true
+                } label: {
+                    Label("Delete Playlist", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: Self.overflowControlSize.width, height: Self.overflowControlSize.height)
+                // One control, not three dots floating in a capsule. `.buttonStyle(.plain)` leaves a menu
+                // hit-testing its label's *ink* rather than the label's 46 × 26 pt frame, so without this
+                // the control opened only when a click landed on the ellipsis itself and the glass around
+                // it was dead — the same fix the toolbar's back control carries.
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .frame(height: Self.actionRowControlHeight)
+        .disabled(self.isRenamingPlaylist || self.isDeletingPlaylist)
+        .help("More")
+        .accessibilityLabel("More")
+        .accessibilityIdentifier(AccessibilityID.PlaylistDetail.moreButton)
     }
 
     private func metadataText(for detail: PlaylistDetail) -> String {
@@ -781,22 +1240,37 @@ struct PlaylistDetailView: View {
 
     private func toggleLibrary() {
         let currentlyInLibrary = self.isInLibrary || self.isAddedToLibrary
+        // The library's own item, not the page's: an album is saved under its audio playlist. The removal
+        // below reaches a playlist the library already holds, which is the case the action is kept for on a
+        // page whose own ID the library cannot hold.
+        let item = self.libraryPlaylist
         HapticService.success()
         Task {
-            if currentlyInLibrary {
+            let succeeded: Bool = if currentlyInLibrary {
                 await SongActionsHelper.removePlaylistFromLibrary(
-                    self.playlist,
+                    item,
                     client: self.viewModel.client,
                     libraryViewModel: self.libraryViewModel
                 )
-                self.isAddedToLibrary = false
             } else {
                 await SongActionsHelper.addPlaylistToLibrary(
-                    self.playlist,
+                    item,
                     client: self.viewModel.client,
                     libraryViewModel: self.libraryViewModel
                 )
-                self.isAddedToLibrary = true
+            }
+
+            // The control follows the server, not the click. Flipping it whatever happened left the page
+            // claiming an item was saved when the write had failed, and the next click then tried to remove
+            // something that was never added.
+            if succeeded {
+                self.isAddedToLibrary = !currentlyInLibrary
+                self.playlistActionError = nil
+            } else {
+                self.isAddedToLibrary = false
+                self.playlistActionError = currentlyInLibrary
+                    ? String(localized: "Couldn't remove this from your library. Try again.")
+                    : String(localized: "Couldn't add this to your library. Try again.")
             }
         }
     }

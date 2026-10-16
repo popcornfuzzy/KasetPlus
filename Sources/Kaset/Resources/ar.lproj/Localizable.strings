@@ -154,6 +154,10 @@
 
 "Could not create AI session" = "تعذّر إنشاء جلسة الذكاء الاصطناعي";
 
+"Couldn't add this to your library. Try again." = "تعذّر إضافة هذا إلى مكتبتك. حاول مرة أخرى.";
+
+"Couldn't remove this from your library. Try again." = "تعذّر إزالة هذا من مكتبتك. حاول مرة أخرى.";
+
 "Couldn't search for music" = "تعذّر البحث عن الموسيقى";
 
 "Create or save playlists on YouTube Music to see them here." = "أنشئ أو احفظ قوائم التشغيل على YouTube Music لتراها هنا.";
@@ -414,6 +418,8 @@
 "Refine" = "تحسين";
 
 "Refine Playlist" = "تحسين قائمة التشغيل";
+
+"Remove from Library" = "إزالة من المكتبة";
 
 "Release Notes" = "ملاحظات الإصدار";
 

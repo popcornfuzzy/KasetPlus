@@ -41,6 +41,14 @@ enum TestAccessibilityID {
     enum PlaylistDetail {
         static let artwork = "playlistDetailView.artwork"
         static let playButton = "playlistDetailView.playButton"
+        static let shuffleButton = "playlistDetailView.shuffleButton"
+        static let moreButton = "playlistDetailView.moreButton"
+        static let radioButton = "playlistDetailView.radioButton"
+        static let playNextButton = "playlistDetailView.playNextButton"
+        static let addToQueueButton = "playlistDetailView.addToQueueButton"
+        static let libraryButton = "playlistDetailView.libraryButton"
+        static let refineButton = "playlistDetailView.refineButton"
+        static let metadata = "playlistDetailView.metadata"
     }
 
     // MARK: - Sidebar Profile

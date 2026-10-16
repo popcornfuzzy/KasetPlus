@@ -157,7 +157,8 @@ final class PlaylistDetailViewModel {
                         artists: detail.artists,
                         sortOrder: detail.sortOrder,
                         availableSortOrders: detail.availableSortOrders,
-                        isEditable: detail.isEditable
+                        isEditable: detail.isEditable,
+                        mixPlaylistId: detail.mixPlaylistId
                     )
                     hasMore = false
                 }
@@ -202,7 +203,8 @@ final class PlaylistDetailViewModel {
                 artists: detail.artists,
                 sortOrder: detail.sortOrder,
                 availableSortOrders: detail.availableSortOrders,
-                isEditable: detail.isEditable
+                isEditable: detail.isEditable,
+                mixPlaylistId: detail.mixPlaylistId
             )
         }
 
@@ -264,7 +266,8 @@ final class PlaylistDetailViewModel {
             artists: detail.artists,
             sortOrder: detail.sortOrder,
             availableSortOrders: detail.availableSortOrders,
-            isEditable: detail.isEditable
+            isEditable: detail.isEditable,
+            mixPlaylistId: detail.mixPlaylistId
         )
     }
 
@@ -366,7 +369,8 @@ final class PlaylistDetailViewModel {
                 artists: currentDetail.artists,
                 sortOrder: currentDetail.sortOrder,
                 availableSortOrders: currentDetail.availableSortOrders,
-                isEditable: currentDetail.isEditable
+                isEditable: currentDetail.isEditable,
+                mixPlaylistId: currentDetail.mixPlaylistId
             ))
             self.hasMore = response.hasMore
 
