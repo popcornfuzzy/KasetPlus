@@ -19,6 +19,18 @@ enum NowPlayingSidebarLayout {
     /// Side of the small artwork on the up-next row.
     static let rowArtworkSide: CGFloat = 40
 
+    /// Bounds for the sidebar video's aspect ratio (width / height).
+    ///
+    /// The video follows the content's own ratio instead of locking to one, but a vertical
+    /// phone video (9:16 = 0.56) would become a tower that pushes everything else off the
+    /// column — so portrait is floored at 3:4 and wide letterbox capped at 2.4:1.
+    static let videoMinAspectRatio: CGFloat = 0.75
+    static let videoMaxAspectRatio: CGFloat = 2.4
+    static let videoFallbackAspectRatio: CGFloat = 16.0 / 9.0
+    /// Floor/ceiling for the video height, matching the artwork's own bounds.
+    static let videoMinHeight: CGFloat = 150
+    static let videoMaxHeight: CGFloat = 520
+
     /// What the fixed content below the artwork needs — title block, both section headers, the lyric
     /// preview, the up-next row and the spacing between them — so the artwork can take what is left.
     static let reservedHeight: CGFloat = 316
@@ -295,6 +307,38 @@ struct NowPlayingSidebarArtwork: View {
     }
 }
 
+// MARK: - NowPlayingSidebarVideo
+
+/// The music video / video podcast in the right sidebar, shown in place of the artwork.
+///
+/// The same singleton WebView the hidden audio layer uses is re-parented here, with the
+/// video-focused presentation (`isExpanded: true, prefersVideo: true`) that extracts the
+/// `<video>` element into the page's container. Its height follows the observed video aspect
+/// ratio (clamped to ``NowPlayingSidebarLayout``'s sane range), so the column grows and
+/// shrinks with the content instead of letterboxing it into a fixed frame.
+@available(macOS 26.0, *)
+struct NowPlayingSidebarVideo: View {
+    let videoId: String
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        PersistentPlayerView(
+            videoId: self.videoId,
+            isExpanded: true,
+            prefersVideo: true,
+            viewportSize: CGSize(width: self.width, height: self.height)
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: self.height)
+        .background(.black)
+        .clipped()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(localized: "Music video"))
+        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.video)
+    }
+}
+
 // MARK: - NowPlayingSidebarUpNext
 
 /// The next song in the queue: artwork, title, artist and length, or a short empty state. Plain
@@ -322,17 +366,26 @@ struct NowPlayingSidebarUpNext: View {
                     Text(song.title)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Text(song.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : song.artistsDisplay)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                // The text column takes the leftover width (minWidth 0 lets it shrink
+                // under a long title); without this the title's ideal width pushes the
+                // row past the column edge and the sidebar reads as cropped.
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
 
                 Spacer(minLength: 0)
 
                 Text(song.durationDisplay)
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
             } else {
                 Text(String(localized: "Nothing queued"))
                     .font(.system(size: 12))

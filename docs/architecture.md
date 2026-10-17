@@ -159,14 +159,14 @@ Controls audio playback via singleton WebView:
 | `progress` | `Double` | Current position (seconds) |
 | `duration` | `Double` | Track length (seconds) |
 | `pendingPlayVideoId` | `String?` | Video ID to play |
-| `showMiniPlayer` | `Bool` | Mini player visibility |
+| `isSidebarVideoEnabled` | `Bool` | Sidebar shows video instead of artwork (effective while `hasVideoSurface`) |
 | `showLyrics` | `Bool` | Lyrics panel visibility |
 | `nowPlayingSidebarPage` | `NowPlayingSidebarPage?` | Now Playing sidebar page (`nil` = hidden) |
 
 **Key Methods**:
 - `play(videoId:)` — Loads and plays a video
 - `play(song:)` — Plays a Song model
-- `confirmPlaybackStarted()` — Dismisses mini player
+- `confirmPlaybackStarted()` — Marks playback confirmed started
 
 ### SingletonPlayerWebView
 
@@ -178,7 +178,7 @@ Manages the singleton WebView for playback:
 - Handles video loading with pause-before-load
 - JavaScript bridge for playback state updates
 - Survives window close for background audio
-- Is **re-parented** into whichever window shows it, so exactly one window may host it at a time — see `PlayerSurfaceHost` and [ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)
+- Is **re-parented** into whichever host shows it (hidden audio layer, sidebar video, fullscreen podcast slot), so exactly one host owns it at a time — see [ADR-0032](adr/0032-sidebar-video-replaces-mini-player.md)
 
 ```swift
 @MainActor
@@ -463,7 +463,7 @@ Application lifecycle management:
 - **Creates and owns the app's main window** (`installMainWindow()`): an `NSWindow` with `MainWindow` as its `NSHostingController`'s root view, the app's chrome, a `KasetMainWindow` autosave name, and no SwiftUI window controller behind it — which is what leaves the window's toolbar to the app ([ADR-0030](adr/0030-appkit-window-shell.md)). The view comes from `KasetApp.makeRootView()`, handed over in `KasetApp.init`
 - Because that handover happens in `init`, `KasetApp` holds its services as **plain stored properties** and the window's UI state in an `@Observable` `AppWindowState`: a `@State` read outside a view/scene body is not a read (SwiftUI returns a constant binding and a fresh instance per read), which broke the navigation sidebar's selection and left `MainWindow` on its initializing branch — and therefore without a toolbar — until it was removed
 - Is the app's URL entry point (`application(_:open:)`), since there is no `Window` scene carrying `.onOpenURL`
-- **Owns every window the app makes** ([ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)): the main window, and the detached mini player panel (`showMiniPlayerPanel()` / `closeMiniPlayerPanel()`), which moves the shared player surface between the two. Windows are AppKit's when they have to outlive a scene, be found by the app, or carry an app-owned toolbar; `Settings` stays a SwiftUI scene because nothing else needs to know about it
+- **Owns every window the app makes**: the main window ([ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)). The detached mini player panel was removed in [ADR-0032](adr/0032-sidebar-video-replaces-mini-player.md). Windows are AppKit's when they have to outlive a scene, be found by the app, or carry an app-owned toolbar; `Settings` stays a SwiftUI scene because nothing else needs to know about it
 - Implements `NSWindowDelegate` to hide window instead of close
 - Keeps app running when window is closed (`applicationShouldTerminateAfterLastWindowClosed` returns `false`)
 - Handles dock icon click to reopen window
@@ -559,7 +559,6 @@ User clicks Play
 ┌─────────────────────────────────────────────────┐
 │ PlayerService.play(videoId:)                    │
 │  → Sets pendingPlayVideoId                      │
-│  → Shows mini player toast                      │
 └─────────────────────────────────────────────────┘
     │
     ▼

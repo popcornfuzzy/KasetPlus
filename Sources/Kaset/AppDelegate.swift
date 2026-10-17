@@ -28,17 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Using strong reference to prevent deallocation when window is hidden.
     private var mainWindow: NSWindow?
 
-    /// The detached mini player's window, created the first time it is opened.
-    ///
-    /// Owned here because it is a *window*, and because it is what moves the shared player surface
-    /// between the two windows: the panel is created with the app's services, handed the surface when
-    /// it opens, and takes the surface back out of it when it closes.
-    private var miniPlayerPanelController: MiniPlayerPanelController?
 
-    /// Builds the mini player panel's content with the app's environment. `KasetApp` sets this in
-    /// `init`, because the services are the app's and this delegate cannot reach them otherwise.
-    @MainActor
-    var miniPlayerPanelContentProvider: (() -> NSViewController)?
 
     func applicationDidFinishLaunching(_: Notification) {
         // Set up notification center delegate to show notifications in foreground
@@ -207,70 +197,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The name the main window's frame is persisted under. Also what `AppDelegate` and `KasetApp`
     /// identify it by when they need to find it.
     static let mainWindowAutosaveName = "KasetMainWindow"
-
-    // MARK: - Mini Player Panel
-
-    /// Opens the detached mini player, moving the shared player surface into it.
-    ///
-    /// The order matters: the surface is handed to the panel *before* the panel is shown, so the
-    /// WebView is already being hosted by the panel's view when it appears. Showing first would let a
-    /// frame of the main window's layer draw the surface it no longer owns.
-    func showMiniPlayerPanel() {
-        guard let playerService else {
-            DiagnosticsLogger.player.error("Mini player panel requested before PlayerService was wired")
-            return
-        }
-
-        let controller = self.miniPlayerPanelController ?? self.makeMiniPlayerPanelController()
-        guard let controller else {
-            DiagnosticsLogger.player.error("Mini player panel: no controller, the panel was not shown")
-            return
-        }
-
-        playerService.setPlayerSurfaceHost(.miniPlayerPanel)
-        controller.show()
-        let message = "Mini player panel requested: visible=\(controller.isPanelVisible) "
-            + "surfaceHost=\(playerService.playerSurfaceHost.rawValue) "
-            + "pending=\(playerService.pendingPlayVideoId ?? "nil")"
-        DiagnosticsLogger.player.info("\(message, privacy: .public)")
-    }
-
-    /// Closes the detached mini player, returning the shared player surface to the main window.
-    func closeMiniPlayerPanel() {
-        guard let controller = self.miniPlayerPanelController else { return }
-        controller.dismiss()
-        // The close may have been declined (a panel that was never open); the surface returns either
-        // way, because the app's state — not the window's — is what decides who hosts it.
-        self.playerService?.setPlayerSurfaceHost(.mainWindow)
-        let message = "Mini player panel closed: visible=\(controller.isPanelVisible)"
-        DiagnosticsLogger.player.info("\(message, privacy: .public)")
-    }
-
-    /// Whether the detached mini player is currently on screen.
-    var isMiniPlayerPanelVisible: Bool {
-        self.miniPlayerPanelController?.isPanelVisible ?? false
-    }
-
-    private func makeMiniPlayerPanelController() -> MiniPlayerPanelController? {
-        guard let playerService, let contentProvider = self.miniPlayerPanelContentProvider else {
-            DiagnosticsLogger.player.error("No panel content was handed to AppDelegate; the mini player panel was not created")
-            return nil
-        }
-
-        let controller = MiniPlayerPanelController(
-            playerService: playerService,
-            settings: SettingsManager.shared,
-            contentViewController: contentProvider()
-        )
-        // A close the reader performs takes the surface back. This is the only path by which the
-        // surface returns from the panel without the app asking for it, and it is why the panel can
-        // be closed with its own close button without stranding the video.
-        controller.onClose = { [weak self] in
-            self?.playerService?.setPlayerSurfaceHost(.mainWindow)
-        }
-        self.miniPlayerPanelController = controller
-        return controller
-    }
 
     // MARK: - URL Handling
 

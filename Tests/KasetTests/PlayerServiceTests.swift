@@ -181,19 +181,9 @@ struct PlayerServiceTests {
 
     @Test("Confirm playback started")
     func confirmPlaybackStarted() {
-        self.playerService.showMiniPlayer = true
         self.playerService.confirmPlaybackStarted()
 
-        #expect(self.playerService.showMiniPlayer == false)
         #expect(self.playerService.state == .playing)
-    }
-
-    @Test("Mini player dismissed")
-    func miniPlayerDismissed() {
-        self.playerService.showMiniPlayer = true
-        self.playerService.miniPlayerDismissed()
-
-        #expect(self.playerService.showMiniPlayer == false)
     }
 
     // MARK: - Shuffle and Repeat Mode Tests
@@ -302,15 +292,61 @@ struct PlayerServiceTests {
         #expect(self.playerService.pendingPlayVideoId == nil)
     }
 
-    // MARK: - Mini Player State Tests
+    // MARK: - Sidebar Video State Tests
 
-    @Test("Mini player initially hidden")
-    func miniPlayerInitiallyHidden() {
-        #expect(self.playerService.showMiniPlayer == false)
+    @Test("Sidebar video initially disabled")
+    func sidebarVideoInitiallyDisabled() {
+        #expect(self.playerService.isSidebarVideoEnabled == false)
+        #expect(self.playerService.isSidebarVideoShowing == false)
     }
 
-    @Test("Playing podcast song auto-opens mini player")
-    func playingPodcastSongAutoOpensMiniPlayer() async {
+    @Test("Sidebar video toggle without an available video is a no-op")
+    func sidebarVideoToggleWithoutVideoIsNoOp() async {
+        let song = Song(
+            id: "song-1",
+            title: "Song 1",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "song-1"
+        )
+
+        await self.playerService.play(song: song)
+        #expect(self.playerService.hasVideoSurface == false)
+
+        self.playerService.toggleSidebarVideo()
+        #expect(self.playerService.isSidebarVideoEnabled == false)
+        #expect(self.playerService.isSidebarVideoShowing == false)
+    }
+
+    @Test("Sidebar video toggle shows video when one is available")
+    func sidebarVideoToggleShowsVideoWhenAvailable() async {
+        let song = Song(
+            id: "song-1",
+            title: "Song 1",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: "song-1"
+        )
+
+        await self.playerService.play(song: song)
+        self.playerService.updateVideoAvailability(hasVideo: true)
+        #expect(self.playerService.hasVideoSurface == true)
+
+        self.playerService.toggleSidebarVideo()
+        #expect(self.playerService.isSidebarVideoEnabled == true)
+        #expect(self.playerService.isSidebarVideoShowing == true)
+
+        self.playerService.toggleSidebarVideo()
+        #expect(self.playerService.isSidebarVideoEnabled == false)
+        #expect(self.playerService.isSidebarVideoShowing == false)
+    }
+
+    @Test("Playing podcast song auto-enables sidebar video")
+    func playingPodcastSongAutoEnablesSidebarVideo() async {
         let podcast = Song(
             id: "pod-1",
             title: "Episode 1",
@@ -323,29 +359,13 @@ struct PlayerServiceTests {
 
         await self.playerService.play(song: podcast)
 
-        #expect(self.playerService.showMiniPlayer == true)
-        #expect(self.playerService.shouldAutoDismissMiniPlayerOnPlaybackStart == false)
+        // Enabled by default for podcasts; showing still waits for a video surface.
+        #expect(self.playerService.isSidebarVideoEnabled == true)
+        #expect(self.playerService.isSidebarVideoShowing == false)
     }
 
-    @Test("Playing normal song keeps mini player hidden by default")
-    func playingNormalSongKeepsMiniPlayerHiddenByDefault() async {
-        let song = Song(
-            id: "song-1",
-            title: "Song 1",
-            artists: [Artist(id: "artist-1", name: "Artist")],
-            album: nil,
-            duration: 180,
-            thumbnailURL: nil,
-            videoId: "song-1"
-        )
-
-        await self.playerService.play(song: song)
-
-        #expect(self.playerService.showMiniPlayer == false)
-    }
-
-    @Test("Manual mini player toggle is available but normal-song track changes still auto-hide")
-    func manualMiniPlayerToggleDoesNotOverrideNormalSongAutoHideAcrossTrackChanges() async {
+    @Test("Sidebar video preference is sticky across tracks with video")
+    func sidebarVideoPreferenceIsStickyAcrossTracks() async {
         let firstSong = Song(
             id: "song-1",
             title: "Song 1",
@@ -366,46 +386,14 @@ struct PlayerServiceTests {
         )
 
         await self.playerService.play(song: firstSong)
-        #expect(self.playerService.showMiniPlayer == false)
+        self.playerService.updateVideoAvailability(hasVideo: true)
+        self.playerService.toggleSidebarVideo()
+        #expect(self.playerService.isSidebarVideoShowing == true)
 
-        self.playerService.toggleMiniPlayerVisibilityByUser()
-        #expect(self.playerService.showMiniPlayer == true)
-        #expect(self.playerService.miniPlayerEnabledByUser == true)
-
+        // A track without video falls back to artwork; the preference itself stays.
         await self.playerService.play(song: secondSong)
-        #expect(self.playerService.showMiniPlayer == false)
-        #expect(self.playerService.miniPlayerEnabledByUser == false)
-
-        self.playerService.toggleMiniPlayerVisibilityByUser()
-        #expect(self.playerService.showMiniPlayer == true)
-    }
-
-    @Test("Switching from podcast to song auto-closes mini player")
-    func switchingFromPodcastToSongAutoClosesMiniPlayer() async {
-        let podcast = Song(
-            id: "pod-1",
-            title: "Episode 1",
-            artists: [Artist(id: "podcast", name: "Test Show")],
-            album: nil,
-            duration: 1200,
-            thumbnailURL: nil,
-            videoId: "pod-1"
-        )
-        let song = Song(
-            id: "song-1",
-            title: "Song 1",
-            artists: [Artist(id: "artist-1", name: "Artist")],
-            album: nil,
-            duration: 180,
-            thumbnailURL: nil,
-            videoId: "song-1"
-        )
-
-        await self.playerService.play(song: podcast)
-        #expect(self.playerService.showMiniPlayer == true)
-
-        await self.playerService.play(song: song)
-        #expect(self.playerService.showMiniPlayer == false)
+        #expect(self.playerService.isSidebarVideoShowing == false)
+        #expect(self.playerService.isSidebarVideoEnabled == true)
     }
 
     @Test("Video dimensions update mini player aspect ratio")

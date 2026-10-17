@@ -39,7 +39,6 @@ enum AccessibilityID {
         static let dislikeButton = "playerBar.dislike"
         static let lyricsButton = "playerBar.lyrics"
         static let queueButton = "playerBar.queue"
-        static let miniPlayerButton = "playerBar.miniPlayer"
         static let videoButton = "playerBar.video"
         static let castButton = "playerBar.castButton"
         static let castDeviceRow = "playerBar.castDeviceRow"
@@ -60,6 +59,8 @@ enum AccessibilityID {
         static let container = "nowPlayingSidebar"
         static let backButton = "nowPlayingSidebar.back"
         static let artwork = "nowPlayingSidebar.artwork"
+        static let video = "nowPlayingSidebar.video"
+        static let videoToggle = "nowPlayingSidebar.videoToggle"
         static let trackTitle = "nowPlayingSidebar.trackTitle"
         static let lyricsSection = "nowPlayingSidebar.lyricsSection"
         static let upNextSection = "nowPlayingSidebar.upNextSection"
@@ -244,15 +245,4 @@ enum AccessibilityID {
         static let videoContent = "videoWindow.content"
     }
 
-    // MARK: - Mini Player Panel
-
-    /// The detached mini player window (`MiniPlayerPanel`). It owns the shared player surface while
-    /// it is open, so it is the only place playback video appears once detached.
-    enum MiniPlayerPanel {
-        static let container = "miniPlayerPanel"
-        static let playPauseButton = "miniPlayerPanel.playPause"
-        static let previousButton = "miniPlayerPanel.previous"
-        static let nextButton = "miniPlayerPanel.next"
-        static let dockButton = "miniPlayerPanel.dock"
-    }
 }

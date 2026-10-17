@@ -88,8 +88,8 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.queue.map(\.title) == originalOrder)
     }
 
-    @Test("Playing podcast queue auto-opens mini player")
-    func playingPodcastQueueAutoOpensMiniPlayer() async {
+    @Test("Playing podcast queue does not auto-show sidebar video")
+    func playingPodcastQueueDoesNotAutoShowSidebarVideo() async {
         let episodes = [
             Song(
                 id: "pod-1",
@@ -113,7 +113,7 @@ struct PlayerServiceQueueTests {
 
         await self.playerService.playQueue(episodes, startingAt: 0)
 
-        #expect(self.playerService.showMiniPlayer == true)
+        #expect(self.playerService.isSidebarVideoShowing == false)
     }
 
     // The two moves below are the two directions a reorder used to be allowed to cross the playing row
@@ -328,7 +328,6 @@ struct PlayerServiceQueueTests {
         #expect(newService.progress == 42)
         #expect(newService.duration == 240)
         #expect(newService.state == .paused)
-        #expect(newService.showMiniPlayer == false)
         #expect(newService.shouldAutoloadPendingVideo == false)
         #expect(newService.currentTrackHasVideo == true)
         #expect(newService.currentTrackLikeStatus == .like)
@@ -336,7 +335,7 @@ struct PlayerServiceQueueTests {
         #expect(newService.currentTrackFeedbackTokens == songs[1].feedbackTokens)
     }
 
-    @Test("Resume on a restored song session keeps mini player hidden while loading playback")
+    @Test("Resume on a restored song session loads playback")
     func resumeDeferredRestoredSession() async {
         // Arrange
         let songs = TestFixtures.makeSongs(count: 2)
@@ -354,7 +353,6 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.pendingPlayVideoId == songs[1].videoId)
         #expect(self.playerService.progress == 42)
         #expect(self.playerService.state == .loading)
-        #expect(self.playerService.showMiniPlayer == false)
         #expect(self.playerService.shouldAutoloadPendingVideo == true)
     }
 

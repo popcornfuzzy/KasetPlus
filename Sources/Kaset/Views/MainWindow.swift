@@ -40,20 +40,6 @@ struct MainWindow: View {
         static let nowPlayingSidebarMaxWidth: CGFloat = 560
         /// Minimum content height of the window.
         static let minimumContentHeight: CGFloat = 600
-        static let miniPlayerDefaultWidth: CGFloat = 320
-        static let miniPlayerMinWidth: CGFloat = 220
-        static let miniPlayerMaxWidth: CGFloat = 760
-        static let miniPlayerDefaultAspectRatio: CGFloat = 16.0 / 9.0
-        static let miniPlayerMinAspectRatio: CGFloat = 0.3
-        static let miniPlayerMaxAspectRatio: CGFloat = 4.0
-        static let miniPlayerResizeEdgeThickness: CGFloat = 24
-    }
-
-    private enum MiniPlayerResizeEdge: Hashable {
-        case left
-        case right
-        case top
-        case bottom
     }
 
     @Environment(AuthService.self) private var authService
@@ -88,7 +74,6 @@ struct MainWindow: View {
     /// pages publish into it (`PageTitleModel`) instead of stating `.navigationTitle`, which would hand
     /// toolbar ownership to SwiftUI's window controller.
     @State private var pageTitle = PageTitleModel()
-    @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
     /// The pending window-chrome change for the fullscreen player (see `scheduleWindowChromeUpdate`).
     @State private var windowChromeTask: Task<Void, Never>?
     /// Whether the fullscreen player has ever been opened this launch.
@@ -145,17 +130,6 @@ struct MainWindow: View {
         NSApplication.shared.delegate as? AppDelegate
     }
 
-    private var miniPlayerAspectRatio: CGFloat {
-        guard let observedRatio = self.playerService.miniPlayerVideoAspectRatio else {
-            return Layout.miniPlayerDefaultAspectRatio
-        }
-
-        return min(
-            max(CGFloat(observedRatio), Layout.miniPlayerMinAspectRatio),
-            Layout.miniPlayerMaxAspectRatio
-        )
-    }
-
     var body: some View {
         @Bindable var player = self.playerService
         let showsPodcastFullscreen = self.playerService.isFullscreenPodcastPresented
@@ -192,9 +166,10 @@ struct MainWindow: View {
             // Persistent WebView - present as soon as the app is signed in, not only once a video
             // has been requested, so the YouTube Music shell can be preloaded before the first play
             // (see `PlayerWebViewPreload`). Uses a SINGLETON WebView instance that persists for the
-            // app lifetime. The mini player can be resized by dragging any edge.
+            // app lifetime. Hidden 1x1 for audio; the right sidebar hosts it when its video is on,
+            // and the fullscreen podcast view hosts it on its own slot.
             if self.hostsPlayerWebView(showsPodcastFullscreen: showsPodcastFullscreen) {
-                self.miniPlayerLayer(videoId: playerService.pendingPlayVideoId)
+                self.hiddenAudioLayer(videoId: playerService.pendingPlayVideoId)
             }
         }
         // The episode video is drawn in an overlay rather than as a stack child: the fullscreen
@@ -313,28 +288,12 @@ struct MainWindow: View {
                 self.showLoginSheet = true
             }
         }
-        .onChange(of: self.playerService.isPlaying) { _, isPlaying in
-            if isPlaying {
-                self.playerService.handlePlaybackStartedForMiniPlayer()
-            }
-        }
         // Diagnostic, and deliberately here rather than inside `hostsPlayerWebView`: that is read from
-        // the view body, so it cannot log without logging a body evaluation. The gate is the thing a
-        // "the mini player does nothing" report turns on, so its transitions are the evidence.
+        // the view body, so it cannot log without logging a body evaluation.
         .onChange(of: self.hostsPlayerWebView(showsPodcastFullscreen: showsPodcastFullscreen)) { _, hosts in
             let message = "Main window player layer hosted=\(hosts) "
-                + "detached=\(self.playerService.isPlayerSurfaceDetachedToPanel) "
                 + "pending=\(self.playerService.pendingPlayVideoId ?? "nil") "
                 + "signedIn=\(self.authService.state.isLoggedIn)"
-            DiagnosticsLogger.player.info("\(message, privacy: .public)")
-        }
-        // `pendingPlayVideoId` is what enables the player bar's mini player button, so its transitions
-        // are the other half of "the button does nothing": an enabled control whose action never runs
-        // and a control that is simply disabled look identical from outside, and only one of them is
-        // about the click at all.
-        .onChange(of: self.playerService.pendingPlayVideoId) { _, pending in
-            let message = "Pending play video changed: \(pending ?? "nil") "
-                + "miniPlayerButtonEnabled=\(pending != nil)"
             DiagnosticsLogger.player.info("\(message, privacy: .public)")
         }
         .onChange(of: self.accountService.currentAccount?.id) { _, newAccountId in
@@ -408,19 +367,19 @@ struct MainWindow: View {
         !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
     }
 
-    /// Whether the player layer should be hosted at all.
+    /// Whether the hidden audio layer should be hosted at all.
     ///
     /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
     /// a pending video (a queue song, or a restored session waiting to resume) needs it regardless.
     ///
-    /// It stands down while the surface is detached into the mini player panel
-    /// (`PlayerService.isPlayerSurfaceDetachedToPanel`). There is one WebView and it can be in one
-    /// window: the panel is the sole host while it is open, so hosting it here as well would have the
-    /// two containers pull the same view back and forth — the surface would blank in whichever window
-    /// lost, and a DRM stream does not survive being re-parented mid-song.
+    /// It stands down while the sidebar video owns the surface (the sidebar hosts it there) and
+    /// while the fullscreen podcast view does: one WebView, one superview, so only one host at a
+    /// time or the surface blanks — and a DRM stream does not survive being re-parented mid-song.
     private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
         guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
-        guard !self.playerService.isPlayerSurfaceDetachedToPanel else { return false }
+        if self.playerService.isSidebarVideoShowing, self.playerService.isNowPlayingSidebarVisible {
+            return false
+        }
         return PlayerWebViewPreload.shouldHostPlayerWebView(
             isSignedIn: self.authService.state.isLoggedIn,
             hasPendingVideo: self.playerService.pendingPlayVideoId != nil
@@ -429,73 +388,19 @@ struct MainWindow: View {
 
     // MARK: - Player WebView Layer
 
-    /// The floating mini player, resizable by dragging any edge. `videoId` is `nil` until a track is
-    /// asked for; the layer is still hosted then, purely so the WebView can preload.
+    /// The hidden audio layer. `videoId` is `nil` until a track is asked for; the layer is still
+    /// hosted then, purely so the WebView can preload.
     @ViewBuilder
-    private func miniPlayerLayer(videoId: String?) -> some View {
-        let isMiniPlayerVisible = !self.playerService.showFullscreenNowPlaying && self.playerService.showMiniPlayer
-        let miniPlayerHeight = self.miniPlayerWidth / self.miniPlayerAspectRatio
-
+    private func hiddenAudioLayer(videoId: String?) -> some View {
         PersistentPlayerView(
             videoId: videoId,
-            isExpanded: isMiniPlayerVisible,
-            prefersVideo: self.playerService.hasVideoSurface,
-            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight),
-            // The main window is the fallback host: it stands down the moment the surface is detached
-            // into the mini player panel, so the two never both try to own the WebView.
-            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
+            isExpanded: false,
+            prefersVideo: false,
+            viewportSize: CGSize(width: 1, height: 1)
         )
-        .frame(
-            width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
-            height: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? miniPlayerHeight : 1)
-        )
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .opacity(isMiniPlayerVisible ? 0.95 : 0)
-        .overlay {
-            if isMiniPlayerVisible {
-                self.miniPlayerResizeOverlay
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if isMiniPlayerVisible {
-                Button {
-                    self.playerService.confirmPlaybackStarted()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.8))
-                        .shadow(radius: 1)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(String(localized: "Close"))
-                .padding(3)
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            if isMiniPlayerVisible, self.shouldShowNoVideoHint {
-                Text(String(localized: "No video available for this track"))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.black.opacity(0.22), in: Capsule())
-                    .padding(.leading, 8)
-                    .padding(.bottom, 8)
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-            }
-        }
-        .shadow(
-            color: isMiniPlayerVisible ? .black.opacity(0.2) : .clear,
-            radius: 6,
-            y: 3
-        )
-        .padding(.trailing, isMiniPlayerVisible ? 12 : 0)
-        .padding(.bottom, isMiniPlayerVisible ? 76 : 0)
-        .allowsHitTesting(isMiniPlayerVisible)
-        .animation(.easeInOut(duration: 0.2), value: isMiniPlayerVisible)
-        .animation(.easeInOut(duration: 0.18), value: self.shouldShowNoVideoHint)
+        .frame(width: 1, height: 1)
+        .opacity(0)
+        .allowsHitTesting(false)
     }
 
     /// The episode video surface, placed on the slot the fullscreen podcast view declared.
@@ -518,8 +423,7 @@ struct MainWindow: View {
             videoId: videoId,
             isExpanded: true,
             prefersVideo: hasVideo,
-            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1),
-            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
+            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1)
         )
         .frame(width: placesVideo ? slot.width : 1, height: placesVideo ? slot.height : 1)
         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -817,22 +721,6 @@ struct MainWindow: View {
         }
     }
 
-    private var miniPlayerResizeOverlay: some View {
-        MiniPlayerResizeOverlayView(
-            width: self.$miniPlayerWidth,
-            aspectRatio: self.miniPlayerAspectRatio,
-            minWidth: Layout.miniPlayerMinWidth,
-            maxWidth: Layout.miniPlayerMaxWidth,
-            edgeThickness: Layout.miniPlayerResizeEdgeThickness
-        )
-    }
-
-    private var shouldShowNoVideoHint: Bool {
-        self.playerService.showMiniPlayer
-            && self.playerService.pendingPlayVideoId != nil
-            && (!self.playerService.currentTrackHasVideo || self.playerService.miniPlayerVideoAspectRatio == nil)
-    }
-
     private func detailView(for selection: SidebarSelection?, client _: any YTMusicClientProtocol) -> some View {
         Group {
             if let selection {
@@ -1123,142 +1011,4 @@ enum SidebarSelection: Hashable {
         .environment(PlayerService())
         .environment(WebKitManager.shared)
         .environment(accountService)
-}
-
-// MARK: - MiniPlayerResizeOverlayView
-
-private struct MiniPlayerResizeOverlayView: NSViewRepresentable {
-    @Binding var width: CGFloat
-
-    let aspectRatio: CGFloat
-    let minWidth: CGFloat
-    let maxWidth: CGFloat
-    let edgeThickness: CGFloat
-
-    func makeNSView(context: Context) -> MiniPlayerResizeView {
-        let view = MiniPlayerResizeView(frame: .zero)
-        view.onWidthChange = { newWidth in
-            self.width = newWidth
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: MiniPlayerResizeView, context _: Context) {
-        nsView.currentWidth = self.width
-        nsView.aspectRatio = self.aspectRatio
-        nsView.minWidth = self.minWidth
-        nsView.maxWidth = self.maxWidth
-        nsView.edgeThickness = self.edgeThickness
-        nsView.onWidthChange = { newWidth in
-            self.width = newWidth
-        }
-        nsView.needsDisplay = true
-        nsView.window?.invalidateCursorRects(for: nsView)
-    }
-}
-
-private final class MiniPlayerResizeView: NSView {
-    enum ResizeEdge {
-        case left
-        case right
-        case top
-        case bottom
-    }
-
-    var currentWidth: CGFloat = 320
-    var aspectRatio: CGFloat = 16.0 / 9.0
-    var minWidth: CGFloat = 220
-    var maxWidth: CGFloat = 760
-    var edgeThickness: CGFloat = 24
-    var onWidthChange: ((CGFloat) -> Void)?
-
-    private var activeEdge: ResizeEdge?
-    private var dragStartPoint: NSPoint = .zero
-    private var dragStartWidth: CGFloat = 320
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        self.edge(at: point) == nil ? nil : self
-    }
-
-    override func resetCursorRects() {
-        self.discardCursorRects()
-
-        let edge = self.edgeThickness
-        let horizontalWidth = max(self.bounds.width - (2 * edge), 1)
-        let verticalHeight = max(self.bounds.height - (2 * edge), 1)
-
-        self.addCursorRect(
-            NSRect(x: edge, y: self.bounds.height - edge, width: horizontalWidth, height: edge),
-            cursor: .resizeUpDown
-        )
-        self.addCursorRect(
-            NSRect(x: edge, y: 0, width: horizontalWidth, height: edge),
-            cursor: .resizeUpDown
-        )
-        self.addCursorRect(
-            NSRect(x: 0, y: edge, width: edge, height: verticalHeight),
-            cursor: .resizeLeftRight
-        )
-        self.addCursorRect(
-            NSRect(x: self.bounds.width - edge, y: edge, width: edge, height: verticalHeight),
-            cursor: .resizeLeftRight
-        )
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = self.convert(event.locationInWindow, from: nil)
-        guard let edge = self.edge(at: point) else { return }
-
-        self.activeEdge = edge
-        self.dragStartPoint = point
-        self.dragStartWidth = self.currentWidth
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let activeEdge else { return }
-
-        let point = self.convert(event.locationInWindow, from: nil)
-        let deltaX = point.x - self.dragStartPoint.x
-        let deltaY = point.y - self.dragStartPoint.y
-
-        let dominantDelta: CGFloat = switch activeEdge {
-        case .left:
-            -deltaX
-        case .right:
-            deltaX
-        case .top:
-            deltaY * self.aspectRatio
-        case .bottom:
-            -deltaY * self.aspectRatio
-        }
-
-        let proposedWidth = self.dragStartWidth + dominantDelta
-        let clampedWidth = min(max(proposedWidth, self.minWidth), self.maxWidth)
-        self.onWidthChange?(clampedWidth)
-    }
-
-    override func mouseUp(with _: NSEvent) {
-        self.activeEdge = nil
-    }
-
-    private func edge(at point: NSPoint) -> ResizeEdge? {
-        let edge = self.edgeThickness
-        let leftDistance = point.x
-        let rightDistance = self.bounds.width - point.x
-        let topDistance = self.bounds.height - point.y
-        let bottomDistance = point.y
-
-        let candidates: [(ResizeEdge, CGFloat)] = [
-            (.left, leftDistance),
-            (.right, rightDistance),
-            (.top, topDistance),
-            (.bottom, bottomDistance),
-        ]
-
-        guard let nearest = candidates.min(by: { $0.1 < $1.1 }), nearest.1 <= edge else {
-            return nil
-        }
-
-        return nearest.0
-    }
 }

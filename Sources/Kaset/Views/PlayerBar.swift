@@ -825,35 +825,6 @@ struct PlayerBar: View {
                 .accessibilityLabel(String(localized: "Queue"))
                 .accessibilityValue(self.playerService.isQueuePanelActive ? String(localized: "Showing") : String(localized: "Hidden"))
 
-                // Mini player toggle button.
-                //
-                // Two behaviours behind one control, because they are the same idea at two sizes:
-                // with the mini player *window* setting on it detaches the player into its own panel
-                // (see `MiniPlayerPanel`), and otherwise it floats the in-window layer as it always
-                // has. The reader's setting decides which, and the button's lit state follows
-                // whichever is actually showing, so the two can never disagree.
-                Button {
-                    HapticService.toggle()
-                    self.logMiniPlayerButtonPress()
-                    if self.playerService.isMiniPlayerWindowModeEnabled {
-                        self.toggleMiniPlayerPanel()
-                    } else {
-                        self.playerService.toggleMiniPlayerVisibilityByUser()
-                    }
-                } label: {
-                    Image(systemName: self.isMiniPlayerActive ? "pip.fill" : "pip")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(self.isMiniPlayerActive ? .red : .primary.opacity(0.85))
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .buttonStyle(.pressable)
-                .glassEffectID("miniPlayer", in: self.playerNamespace)
-                .symbolEffect(.bounce, value: self.isMiniPlayerActive)
-                .accessibilityIdentifier(AccessibilityID.PlayerBar.miniPlayerButton)
-                .accessibilityLabel(String(localized: "Mini Player"))
-                .accessibilityValue(self.isMiniPlayerActive ? String(localized: "Showing") : String(localized: "Hidden"))
-                .help(self.miniPlayerButtonHelp)
-                .disabled(self.playerService.pendingPlayVideoId == nil)
             }
 
             // Fullscreen now-playing button
@@ -885,56 +856,6 @@ struct PlayerBar: View {
             )
             .accessibilityValue(self.playerService.showFullscreenNowPlaying ? String(localized: "On") : String(localized: "Off"))
         }
-    }
-
-    // MARK: - Mini Player
-
-    /// Whether either mini player is showing: the detached panel, or the in-window layer.
-    private var isMiniPlayerActive: Bool {
-        self.playerService.isPlayerSurfaceDetachedToPanel || self.playerService.showMiniPlayer
-    }
-
-    private var miniPlayerButtonHelp: String {
-        if self.playerService.isMiniPlayerWindowModeEnabled {
-            return self.playerService.isPlayerSurfaceDetachedToPanel
-                ? String(localized: "Close the Mini Player window")
-                : String(localized: "Open the Mini Player in its own window")
-        }
-        return self.playerService.showMiniPlayer
-            ? String(localized: "Hide the Mini Player")
-            : String(localized: "Show the Mini Player")
-    }
-
-    /// Opens or closes the detached mini player window.
-    ///
-    /// The window belongs to the app delegate (it owns every window the app makes, see
-    /// `AppDelegate.showMiniPlayerPanel`); the button is only one of the ways to ask for it. The View
-    /// menu's command goes through the same call, so the two cannot diverge.
-    private func toggleMiniPlayerPanel() {
-        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
-            DiagnosticsLogger.player.error("Mini player panel: NSApplication delegate is not AppDelegate")
-            return
-        }
-        if self.playerService.isPlayerSurfaceDetachedToPanel {
-            appDelegate.closeMiniPlayerPanel()
-        } else {
-            appDelegate.showMiniPlayerPanel()
-        }
-    }
-
-    /// Reports what the mini player button was asked to do, and the state it decided from.
-    ///
-    /// The button is the app's only entry point into both mini players, so when it "does nothing" this
-    /// is what separates the three possibilities: the press never arrived (an overlay above it, a
-    /// disabled button), the button took the other branch (the mini player window Setting), or the
-    /// branch ran and the surface it asked for did not appear.
-    private func logMiniPlayerButtonPress() {
-        let mode = self.playerService.isMiniPlayerWindowModeEnabled ? "window" : "floating"
-        let message = "Mini player button pressed: mode=\(mode) "
-            + "pending=\(self.playerService.pendingPlayVideoId ?? "nil") "
-            + "detached=\(self.playerService.isPlayerSurfaceDetachedToPanel) "
-            + "showing=\(self.playerService.showMiniPlayer)"
-        DiagnosticsLogger.player.info("\(message, privacy: .public)")
     }
 
     private var volumeIcon: String {

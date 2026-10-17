@@ -289,10 +289,10 @@ extension PlayerService {
                     || (songData.counterpart?.isVideoVariant ?? false)
                 if let videoType = songData.musicVideoType {
                     let hasVideo = videoType.hasVideoContent || hasVideoVariant
-                    self.updateVideoAvailability(hasVideo: hasVideo)
+                    self.updateVideoAvailabilityFromAPI(hasVideo: hasVideo, videoId: videoId)
                     self.logger.debug("Video availability from API: \(videoType.rawValue) -> hasVideo=\(hasVideo)")
                 } else if hasVideoVariant {
-                    self.updateVideoAvailability(hasVideo: true)
+                    self.updateVideoAvailabilityFromAPI(hasVideo: true, videoId: videoId)
                 }
 
                 self.logger.info("Updated track metadata - inLibrary: \(self.currentTrackInLibrary), hasTokens: \(self.currentTrackFeedbackTokens != nil)")

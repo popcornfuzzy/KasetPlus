@@ -171,31 +171,34 @@ struct NowPlayingSidebarView: View {
 
     private var overview: some View {
         VStack(spacing: 0) {
-            NowPlayingSidebarArtwork(
-                track: self.playerService.currentTrack,
-                canvasURL: self.canvasURL,
-                height: self.artworkHeight,
-                reduceMotion: self.reduceMotion
-            )
+            self.mediaSection
             // Up by the toolbar band, so the cover is flush with the window's top edge and runs behind
             // the toolbar instead of starting below a blank strip. The negative padding, not an offset:
             // it moves the artwork's frame *and* takes the same amount off its layout height, so the rows
             // under it still begin at the artwork's visible bottom edge.
             .padding(.top, -self.topInset)
 
-            self.trackTitles
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
-                .padding(.top, 2)
-                .padding(.bottom, 14)
+            // The rows below scroll: a long title wrapping to two lines (or a short window)
+            // would otherwise push the Up Next card off the column's bottom edge with no way to
+            // reach it. The media keeps its own height; only what is under it scrolls.
+            ScrollView {
+                VStack(spacing: 0) {
+                    self.trackTitles
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                        .padding(.top, 2)
+                        .padding(.bottom, 14)
 
-            self.lyricsSection
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                    self.lyricsSection
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
 
-            self.upNextSection
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
-                .padding(.top, 10)
-
-            Spacer(minLength: 0)
+                    self.upNextSection
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                        .padding(.top, 10)
+                        .padding(.bottom, 12)
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -206,35 +209,151 @@ struct NowPlayingSidebarView: View {
             Text(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
                 .font(.system(size: 17, weight: .bold))
                 .lineLimit(2)
+                .truncationMode(.tail)
                 .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.trackTitle)
+                // The full title stays one hover away when it truncates.
+                .help(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
 
             Text(self.trackArtistText)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The artwork is a square until a short window makes it give up height to the rows below it.
+    /// The media at the top of the column: the video when the reader asked for it and one is
+    /// available, the artwork otherwise.
+    ///
+    /// The toggle only exists while a video is available — a track without one is artwork, full
+    /// stop — so there is no dead control. It floats over the media's bottom-trailing corner:
+    /// the top-trailing corner sits in the toolbar band the media runs behind, where the
+    /// window's own trailing toolbar items can overlap it out of sight.
+    private var mediaSection: some View {
+        ZStack(alignment: .bottomLeading) {
+            if self.playerService.isSidebarVideoShowing,
+               let videoId = self.playerService.pendingPlayVideoId
+            {
+                NowPlayingSidebarVideo(
+                    videoId: videoId,
+                    width: self.mediaWidth,
+                    height: self.mediaHeight
+                )
+            } else {
+                NowPlayingSidebarArtwork(
+                    track: self.playerService.currentTrack,
+                    canvasURL: self.canvasURL,
+                    height: self.artworkHeight,
+                    reduceMotion: self.reduceMotion
+                )
+            }
+
+            if self.playerService.hasVideoSurface,
+               self.playerService.pendingPlayVideoId != nil
+            {
+                Button {
+                    HapticService.toggle()
+                    withAnimation(AppAnimation.standard) {
+                        self.playerService.toggleSidebarVideo()
+                    }
+                } label: {
+                    // To video: icon + "Video" text; back to artwork: icon only.
+                    Group {
+                        if self.playerService.isSidebarVideoShowing {
+                            Image(systemName: "photo.fill")
+                                .frame(width: 30, height: 30)
+                        } else {
+                            HStack(spacing: 6) {
+                                Image(systemName: "video.fill")
+                                Text(String(localized: "Video"))
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
+                        }
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .glassEffect(.regular.tint(.black.opacity(0.25)).interactive(), in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.videoToggle)
+                .accessibilityLabel(
+                    self.playerService.isSidebarVideoShowing
+                        ? String(localized: "Show Artwork")
+                        : String(localized: "Show Video")
+                )
+                .help(
+                    self.playerService.isSidebarVideoShowing
+                        ? String(localized: "Show the artwork instead of the video")
+                        : String(localized: "Watch the music video")
+                )
+                .padding(.bottom, 10)
+                .padding(.leading, 8)
+            }
+        }
+        .animation(AppAnimation.standard, value: self.playerService.isSidebarVideoShowing)
+    }
+
+    /// Width the media is drawn at: the column's own width, never measured here.
+    private var mediaWidth: CGFloat {
+        self.columnWidth > 0 ? self.columnWidth : NowPlayingSidebarLayout.artworkMaxDimension
+    }
+
+    /// Height of the media: the video's own ratio when it is showing, the artwork square
+    /// otherwise. Both give up height on a short window so the rows below keep theirs.
+    private var mediaHeight: CGFloat {
+        self.playerService.isSidebarVideoShowing ? self.sidebarVideoHeight : self.artworkHeight
+    }
+
+    /// The sidebar video height: the column width over the observed video ratio, clamped to a
+    /// sane range and to the column's own bounds.
+    ///
+    /// The ratio is the content's, not a locked one — but a vertical video is floored before it
+    /// can become a tower, and the height itself never leaves the artwork's own floor/ceiling.
+    private var sidebarVideoHeight: CGFloat {
+        let observed = self.playerService.miniPlayerVideoAspectRatio.map { CGFloat($0) }
+            ?? NowPlayingSidebarLayout.videoFallbackAspectRatio
+        let ratio = min(
+            max(observed, NowPlayingSidebarLayout.videoMinAspectRatio),
+            NowPlayingSidebarLayout.videoMaxAspectRatio
+        )
+        guard ratio.isFinite, ratio > 0 else { return NowPlayingSidebarLayout.videoMinHeight }
+        let raw = self.mediaWidth / ratio
+        let clamped = min(max(raw, NowPlayingSidebarLayout.videoMinHeight), NowPlayingSidebarLayout.videoMaxHeight)
+        guard self.columnHeight > 0 else { return clamped }
+        let leftover = self.columnHeight - NowPlayingSidebarLayout.reservedHeight
+        return min(clamped, max(NowPlayingSidebarLayout.videoMinHeight, leftover))
+    }
+
+    /// The artwork's shape: square album art for music, fixed 16:9 for podcasts.
+    ///
+    /// Podcast artwork is the 16:9-ish video still, so forcing the square music frame crops its top
+    /// and bottom. Deliberately fixed (not the observed video ratio): reading the live ratio
+    /// re-rendered this column on every WebView dimension report and crashed in
+    /// `NSProgressIndicator setFont:` (see `SidebarVideoAspect.artworkAspectRatio`).
+    private var artworkAspectRatio: CGFloat {
+        SidebarVideoAspect.artworkAspectRatio(isPodcast: self.playerService.isCurrentTrackPodcast)
+    }
+
+    /// The artwork height: the column width over its aspect, until a short window makes it give up
+    /// height to the rows below it.
     ///
     /// It follows the column's authoritative width, so it is always exactly as wide as the column -
     /// no lag, no overshoot that would push it past the column's edge mid-resize.
     private var artworkHeight: CGFloat {
-        let width = self.columnWidth > 0
-            ? self.columnWidth
-            : NowPlayingSidebarLayout.artworkMaxDimension
+        let rawHeight = self.mediaWidth / self.artworkAspectRatio
 
         // Before the first layout the height is unknown, not zero: sizing from the width alone
-        // (a square) is stable and correct on a normal window, whereas treating the height as zero
+        // is stable and correct on a normal window, whereas treating the height as zero
         // would open the column on a 150pt stub and pop it to full a frame later.
         guard self.columnHeight > 0 else {
-            return min(width, NowPlayingSidebarLayout.artworkMaxHeight)
+            return min(rawHeight, NowPlayingSidebarLayout.artworkMaxHeight)
         }
 
         let leftover = self.columnHeight - NowPlayingSidebarLayout.reservedHeight
         return min(
-            width,
+            rawHeight,
             NowPlayingSidebarLayout.artworkMaxHeight,
             max(NowPlayingSidebarLayout.artworkMinHeight, leftover)
         )

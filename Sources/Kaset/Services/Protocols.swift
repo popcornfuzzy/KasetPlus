@@ -362,8 +362,8 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// Index of current track in queue.
     var currentIndex: Int { get }
 
-    /// Whether the mini player should be shown.
-    var showMiniPlayer: Bool { get set }
+    /// Whether the right sidebar shows video instead of artwork.
+    var isSidebarVideoEnabled: Bool { get set }
 
     /// Like status of the current track.
     var currentTrackLikeStatus: LikeStatus { get }
@@ -442,11 +442,8 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
 
     // MARK: - State Updates
 
-    /// Called when the mini player confirms playback has started.
+    /// Marks playback as confirmed started.
     func confirmPlaybackStarted()
-
-    /// Called when the mini player is dismissed.
-    func miniPlayerDismissed()
 
     /// Updates playback state from the WebView observer.
     func updatePlaybackState(isPlaying: Bool, progress: Double, duration: Double)

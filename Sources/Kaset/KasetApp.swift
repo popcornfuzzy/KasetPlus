@@ -139,22 +139,6 @@ struct KasetApp: App {
         // to host is built here and handed over. Everything it needs is a plain stored property by now,
         // so nothing here is a `@State` read.
         self.appDelegate.rootView = AnyView(self.makeRootView())
-        // The detached mini player panel is a window the app owns too, so its content is built here
-        // for the same reason the main window's is: the services exist by now, and its SwiftUI needs
-        // them. Built lazily — the panel is only created the first time it is opened.
-        // The provider captures the two services the panel needs rather than `self`: `KasetApp` is a
-        // value type, so there is no instance to hold weakly, and these are the only things the
-        // panel's view reads.
-        let panelPlayerService = player
-        let panelWebKitManager = webkit
-        self.appDelegate.miniPlayerPanelContentProvider = {
-            NSHostingController(
-                rootView: MiniPlayerPanel()
-                    .environment(panelPlayerService)
-                    .environment(panelWebKitManager)
-                    .frame(minWidth: MiniPlayerPanelLayout.minimumWidth)
-            )
-        }
 
         if UITestConfig.isUITestMode {
             // Leaves a trace the UI test script checks, since the log's info-level entries are not
@@ -381,19 +365,6 @@ struct KasetApp: App {
                 .keyboardShortcut("0", modifiers: .command)
             }
 
-            // Window menu - the detached mini player.
-            //
-            // It belongs in the Window menu because it *is* a window, and because that is where a
-            // reader looks for one they have lost. It is listed unconditionally, not only while the
-            // mini player window setting is on: a reader who turns the setting off while the panel is
-            // open still needs a way to close it.
-            CommandGroup(after: .windowList) {
-                Button(self.isMiniPlayerPanelVisible ? "Close Mini Player" : "Mini Player") {
-                    self.toggleMiniPlayerPanel()
-                }
-                .keyboardShortcut("p", modifiers: [.command, .option])
-            }
-
             // Help menu - What's New
             CommandGroup(after: .appInfo) {
                 Divider()
@@ -401,24 +372,6 @@ struct KasetApp: App {
                     self.ui.showWhatsNew = true
                 }
             }
-        }
-    }
-
-    /// Whether the detached mini player panel is on screen.
-    private var isMiniPlayerPanelVisible: Bool {
-        (NSApplication.shared.delegate as? AppDelegate)?.isMiniPlayerPanelVisible ?? false
-    }
-
-    /// Opens or closes the detached mini player panel.
-    ///
-    /// The one place the menu and the player bar's button agree: both ask the delegate, which owns
-    /// the window and moves the player surface with it.
-    private func toggleMiniPlayerPanel() {
-        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else { return }
-        if self.isMiniPlayerPanelVisible {
-            appDelegate.closeMiniPlayerPanel()
-        } else {
-            appDelegate.showMiniPlayerPanel()
         }
     }
 
