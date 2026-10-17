@@ -12,7 +12,9 @@ final class TopSongsViewModel {
     /// All loaded songs.
     private(set) var songs: [Song] = []
 
-    private let destination: TopSongsDestination
+    /// The navigation destination this page was pushed for. Internal so the page can state its window
+    /// title from it (`TopSongsView.pageTitle`).
+    let destination: TopSongsDestination
     let client: any YTMusicClientProtocol
     private let logger = DiagnosticsLogger.api
 

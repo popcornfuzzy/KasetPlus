@@ -84,6 +84,10 @@ struct MainWindow: View {
     /// page's toolbar controls are: the back control is a toolbar item of the window's own toolbar, and the
     /// pages publish into this (`PageNavigationModel`).
     @State private var pageNavigation = PageNavigationModel()
+    /// What the page on screen is called. Owned by the window because the titlebar is the window's; the
+    /// pages publish into it (`PageTitleModel`) instead of stating `.navigationTitle`, which would hand
+    /// toolbar ownership to SwiftUI's window controller.
+    @State private var pageTitle = PageTitleModel()
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
     /// The pending window-chrome change for the fullscreen player (see `scheduleWindowChromeUpdate`).
     @State private var windowChromeTask: Task<Void, Never>?
@@ -577,7 +581,10 @@ struct MainWindow: View {
         }
 
         MainThreadStallReporter.shared.note("the window's chrome is being changed for the fullscreen player")
-        window.titleVisibility = isFullscreenNowPlaying ? .hidden : .visible
+        // Hidden on the way out too, not just on the way in: the page's name lives in the toolbar
+        // beside the back control, so a visible title would hold the region's leading slot and lay the
+        // back control out after it — the control stranded on the right until the next window reopened.
+        window.titleVisibility = .hidden
         // The fullscreen Now Playing experience takes over the window, so the toolbar goes with it —
         // the same hidden state SwiftUI's `.toolbarVisibility(.hidden)` used to ask for.
         window.toolbar?.isVisible = !isFullscreenNowPlaying
@@ -624,11 +631,13 @@ struct MainWindow: View {
                 // column — and the column's top band stays the artwork's.
                 showsNowPlayingToggle: self.playerService.isNowPlayingSidebarEnabled,
                 canGoBack: self.pageNavigation.canGoBack,
+                pageTitle: self.pageTitle.title,
                 pageControls: self.pageToolbar.contribution,
                 sidebarHeader: self.nowPlayingSidebarToolbarHeader,
                 onBack: { self.pageNavigation.goBack() },
                 onAI: { self.isCommandBarPresented = true }
-            )
+            ),
+            windowTitle: self.pageTitle.title
         )
         // The window's minimum, stated once and in the same terms the shell enforces it in: the panes' own
         // minimums plus the dividers, never below the app's long-standing floor. `WindowShellController`
@@ -690,9 +699,11 @@ struct MainWindow: View {
                 .ignoresSafeArea(edges: .top)
         }
         // The pages publish their toolbar controls to the window through this (see `PageToolbarModel`),
-        // and their navigation stacks state whether they can be popped (`PageNavigationModel`).
+        // their navigation stacks state whether they can be popped (`PageNavigationModel`), and every
+        // page states its title (`PageTitleModel`) instead of `.navigationTitle`.
         .environment(self.pageToolbar)
         .environment(self.pageNavigation)
+        .environment(self.pageTitle)
     }
 
     /// The Now Playing sidebar.

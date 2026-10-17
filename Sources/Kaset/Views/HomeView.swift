@@ -35,7 +35,7 @@ struct HomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Home")
+            .pageTitle(id: "home", title: String(localized: "Home"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
             // The bar is attached *inside* the stack, to the page the stack shows.
             //

@@ -39,16 +39,27 @@ struct PageToolbarContribution {
 @MainActor
 @Observable
 final class PageToolbarModel {
-    private(set) var contribution: PageToolbarContribution?
+    /// Every page that published and has not retracted yet, oldest first. A stack rather than a slot:
+    /// a navigation stack's root stays mounted while a destination is pushed over it, so the root never
+    /// retracts — when the destination is popped and retracts, the root's entry underneath is what the
+    /// window falls back to. Without this, popping back to a page left the toolbar showing nothing (or
+    /// whatever the popped page last stated) instead of the page underneath.
+    private var stack: [PageToolbarContribution] = []
 
-    func contribute(_ contribution: PageToolbarContribution) {
-        self.contribution = contribution
+    var contribution: PageToolbarContribution? {
+        self.stack.last
     }
 
-    /// Takes this page's controls away — unless another page has already published its own.
+    func contribute(_ contribution: PageToolbarContribution) {
+        // A re-publication (a detail reloading, a remount) moves the page back on top rather than
+        // stacking a duplicate of it that a single retraction could never clear.
+        self.stack.removeAll { $0.id == contribution.id }
+        self.stack.append(contribution)
+    }
+
+    /// Takes this page's controls away, revealing whatever page underneath published its own.
     func retract(id: String) {
-        guard self.contribution?.id == id else { return }
-        self.contribution = nil
+        self.stack.removeAll { $0.id == id }
     }
 }
 
@@ -94,6 +105,87 @@ extension View {
     }
 }
 
+// MARK: - PageTitleModel
+
+/// The window's register of what the page on screen is called.
+///
+/// The pages used to state `.navigationTitle`, which is toolbar-managed content: SwiftUI's window
+/// controller answered by installing its own one-item toolbar on every push into (and back out of) a
+/// page, and the app's toolbar was taken away with it until the shell re-took it a runloop turn later
+/// — the titlebar flashing empty, and the back control landing on the wrong side while the window's
+/// own title held its slot. The pages state their title here instead, and the shell writes it to the
+/// window itself, so SwiftUI has no reason to manage a toolbar at all.
+///
+/// A page publishes on appearance and retracts on disappearance, and both calls are keyed by the
+/// page's id exactly as `PageToolbarModel`'s are, for the same reason: the order of the outgoing
+/// page's `onDisappear` against the incoming page's `onAppear` must not leave the window titled by a
+/// page that is gone.
+@available(macOS 26.0, *)
+@MainActor
+@Observable
+final class PageTitleModel {
+    /// Every page that published a title and has not retracted yet, oldest first. A stack rather than a
+    /// slot, for the same reason as `PageToolbarModel.stack`: a pushed destination retracts on pop while
+    /// the root underneath never left, so the window falls back to the root's title instead of keeping
+    /// the popped page's — which is what left the album's name in the titlebar after going back home.
+    private var stack: [(id: String, title: String)] = []
+
+    /// The title of the page on screen. The window starts with the app's name until a page states one.
+    var title: String {
+        self.stack.last?.title ?? "Kaset"
+    }
+
+    func publish(id: String, title: String) {
+        // A re-publication (a detail's title arriving with its header, a remount) moves the page back
+        // on top rather than stacking a duplicate of it that a single retraction could never clear.
+        self.stack.removeAll { $0.id == id }
+        self.stack.append((id: id, title: title))
+    }
+
+    /// Takes this page's title away, revealing whatever page underneath published its own.
+    func retract(id: String) {
+        self.stack.removeAll { $0.id == id }
+    }
+}
+
+// MARK: - PageTitleModifier
+
+/// Publishes a page's title to the window for as long as the page is on screen.
+@available(macOS 26.0, *)
+private struct PageTitleModifier: ViewModifier {
+    @Environment(PageTitleModel.self) private var pageTitle: PageTitleModel?
+
+    let id: String
+    let title: String
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                self.pageTitle?.publish(id: self.id, title: self.title)
+            }
+            // Detail titles arrive after the page does — an album's name comes with its header — so
+            // the window follows the title rather than the snapshot from when the page appeared.
+            .onChange(of: self.title) { _, newTitle in
+                self.pageTitle?.publish(id: self.id, title: newTitle)
+            }
+            .onDisappear {
+                self.pageTitle?.retract(id: self.id)
+            }
+    }
+}
+
+@available(macOS 26.0, *)
+extension View {
+    /// Publishes this page's title to the window's titlebar while the page is on screen.
+    ///
+    /// The window has one titlebar, so a page does not *declare* a title — it states what it should be
+    /// for as long as it is the page on screen (see `PageTitleModel`). This replaces `.navigationTitle`
+    /// for pages inside the window shell, which must not ask SwiftUI for toolbar-managed content.
+    func pageTitle(id: String, title: String) -> some View {
+        self.modifier(PageTitleModifier(id: id, title: title))
+    }
+}
+
 // MARK: - PageRefreshButton
 
 /// A page's refresh control, as a toolbar item.
@@ -113,12 +205,21 @@ struct PageRefreshButton: View {
 
     var body: some View {
         Button(action: self.action) {
-            Image(systemName: "arrow.clockwise")
-                .rotationEffect(.degrees(self.isRefreshing() ? 360 : 0))
-                .animation(
-                    self.isRefreshing() ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default,
-                    value: self.isRefreshing()
-                )
+            // A spinner, not a spun glyph. The arrow used to rotate through a `repeatForever` animation
+            // tied to the refreshing flag, and the toolbar's hosted view is re-rendered on every window
+            // update while a page loads — each render restarted the animation mid-spin, which is what
+            // made the control judder through every refresh. An indeterminate `ProgressView` has no
+            // phase to restart, so re-renders are invisible. Both states share one fixed frame so the
+            // swap never moves the controls beside it.
+            Group {
+                if self.isRefreshing() {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .frame(width: 16, height: 16)
         }
         .help(self.help)
         .disabled(self.isRefreshing())

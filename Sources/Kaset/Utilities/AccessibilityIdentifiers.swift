@@ -183,6 +183,14 @@ enum AccessibilityID {
         static let signInButton = "onboardingView.signInButton"
     }
 
+    // MARK: - Window Toolbar
+
+    /// The window's own toolbar: the page's back control and the Now Playing toggle live here rather
+    /// than in any page, so their identifiers are the window's, not a page's.
+    enum Toolbar {
+        static let pageTitle = "toolbar.pageTitle"
+    }
+
     // MARK: - Main Window
 
     enum FullscreenPodcast {

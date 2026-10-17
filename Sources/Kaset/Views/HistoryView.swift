@@ -34,7 +34,7 @@ struct HistoryView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle(String(localized: "Listening History"))
+            .pageTitle(id: "history", title: String(localized: "Listening History"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
             // Inside the stack, not outside it: an inset on the stack itself outlives a push, and the
             // destination page brings its own bar — the reader saw two stacked. See `PlayerBar`.

@@ -475,7 +475,7 @@ final class PlaylistArtistNavigationUITests: KasetUITestCase {
         self.app.buttons.matching(identifierPrefix: Self.artistCreditPrefix).firstMatch
     }
 
-    /// Presses the navigation stack's Back button, falling back to the standard ⌘[ shortcut.
+    /// Presses the window toolbar's Back button, falling back to the standard ⌘[ shortcut.
     private func pressBack() {
         let backButton = self.app.buttons["chevron.backward"].firstMatch
         if self.waitQuietly(backButton, timeout: 5), backButton.isHittable {

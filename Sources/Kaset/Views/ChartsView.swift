@@ -32,7 +32,7 @@ struct ChartsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Charts")
+            .pageTitle(id: "charts", title: String(localized: "Charts"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
             // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
             // a second bar under the destination's own. See `PlayerBar`.

@@ -134,6 +134,11 @@ struct WindowShell: NSViewControllerRepresentable {
     /// What the window's toolbar shows.
     let toolbar: WindowToolbarItems
 
+    /// What the window's titlebar says: the title the page on screen published (`PageTitleModel`).
+    /// Stated by the shell rather than by the pages' `.navigationTitle`, which is toolbar-managed
+    /// content SwiftUI's window controller would answer by replacing the window's toolbar.
+    let windowTitle: String
+
     func makeNSViewController(context _: Context) -> WindowShellController {
         let controller = WindowShellController()
         controller.apply(
@@ -146,6 +151,7 @@ struct WindowShell: NSViewControllerRepresentable {
                 seedInspectorWidth: self.seedInspectorWidth
             ),
             toolbar: self.toolbar,
+            windowTitle: self.windowTitle,
             onInspectorCollapsedChange: self.onInspectorCollapsedChange
         )
         return controller
@@ -162,6 +168,7 @@ struct WindowShell: NSViewControllerRepresentable {
                 seedInspectorWidth: self.seedInspectorWidth
             ),
             toolbar: self.toolbar,
+            windowTitle: self.windowTitle,
             onInspectorCollapsedChange: self.onInspectorCollapsedChange
         )
     }
@@ -237,6 +244,7 @@ final class WindowShellController: NSSplitViewController {
         showsAI: false,
         showsNowPlayingToggle: false,
         canGoBack: false,
+        pageTitle: "Kaset",
         pageControls: nil,
         sidebarHeader: nil,
         onBack: {},
@@ -316,6 +324,7 @@ final class WindowShellController: NSSplitViewController {
         layout: WindowShellLayout,
         state: WindowShellState,
         toolbar: WindowToolbarItems,
+        windowTitle: String,
         onInspectorCollapsedChange: @escaping (Bool) -> Void
     ) {
         // The panes are replaced every pass; SwiftUI diffs them.
@@ -325,8 +334,13 @@ final class WindowShellController: NSSplitViewController {
 
         self.onInspectorCollapsedChange = onInspectorCollapsedChange
         self.toolbarItems = toolbar
-        self.toolbarController.apply(items: toolbar, onAI: toolbar.onAI)
+        // The title yields the page region's leading slot to the back control, so its visibility is
+        // decided *before* the toolbar's items are: swapping the items first left one frame in which
+        // the new back control was laid out after the still-visible title — the control flashing over
+        // with the page's other controls on the right.
         self.applyTitleVisibility()
+        self.applyWindowTitle(windowTitle)
+        self.toolbarController.apply(items: toolbar, onAI: toolbar.onAI)
         // Every state this shell is handed is also a chance to notice that the window's toolbar is no
         // longer the app's. Repairing it here rather than only from a layout or appearance pass is what
         // keeps a toolbar something else put in the window from standing — empty — until the next time
@@ -1108,7 +1122,17 @@ final class WindowShellController: NSSplitViewController {
         }
     }
 
-    /// Gives the page's region its leading slot back while the page has a back control.
+    /// Writes the page's published title to the window.
+    ///
+    /// The pages state their title through `PageTitleModel` rather than `.navigationTitle`, which is
+    /// toolbar-managed content SwiftUI's window controller would answer by replacing the window's
+    /// toolbar. Only a changed title is written, so idle updates never touch the window.
+    private func applyWindowTitle(_ title: String) {
+        guard let window = self.view.window, window.title != title else { return }
+        window.title = title
+    }
+
+    /// Keeps the window's title hidden in every state.
     ///
     /// The window's title is drawn as a flexible view at the **leading** edge of the region right of the
     /// sidebar's tracking separator, and AppKit lays every item of that region out after it — so the
@@ -1116,23 +1140,15 @@ final class WindowShellController: NSSplitViewController {
     /// Measured in a reproduction of this window (1240pt, the app's item order, the state the app installs):
     /// with the title visible the back control sat at x=740, immediately left of the Ask AI button and the
     /// page's controls, and with the title hidden the first of them moved to x=224 — the region's own
-    /// leading edge. That is the "the back button is with the other controls on the right" report, and the
-    /// title is what it costs.
-    ///
-    /// Hidden only while there is a back control, and put back as soon as the page is a root again: a root
-    /// has nothing that has to lead, so the title keeps the slot the way it always has.
+    /// leading edge. The page's name lives in the toolbar beside the back control instead
+    /// (`WindowToolbarItem.pageTitle`), so hiding the title loses nothing the reader does not have in
+    /// front of them — and there is no visible state left for a stale one to stick in, which is what
+    /// stranded the back control on the right after leaving the fullscreen player.
     private func applyTitleVisibility() {
         guard let window = self.view.window else { return }
-        if self.toolbarItems.canGoBack {
-            if window.titleVisibility != .hidden {
-                window.titleVisibility = .hidden
-                self.logger.debug("Toolbar title hidden: the page has a back control to lead its region")
-            }
-        } else if window.toolbar?.isVisible != false, window.titleVisibility != .visible {
-            // Never un-hide while the toolbar itself is hidden: the fullscreen Now Playing experience
-            // hides both, and with the toolbar gone that is not this method's state to restore
-            // (`MainWindow.updateWindowTitleVisibility`).
-            window.titleVisibility = .visible
+        if window.titleVisibility != .hidden {
+            window.titleVisibility = .hidden
+            self.logger.debug("Toolbar title hidden: the page's name lives in the toolbar beside its back control")
         }
     }
 
@@ -1158,12 +1174,11 @@ final class WindowShellController: NSSplitViewController {
     /// Re-takes the window's toolbar the moment anything else puts its own there.
     ///
     /// The app's toolbar is not the only thing that wants to be the window's. SwiftUI's window controller
-    /// installs its own as soon as a page's navigation content changes — `PlaylistDetailView` states a
-    /// `navigationTitle` while the reader opens an album or a playlist — and that toolbar carries a single
-    /// item and none of the app's. The window is then left with a titlebar holding no sidebar toggle, no
-    /// page controls and no Now Playing toggle until something states the app's toolbar again, which used
-    /// to be the next layout or appearance pass: the reader saw the bar's controls vanish for a beat, and
-    /// when no such pass followed, not come back at all.
+    /// used to install its own as soon as a page's navigation content changed — a page stating a
+    /// `navigationTitle` while the reader opened an album or a playlist — and that toolbar carried a
+    /// single item and none of the app's. The pages state their title through `PageTitleModel` instead,
+    /// so nothing in the shell gives SwiftUI a reason to manage a toolbar any more; this stays as the
+    /// defence for anything else that still tries.
     ///
     /// KVO, because there is no notification for a replaced toolbar and the app has to win a race it
     /// otherwise does not know has started. Rewriting the window's toolbar is deferred to the next

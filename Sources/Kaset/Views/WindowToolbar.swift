@@ -80,6 +80,11 @@ struct WindowToolbarItems {
     /// Whether the page on screen has somewhere to go back to (see `PageNavigationModel`). The window's
     /// toolbar is the app's own, so the back control a pushed page needs is the app's to draw.
     var canGoBack: Bool
+    /// What the page on screen is called (see `PageTitleModel`). Drawn as plain text beside the back
+    /// control — or leading the page's region at a root — and never inside a glass capsule. The
+    /// window's own title stays hidden in every state, so no titlebar text can ever hold the back
+    /// control's slot again.
+    var pageTitle: String
     /// The page's own controls (search, sort, refresh), or `nil` while the page on screen has none.
     var pageControls: PageToolbarContribution?
     /// The Now Playing column's header, or `nil` while the column is closed or is showing its overview:
@@ -122,10 +127,14 @@ struct WindowToolbarItems {
         var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator]
         // Immediately after the sidebar's separator, which is the leading edge of the region the sidebar
         // bounds: the back control belongs to the page, and a macOS window puts it first in the page's own
-        // run, before anything the page *does*.
+        // run, before anything the page *does* — with the page's name right beside it.
         if self.canGoBack {
             identifiers.append(WindowToolbarItem.back)
+            // A fixed space is a real item in the run: it ends the back control's glass capsule, so the
+            // title beside it stays plain text instead of being drawn inside the capsule with it.
+            identifiers.append(.space)
         }
+        identifiers.append(WindowToolbarItem.pageTitle)
         // The flexible space is what pushes that run to the region's trailing edge. It is added only when
         // the run is non-empty: with nothing to push it would only widen the gap after the sidebar.
         if !rightAligned.isEmpty {
@@ -158,6 +167,27 @@ struct WindowToolbarItems {
     }
 }
 
+// MARK: - WindowToolbarTitleView
+
+/// The page's name, as the toolbar draws it: plain text beside the back control.
+///
+/// Deliberately not a button and not bordered, so AppKit draws no glass capsule behind it — the name
+/// sits next to the back control the way a window title sits in its titlebar, rather than reading as
+/// part of the control. A fixed space item ahead of it (see `WindowToolbarItems.identifiers`) ends
+/// the back control's own capsule, so the two never merge into one pill.
+@available(macOS 26.0, *)
+struct WindowToolbarTitleView: View {
+    let title: String
+
+    var body: some View {
+        Text(self.title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .accessibilityIdentifier(AccessibilityID.Toolbar.pageTitle)
+    }
+}
+
 // MARK: - WindowToolbarItem
 
 /// The identifiers the app itself supplies.
@@ -171,6 +201,8 @@ struct WindowToolbarItems {
 enum WindowToolbarItem {
     /// The page's back control, shown while the page has somewhere to go back to.
     static let back = NSToolbarItem.Identifier("Kaset.toolbar.back")
+    /// The page's name, drawn as plain text beside the back control (or leading at a root).
+    static let pageTitle = NSToolbarItem.Identifier("Kaset.toolbar.pageTitle")
     static let ai = NSToolbarItem.Identifier("Kaset.toolbar.ai")
     /// The page's own controls, as one hosted item (see `PageToolbarContribution`).
     static let pageControls = NSToolbarItem.Identifier("Kaset.toolbar.page")
@@ -208,6 +240,9 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     static let toolbarIdentifier = NSToolbar.Identifier("Kaset.mainToolbar")
 
     private var toolbar: NSToolbar?
+    /// The hosting view of the page's name. Held so a detail that loads renames the titlebar in place:
+    /// the item is AppKit's, the name is the page's.
+    private var pageTitleView: NSHostingView<AnyView>?
     /// The hosting view of the page's controls. Held so the page can update them in place: the item is
     /// AppKit's, the content is the page's, and only the latter changes as the reader works.
     private var pageControlsView: NSHostingView<AnyView>?
@@ -219,18 +254,37 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
         showsAI: false,
         showsNowPlayingToggle: false,
         canGoBack: false,
+        pageTitle: "Kaset",
         pageControls: nil,
         sidebarHeader: nil,
         onBack: {},
         onAI: {}
     )
 
-    /// Records the toolbar's inputs. The item list is rebuilt only if it actually differs.
+    /// Records the toolbar's inputs. The item list is rebuilt only if it actually differs, and each
+    /// hosted view is only re-rendered when what it draws changed: this runs on every window update,
+    /// and re-stating an identical hosted view restarts whatever it was animating — which is what made
+    /// the refresh spinner judder through every load.
     func apply(items: WindowToolbarItems, onAI: @escaping () -> Void) {
+        let pageControlsChanged = items.pageControls?.id != self.items.pageControls?.id
+        let pageTitleChanged = items.pageTitle != self.items.pageTitle
+        let sidebarHeaderChanged = items.sidebarHeader?.title != self.items.sidebarHeader?.title
         self.items = items
-        self.pageControlsView?.rootView = items.pageControls?.content ?? AnyView(EmptyView())
-        self.sidebarHeaderView?.rootView = Self.sidebarHeaderContent(for: items.sidebarHeader)
+        if pageControlsChanged {
+            self.pageControlsView?.rootView = items.pageControls?.content ?? AnyView(EmptyView())
+        }
+        if pageTitleChanged {
+            self.pageTitleView?.rootView = Self.pageTitleContent(title: items.pageTitle)
+        }
+        if sidebarHeaderChanged {
+            self.sidebarHeaderView?.rootView = Self.sidebarHeaderContent(for: items.sidebarHeader)
+        }
         self.refresh()
+    }
+
+    /// The page's name, as the hosted view it is drawn by.
+    private static func pageTitleContent(title: String) -> AnyView {
+        AnyView(WindowToolbarTitleView(title: title))
     }
 
     /// The column's header, as the hosted view it is drawn by.
@@ -299,6 +353,17 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     /// ones it does not have. A toolbar the app re-takes therefore comes with whatever hosted item was
     /// built before, which would otherwise keep drawing the old page's controls for good.
     private func rehostPageControls(in toolbar: NSToolbar) {
+        if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageTitle }) {
+            let host = item.view as? NSHostingView<AnyView> ?? {
+                let created = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+                created.sizingOptions = [.intrinsicContentSize]
+                item.view = created
+                return created
+            }()
+            host.rootView = Self.pageTitleContent(title: self.items.pageTitle)
+            self.pageTitleView = host
+        }
+
         if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageControls }) {
             let host = item.view as? NSHostingView<AnyView> ?? {
                 let created = NSHostingView(rootView: self.items.pageControls?.content ?? AnyView(EmptyView()))
@@ -385,6 +450,7 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             .flexibleSpace,
             .space,
             WindowToolbarItem.back,
+            WindowToolbarItem.pageTitle,
             WindowToolbarItem.ai,
             WindowToolbarItem.pageControls,
             .inspectorTrackingSeparator,
@@ -408,11 +474,29 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             item.label = String(localized: "Back")
             item.paletteLabel = String(localized: "Back")
             item.toolTip = String(localized: "Back to the previous page")
-            // The app's own target, like the Now Playing toggle: the action pops the page's own navigation
-            // stack, which is a closure the page published, not something the responder chain can find.
+            // The app's own target, like the Now Playing toggle: the action pops the page's own
+            // navigation stack, which is a closure the page published, not something the responder
+            // chain can find.
             item.target = self
             item.action = #selector(self.performBack)
             item.isBordered = true
+            return item
+
+        case WindowToolbarItem.pageTitle:
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            // A hosted label rather than the window's title: AppKit draws the title as a flexible view
+            // at the leading edge of the region and lays every item after it, so a visible title is what
+            // pushed the back control over to the page's other controls on the right. Stated as an item
+            // beside the control, the name leading the region *is* the back control's position.
+            item.label = self.items.pageTitle
+            item.paletteLabel = self.items.pageTitle
+            // Unbordered: the name is plain titlebar text, not a control, so AppKit draws no glass
+            // capsule behind it. (Bordered is what put the title in its own pill beside the chevron.)
+            item.isBordered = false
+            let host = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+            host.sizingOptions = [.intrinsicContentSize]
+            item.view = host
+            self.pageTitleView = host
             return item
 
         case WindowToolbarItem.ai:

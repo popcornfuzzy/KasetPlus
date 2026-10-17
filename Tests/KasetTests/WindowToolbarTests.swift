@@ -18,6 +18,7 @@ struct WindowToolbarLayoutTests {
         showsAI: Bool = false,
         showsNowPlayingToggle: Bool = false,
         canGoBack: Bool = false,
+        pageTitle: String = "Test Page",
         hasPageControls: Bool = false,
         hasSidebarHeader: Bool = false
     ) -> WindowToolbarItems {
@@ -26,6 +27,7 @@ struct WindowToolbarLayoutTests {
             showsAI: showsAI,
             showsNowPlayingToggle: showsNowPlayingToggle,
             canGoBack: canGoBack,
+            pageTitle: pageTitle,
             pageControls: hasPageControls
                 ? PageToolbarContribution(id: "test", content: AnyView(EmptyView()))
                 : nil,
@@ -37,13 +39,16 @@ struct WindowToolbarLayoutTests {
         )
     }
 
-    @Test("A window with only a sidebar is the sidebar's own toggle and separator")
+    @Test("A window with only a sidebar is the sidebar's toggle, separator, and the page's name")
     func sidebarOnly() throws {
         let identifiers = self.items().identifiers
         #expect(identifiers.first == .toggleSidebar)
         let separator = try #require(identifiers.firstIndex(of: .sidebarTrackingSeparator))
         #expect(separator == 1)
-        #expect(identifiers.count == 2)
+        // The page's name is always in the toolbar — it is what the window's hidden title would say.
+        let title = try #require(identifiers.firstIndex(of: WindowToolbarItem.pageTitle))
+        #expect(title == separator + 1)
+        #expect(identifiers.count == 3)
     }
 
     @Test("The page's back control is the first item in the page's own region, and only while it can pop")
@@ -52,8 +57,48 @@ struct WindowToolbarLayoutTests {
         let separator = try #require(identifiers.firstIndex(of: .sidebarTrackingSeparator))
         let back = try #require(identifiers.firstIndex(of: WindowToolbarItem.back))
         #expect(back == separator + 1, "the back control must lead the region the sidebar bounds")
+        let title = try #require(identifiers.firstIndex(of: WindowToolbarItem.pageTitle))
+        #expect(title == back + 2, "the page's name sits beside the back control, past the space that ends its capsule")
         let controls = try #require(identifiers.firstIndex(of: WindowToolbarItem.pageControls))
-        #expect(back < controls, "it comes before anything the page does")
+        #expect(title < controls, "the name comes before anything the page does")
+    }
+
+    @Test("The page's name is a hosted plain-text view, and it draws at a size")
+    func pageTitleIsHosted() throws {
+        let controller = WindowToolbarController()
+        controller.apply(
+            items: self.items(canGoBack: true, pageTitle: "My Playlist 1"),
+            onAI: {}
+        )
+        let item = try #require(
+            controller.toolbar(
+                NSToolbar(identifier: NSToolbar.Identifier("Kaset.tests.pageTitle")),
+                itemForItemIdentifier: WindowToolbarItem.pageTitle,
+                willBeInsertedIntoToolbar: true
+            )
+        )
+        #expect(item.view is NSHostingView<AnyView>)
+        // Unbordered: the name is plain titlebar text, and a bordered item is what AppKit draws the
+        // glass capsule behind.
+        #expect(item.isBordered == false)
+
+        // Plain text, not a control: a name that collapsed to zero width would leave a pushed page
+        // anonymous, and one drawn as a button would read as part of the back control.
+        let host = NSHostingView(
+            rootView: WindowToolbarTitleView(title: "My Playlist 1")
+        )
+        host.layout()
+        #expect(host.fittingSize.width > 20)
+        #expect(host.fittingSize.height > 10)
+    }
+
+    @Test("At a root the page's name leads the region with no back control ahead of it")
+    func pageTitleLeadsAtTheRoot() throws {
+        let identifiers = self.items().identifiers
+        let separator = try #require(identifiers.firstIndex(of: .sidebarTrackingSeparator))
+        let title = try #require(identifiers.firstIndex(of: WindowToolbarItem.pageTitle))
+        #expect(title == separator + 1)
+        #expect(!identifiers.contains(WindowToolbarItem.back))
     }
 
     @Test("A page that cannot pop has no back control")
@@ -246,6 +291,32 @@ struct PageToolbarModelTests {
         model.retract(id: "library")
 
         #expect(model.contribution?.id == "playlist-1")
+    }
+
+    @Test("Popping a destination falls back to the root underneath, which never retracted")
+    func popFallsBackToTheRoot() {
+        let model = PageToolbarModel()
+        // The root stays mounted while the destination is pushed over it: it publishes once and never
+        // retracts until the whole page goes away.
+        model.contribute(PageToolbarContribution(id: "library", content: AnyView(EmptyView())))
+        model.contribute(PageToolbarContribution(id: "playlist-1", content: AnyView(EmptyView())))
+        #expect(model.contribution?.id == "playlist-1")
+
+        model.retract(id: "playlist-1")
+        #expect(model.contribution?.id == "library")
+    }
+
+    @Test("A re-publication moves the page back on top instead of stacking a duplicate")
+    func republishMovesOnTop() {
+        let model = PageToolbarModel()
+        model.contribute(PageToolbarContribution(id: "library", content: AnyView(EmptyView())))
+        model.contribute(PageToolbarContribution(id: "playlist-1", content: AnyView(EmptyView())))
+        model.contribute(PageToolbarContribution(id: "library", content: AnyView(EmptyView())))
+
+        model.retract(id: "library")
+        #expect(model.contribution?.id == "playlist-1")
+        model.retract(id: "playlist-1")
+        #expect(model.contribution == nil)
     }
 
     @Test("The last page to publish wins")

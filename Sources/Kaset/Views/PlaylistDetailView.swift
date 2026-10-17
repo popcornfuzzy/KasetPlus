@@ -204,7 +204,7 @@ struct PlaylistDetailView: View {
             }
         }
         .accentBackground(from: self.viewModel.playlistDetail?.thumbnailURL?.highQualityThumbnailURL)
-        .navigationTitle(self.viewModel.playlistDetail?.title ?? self.playlist.title)
+        .pageTitle(id: "playlist-\(self.playlist.id)", title: self.viewModel.playlistDetail?.title ?? self.playlist.title)
         // The controls are real toolbar items now: the window shell's inspector tracking separator bounds
         // the page's region by the column's divider, so they stop where the column begins instead of
         // landing on top of it. This page publishes them; see `PageToolbarContribution`.
@@ -1727,10 +1727,14 @@ private struct PlaylistToolbarControls: View {
         HStack(spacing: 10) {
             self.searchField
 
-            // Included only when the playlist can be sorted; read here, so a playlist that gains or loses
-            // sort options swaps the menu in place.
+            // Always in the layout, even before the detail says whether sorting exists. Adding the menu
+            // only once loaded resized the toolbar's hosted item mid-load, which AppKit answered by
+            // re-laying the whole titlebar — the controls beside it visibly jumped. The placeholder is
+            // the same label shape with no content, so the width is already there when the menu arrives.
             if let detail = self.viewModel.playlistDetail, detail.isSortable {
                 self.sortMenu(detail)
+            } else {
+                self.sortMenuPlaceholder
             }
 
             PageRefreshButton(
@@ -1776,6 +1780,14 @@ private struct PlaylistToolbarControls: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    /// The sort menu's slot while there is no menu to show: the same label with no behaviour, so the
+    /// toolbar item keeps its width from the first frame instead of growing into it after the load.
+    private var sortMenuPlaceholder: some View {
+        Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
+            .opacity(0)
+            .accessibilityHidden(true)
     }
 
     /// Toolbar menu that mirrors YouTube Music's playlist sort options. The active order is shown by the

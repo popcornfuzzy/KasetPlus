@@ -30,7 +30,7 @@ struct ArtistEpisodesListView: View {
                 }
             }
         }
-        .navigationTitle(self.viewModel.destination.sectionTitle)
+        .pageTitle(id: "episodes-\(self.viewModel.destination.artistName)-\(self.viewModel.destination.sectionTitle)", title: self.viewModel.destination.sectionTitle)
         .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {

@@ -501,6 +501,10 @@ requires the work to be `Sendable`; when it is not, move it into a `nonisolated`
 
 ### Navigation
 
+- [ ] No shell-hosted view states `.navigationTitle`: it is toolbar-managed content, and SwiftUI's
+      window controller answers by replacing the window's toolbar out from under the app. State the
+      window's title with `.pageTitle(id:title:)` instead — see
+      [adr/0034](adr/0034-shell-owned-window-title.md)
 - [ ] A view that is itself a destination registers no `navigationDestination` of its own: a second
       destination on the same stack freezes the app, and a hosted test does not reproduce it — see
       [adr/0023](adr/0023-playlist-search-and-sort.md)

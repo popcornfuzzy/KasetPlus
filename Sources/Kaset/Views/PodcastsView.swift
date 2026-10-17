@@ -35,7 +35,7 @@ struct PodcastsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Podcasts")
+            .pageTitle(id: "podcasts", title: String(localized: "Podcasts"))
             .navigationDestination(for: PodcastShow.self) { show in
                 PodcastShowView(show: show, client: self.viewModel.client)
             }
@@ -286,7 +286,7 @@ struct PodcastShowView: View {
             .padding(24)
         }
         .accentBackground(from: self.show.thumbnailURL)
-        .navigationTitle(self.show.title)
+        .pageTitle(id: "podcast-\(self.show.id)", title: self.show.title)
         .navigationDestination(for: AllEpisodesDestination.self) { destination in
             AllEpisodesView(
                 show: destination.show,
@@ -668,7 +668,7 @@ struct AllEpisodesView: View {
             .padding(24)
         }
         .accentBackground(from: self.show.thumbnailURL)
-        .navigationTitle("All Episodes")
+        .pageTitle(id: "all-episodes-\(self.show.id)", title: String(localized: "All Episodes"))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()
         }
