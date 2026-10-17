@@ -9,7 +9,7 @@ struct MoodsAndGenresView: View {
     @State private var networkMonitor = NetworkMonitor.shared
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "moodsAndGenres", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -32,11 +32,13 @@ struct MoodsAndGenresView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Moods & Genres")
+            .pageTitle(id: "moodsAndGenres", title: String(localized: "Moods & Genres"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
+            // a second bar under the destination's own. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {

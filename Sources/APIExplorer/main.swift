@@ -4,7 +4,8 @@
 //  Standalone API Explorer for YouTube Music
 //
 //  A unified tool for exploring both public and authenticated YouTube Music API endpoints.
-//  Reads cookies from the Kaset app's debug cookie export for authenticated requests.
+//  Reads cookies from the Kaset app's debug cookie export, or from the app's login Keychain
+//  item, for authenticated requests.
 //
 //  Usage:
 //    chmod +x Tools/api-explorer.swift
@@ -42,6 +43,7 @@
 import CommonCrypto
 import Dispatch
 import Foundation
+import Security
 
 // MARK: - Configuration
 
@@ -71,9 +73,23 @@ nonisolated(unsafe) var globalBrandAccountId: String?
 
 // MARK: - Cookie Management
 
+/// Reads cookies for authenticated requests, from the app's backup file or the login Keychain.
+///
+/// The file is written by `DebugCookieFileExporter`, which only runs in DEBUG builds and writes
+/// inside the app's container when it is sandboxed — so a release or sandboxed app is signed in
+/// while this file is missing. The Keychain holds the same archive, so the explorer stays usable
+/// from a signed-in app either way. No cookie value is ever printed.
+func loadCookiesFromAppBackup() -> [HTTPCookie]? {
+    if let cookies = loadCookiesFromBackupFile() {
+        return cookies
+    }
+
+    return loadCookiesFromKeychain()
+}
+
 /// Reads cookies from Kaset app's backup file in Application Support.
 /// This allows the standalone tool to make authenticated API requests.
-func loadCookiesFromAppBackup() -> [HTTPCookie]? {
+func loadCookiesFromBackupFile() -> [HTTPCookie]? {
     guard let appSupport = FileManager.default.urls(
         for: .applicationSupportDirectory,
         in: .userDomainMask
@@ -94,13 +110,45 @@ func loadCookiesFromAppBackup() -> [HTTPCookie]? {
         return nil
     }
 
+    guard let cookies = decodeCookieArchive(data) else {
+        print("⚠️ Cookie file exists but failed to unarchive. File may be corrupted or use a different format.")
+        print("   Path: \(cookieFile.path)")
+        print("   Size: \(data.count) bytes")
+        return nil
+    }
+
+    return cookies
+}
+
+/// Reads the cookie archive the Kaset app keeps in the login Keychain, under the service and
+/// account `KeychainCookieStorage` writes it to. macOS may ask the human to allow this tool to
+/// read another app's keychain item; a refusal is reported as "no cookies" rather than an error.
+func loadCookiesFromKeychain() -> [HTTPCookie]? {
+    let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "com.kaset.auth-cookies",
+        kSecAttrAccount as String: "youtube-music-cookies",
+        kSecReturnData as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne,
+    ]
+
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+    guard status == errSecSuccess, let data = result as? Data else {
+        return nil
+    }
+
+    return decodeCookieArchive(data)
+}
+
+/// Decodes the `[HTTPCookie]` archive both cookie sources hold: an array of archived property
+/// dictionaries, one per auth cookie.
+func decodeCookieArchive(_ data: Data) -> [HTTPCookie]? {
     guard let cookieDataArray = try? NSKeyedUnarchiver.unarchivedObject(
         ofClasses: [NSArray.self, NSData.self],
         from: data
     ) as? [Data] else {
-        print("⚠️ Cookie file exists but failed to unarchive. File may be corrupted or use a different format.")
-        print("   Path: \(cookieFile.path)")
-        print("   Size: \(data.count) bytes")
         return nil
     }
 
@@ -861,13 +909,14 @@ func checkAuthStatus() {
         print("To enable authenticated API access:")
         print("  1. Run the Kaset app")
         print("  2. Sign in to YouTube Music")
-        print("  3. The app will save cookies to ~/Library/Application Support/Kaset/")
-        print("  4. Run this tool again")
+        print("  3. Run this tool again — it reads the app's debug export when there is one")
+        print("     (~/Library/Application Support/Kaset/cookies.dat) and otherwise the app's")
+        print("     cookie archive in the login Keychain")
         return
     }
 
     let matchingCookies = filterCookiesForMusicYouTube(cookies)
-    print("✅ Found \(cookies.count) cookies in app backup")
+    print("✅ Found \(cookies.count) cookies")
     print("✅ \(matchingCookies.count) cookies match music.youtube.com domain\n")
 
     // Check for key auth cookies (in youtube.com domain)
@@ -900,10 +949,11 @@ func checkAuthStatus() {
 
     print()
 
-    // Check if we can compute SAPISIDHASH
-    if let sapisid = getSAPISID(from: cookies) {
+    // Check if we can compute SAPISIDHASH. The cookie's value is deliberately not printed, not even
+    // truncated: this output lands in terminals, logs and transcripts, and a cookie fragment is still
+    // a credential fragment.
+    if getSAPISID(from: cookies) != nil {
         print("✅ Can compute SAPISIDHASH for authenticated requests")
-        print("   SAPISID value: \(sapisid.prefix(8))... (truncated)")
     } else {
         print("❌ Cannot compute SAPISIDHASH - missing SAPISID cookie")
     }

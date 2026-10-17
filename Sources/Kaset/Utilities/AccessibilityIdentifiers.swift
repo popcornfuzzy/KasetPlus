@@ -46,9 +46,27 @@ enum AccessibilityID {
         static let castStopButton = "playerBar.castStopButton"
         static let castRefreshButton = "playerBar.castRefreshButton"
         static let volumeSlider = "playerBar.volumeSlider"
+        static let seekSlider = "playerBar.seekSlider"
         static let trackTitle = "playerBar.trackTitle"
         static let trackArtist = "playerBar.trackArtist"
         static let thumbnail = "playerBar.thumbnail"
+    }
+
+    // MARK: - Now Playing Sidebar
+
+    /// The artwork-first right sidebar that can replace the classic lyrics/queue panels. It is a
+    /// window column (the system's inspector), so the collapse control lives in the toolbar.
+    enum NowPlayingSidebar {
+        static let container = "nowPlayingSidebar"
+        static let backButton = "nowPlayingSidebar.back"
+        static let artwork = "nowPlayingSidebar.artwork"
+        static let trackTitle = "nowPlayingSidebar.trackTitle"
+        static let lyricsSection = "nowPlayingSidebar.lyricsSection"
+        static let upNextSection = "nowPlayingSidebar.upNextSection"
+        static let lyricsPage = "nowPlayingSidebar.lyricsPage"
+        static let queuePage = "nowPlayingSidebar.queuePage"
+        /// The refresh control in the expanded lyric sheet's footer (its own bottom-trailing corner).
+        static let lyricsRefreshButton = "nowPlayingSidebar.lyricsRefresh"
     }
 
     // MARK: - Queue View
@@ -138,6 +156,13 @@ enum AccessibilityID {
         static let artwork = "playlistDetailView.artwork"
         static let playButton = "playlistDetailView.playButton"
         static let shuffleButton = "playlistDetailView.shuffleButton"
+        static let moreButton = "playlistDetailView.moreButton"
+        static let radioButton = "playlistDetailView.radioButton"
+        static let playNextButton = "playlistDetailView.playNextButton"
+        static let addToQueueButton = "playlistDetailView.addToQueueButton"
+        static let libraryButton = "playlistDetailView.libraryButton"
+        static let refineButton = "playlistDetailView.refineButton"
+        static let metadata = "playlistDetailView.metadata"
         static let tracksList = "playlistDetailView.tracksList"
         static let loadingIndicator = "playlistDetailView.loading"
 
@@ -156,6 +181,14 @@ enum AccessibilityID {
     enum Onboarding {
         static let container = "onboardingView"
         static let signInButton = "onboardingView.signInButton"
+    }
+
+    // MARK: - Window Toolbar
+
+    /// The window's own toolbar: the page's back control and the Now Playing toggle live here rather
+    /// than in any page, so their identifiers are the window's, not a page's.
+    enum Toolbar {
+        static let pageTitle = "toolbar.pageTitle"
     }
 
     // MARK: - Main Window
@@ -209,5 +242,17 @@ enum AccessibilityID {
     enum VideoWindow {
         static let container = "videoWindow"
         static let videoContent = "videoWindow.content"
+    }
+
+    // MARK: - Mini Player Panel
+
+    /// The detached mini player window (`MiniPlayerPanel`). It owns the shared player surface while
+    /// it is open, so it is the only place playback video appears once detached.
+    enum MiniPlayerPanel {
+        static let container = "miniPlayerPanel"
+        static let playPauseButton = "miniPlayerPanel.playPause"
+        static let previousButton = "miniPlayerPanel.previous"
+        static let nextButton = "miniPlayerPanel.next"
+        static let dockButton = "miniPlayerPanel.dock"
     }
 }

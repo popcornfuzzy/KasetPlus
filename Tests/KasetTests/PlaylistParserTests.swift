@@ -26,9 +26,9 @@ struct PlaylistParserTests {
         let data = self.makeMixedLibraryContentResponseData()
         let content = PlaylistParser.parseLibraryContent(data)
 
-        #expect(content.playlists.map(\.id) == ["VLGRID123", "VLSHELF456"])
-        #expect(content.playlists.map(\.title) == ["Grid Playlist", "Shelf Playlist"])
-        #expect(content.playlists.map(\.author) == ["Grid Curator", "Shelf Curator"])
+        #expect(content.playlists.map(\.id) == ["VLGRID123", "MPREb_GRIDALBUM123", "VLSHELF456", "MPREb_SHELFALBUM456"])
+        #expect(content.playlists.map(\.title) == ["Grid Playlist", "Grid Album", "Shelf Playlist", "Shelf Album"])
+        #expect(content.playlists.map(\.author) == ["Grid Curator", "Grid Album Artist", "Shelf Curator", "Shelf Album Artist"])
 
         #expect(content.artists.map(\.id) == ["MPLAUCGRIDARTIST123", "MPLAUCSHELFARTIST456"])
         #expect(content.artists.map(\.name) == ["Grid Artist", "Shelf Artist"])
@@ -36,6 +36,34 @@ struct PlaylistParserTests {
         #expect(content.podcastShows.map(\.id) == ["MPSPPGRID123", "MPSPPSHELF456"])
         #expect(content.podcastShows.map(\.title) == ["Grid Podcast", "Shelf Podcast"])
         #expect(content.podcastShows.map(\.author) == ["Grid Host", "Shelf Host"])
+    }
+
+    /// A saved album is listed by its page (`MPREb_…`), which the parser used to drop along with every
+    /// other ID it did not recognise. Dropped here, the album never came back from a refresh, so an album
+    /// added from its own page showed up in the library and then vanished — the same refresh also decided
+    /// that page was not in the library, and put "Add to Library" back on it.
+    @Test("A saved album in the library listing survives the refresh")
+    func parseLibraryAlbumsFromListing() {
+        let data = self.makeLibraryAlbumsResponseData()
+        let content = PlaylistParser.parseLibraryContent(data)
+
+        #expect(
+            content.playlists.map(\.id) == ["MPREb_SAVEDALBUM123", "VLPLSOMETHING789", "OLAK5uy_audioPlaylist456"]
+        )
+        #expect(
+            content.playlists.map(\.title) == ["Saved Album", "Playlist In The Same Shelf", "Audio Playlist Album"]
+        )
+        #expect(content.playlists.map(\.isAlbum) == [true, false, true])
+    }
+
+    /// The dedicated albums filter is parsed with the same item walk, so albums it lists come back as
+    /// albums — and only albums.
+    @Test("Only albums are taken from the dedicated albums listing")
+    func dedicatedAlbumsListingKeepsAlbums() {
+        let data = self.makeLibraryAlbumsResponseData()
+        let albums = PlaylistParser.parseLibraryContent(data).playlists.filter(\.isAlbum)
+
+        #expect(albums.map(\.id) == ["MPREb_SAVEDALBUM123", "OLAK5uy_audioPlaylist456"])
     }
 
     @Test("Parse dedicated library artists response")
@@ -122,6 +150,125 @@ struct PlaylistParserTests {
         #expect(response.detail.tracks.count == 100)
         #expect(response.continuationToken == "next_page_token_123")
         #expect(response.hasMore == true)
+    }
+
+    // MARK: - Start Mix (Radio)
+
+    @Test("Parse the Start mix playlist from a playlist header's actions menu")
+    func parseRadioPlaylistIdFromPlaylistHeader() {
+        // Deliberately not the ID `RDAMPL` + the playlist ID would build: the header's own target is
+        // what has to be read, and a derived value that happened to match could hide a broken header
+        // parse. The sibling "Shuffle play" item points at the playlist itself, so only the RDAMPL…
+        // target counts as the radio.
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeResponsivePlaylistDetailData(
+                title: "Lofi Beats",
+                author: "Test Curator",
+                reportedTrackCountText: "120 songs",
+                duration: "6 hours",
+                loadedTrackCount: 3,
+                mixPlaylistId: "RDAMPLPL-from-header"
+            ),
+            playlistId: "VLPL-mix-source"
+        )
+
+        #expect(response.detail.mixPlaylistId == "RDAMPLPL-from-header")
+    }
+
+    @Test("An owned playlist's header mix wins over the ID the playlist would derive")
+    func parseOwnedPlaylistHeaderMixWins() {
+        let data = self.makeOwnedPlaylistData(
+            sortMenu: self.makeSortSubMenu(),
+            headerMixPlaylistId: "RDAMPLPL-from-header"
+        )
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "VLPL-owned")
+
+        #expect(response.detail.isEditable == true)
+        #expect(response.detail.mixPlaylistId == "RDAMPLPL-from-header")
+    }
+
+    @Test("An owned playlist with no advertised mix falls back to its own RDAMPL ID")
+    func parseOwnedPlaylistDerivesMix() {
+        // An owned playlist's header has not been observed carrying a mix item, so the ID YouTube
+        // Music builds for a playlist — `RDAMPL` + the raw playlist ID — is used instead. It is the
+        // literal target of the header action on public playlists.
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeOwnedPlaylistData(sortMenu: self.makeSortSubMenu()),
+            playlistId: "VLPLowned123"
+        )
+
+        #expect(response.detail.mixPlaylistId == "RDAMPLPLowned123")
+    }
+
+    @Test("A playlist that is already a mix derives no second radio")
+    func parseMixShapedPlaylistDerivesNothing() {
+        // "Mixed for you" playlists (RDCLAK…) are mixes already, and Liked Music (LM) is not a user
+        // playlist: neither gets an invented `RDAMPL` target.
+        for playlistId in ["RDCLAK5uy_curated-mix", "LM", "MPREb_an-album"] {
+            let response = PlaylistParser.parsePlaylistWithContinuation(
+                self.makeResponsivePlaylistDetailData(
+                    title: "Curated",
+                    author: "Test Curator",
+                    reportedTrackCountText: "10 songs",
+                    duration: "30 minutes",
+                    loadedTrackCount: 1
+                ),
+                playlistId: playlistId
+            )
+
+            #expect(response.detail.mixPlaylistId == nil, "\(playlistId) should derive no radio")
+        }
+    }
+
+    @Test("A public playlist without a mix item still derives its radio")
+    func parsePublicPlaylistWithoutMixItemDerivesItsRadio() {
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeResponsivePlaylistDetailData(
+                title: "Liked Music",
+                author: "Test User",
+                reportedTrackCountText: "42 songs",
+                duration: "2 hours",
+                loadedTrackCount: 2
+            ),
+            playlistId: "VLPLC_p_8OePYz9eASKxfWhsG-VOdxbHir-O"
+        )
+
+        #expect(response.detail.mixPlaylistId == "RDAMPLPLC_p_8OePYz9eASKxfWhsG-VOdxbHir-O")
+    }
+
+    @Test("Parse the Start mix playlist from an album header's actions menu")
+    func parseRadioPlaylistIdFromAlbumHeader() {
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeResponsivePlaylistDetailData(
+                title: "Nevermind",
+                author: "Nirvana",
+                reportedTrackCountText: "13 songs",
+                duration: "49 minutes",
+                loadedTrackCount: 2,
+                mixPlaylistId: "RDAMPLOLAK5uy_album-mix-source"
+            ),
+            playlistId: "MPREb_album-mix-source"
+        )
+
+        #expect(response.detail.isAlbum == true)
+        #expect(response.detail.mixPlaylistId == "RDAMPLOLAK5uy_album-mix-source")
+    }
+
+    @Test("A header with no mix item offers no radio")
+    func parseHeaderWithoutMixItem() {
+        let response = PlaylistParser.parsePlaylistWithContinuation(
+            self.makeResponsivePlaylistDetailData(
+                title: "Liked Music",
+                author: "Test User",
+                reportedTrackCountText: "42 songs",
+                duration: "2 hours",
+                loadedTrackCount: 2
+            ),
+            playlistId: "LM"
+        )
+
+        #expect(response.detail.mixPlaylistId == nil)
     }
 
     // MARK: - Sort Order
@@ -741,6 +888,56 @@ struct PlaylistParserTests {
         ]
     }
 
+    /// The albums filter's own response: saved albums listed by page, and one addressed by its audio
+    /// playlist, as the two shapes the same shelf can carry.
+    private func makeLibraryAlbumsResponseData() -> [String: Any] {
+        [
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "gridRenderer": [
+                                            "items": [
+                                                [
+                                                    "musicTwoRowItemRenderer": [
+                                                        "title": ["runs": [["text": "Saved Album"]]],
+                                                        "subtitle": ["runs": [["text": "Saved Album Artist"]]],
+                                                        "navigationEndpoint": [
+                                                            "browseEndpoint": ["browseId": "MPREb_SAVEDALBUM123"],
+                                                        ],
+                                                    ],
+                                                ],
+                                                [
+                                                    "musicTwoRowItemRenderer": [
+                                                        "title": ["runs": [["text": "Playlist In The Same Shelf"]]],
+                                                        "navigationEndpoint": [
+                                                            "browseEndpoint": ["browseId": "VLPLSOMETHING789"],
+                                                        ],
+                                                    ],
+                                                ],
+                                                [
+                                                    "musicTwoRowItemRenderer": [
+                                                        "title": ["runs": [["text": "Audio Playlist Album"]]],
+                                                        "navigationEndpoint": [
+                                                            "browseEndpoint": ["browseId": "OLAK5uy_audioPlaylist456"],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+    }
+
     private func makeLibraryArtistsResponseData() -> [String: Any] {
         [
             "contents": [
@@ -848,6 +1045,20 @@ struct PlaylistParserTests {
             ],
             [
                 "musicTwoRowItemRenderer": [
+                    "title": ["runs": [["text": "Grid Album"]]],
+                    "subtitle": ["runs": [["text": "Grid Album Artist"]]],
+                    "navigationEndpoint": [
+                        "browseEndpoint": [
+                            "browseId": "MPREb_GRIDALBUM123",
+                            "browseEndpointContextSupportedConfigs": [
+                                "browseEndpointContextMusicConfig": ["pageType": "MUSIC_PAGE_TYPE_ALBUM"],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "musicTwoRowItemRenderer": [
                     "title": ["runs": [["text": "Grid Artist"]]],
                     "navigationEndpoint": [
                         "browseEndpoint": ["browseId": "MPLAUCGRIDARTIST123"],
@@ -882,6 +1093,25 @@ struct PlaylistParserTests {
                         [
                             "musicResponsiveListItemFlexColumnRenderer": [
                                 "text": ["runs": [["text": "Shelf Curator"]]],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "musicResponsiveListItemRenderer": [
+                    "navigationEndpoint": [
+                        "browseEndpoint": ["browseId": "MPREb_SHELFALBUM456"],
+                    ],
+                    "flexColumns": [
+                        [
+                            "musicResponsiveListItemFlexColumnRenderer": [
+                                "text": ["runs": [["text": "Shelf Album"]]],
+                            ],
+                        ],
+                        [
+                            "musicResponsiveListItemFlexColumnRenderer": [
+                                "text": ["runs": [["text": "Shelf Album Artist"]]],
                             ],
                         ],
                     ],
@@ -982,15 +1212,29 @@ struct PlaylistParserTests {
     }
 
     /// A playlist response that carries an owned (editable) header plus a sort menu.
-    private func makeOwnedPlaylistData(sortMenu: [String: Any]) -> [String: Any] {
-        [
+    private func makeOwnedPlaylistData(
+        sortMenu: [String: Any],
+        headerMixPlaylistId: String? = nil
+    ) -> [String: Any] {
+        var responsiveHeader: [String: Any] = [
+            "title": ["runs": [["text": "My Playlist"]]],
+        ]
+
+        if let headerMixPlaylistId {
+            responsiveHeader["buttons"] = [
+                self.makeActionsMenu(
+                    shufflePlaylistId: "PL-shuffle-target",
+                    mixPlaylistId: headerMixPlaylistId
+                ),
+            ]
+        }
+
+        return [
             "header": [
                 "musicEditablePlaylistDetailHeaderRenderer": [
                     "editHeader": ["musicPlaylistEditHeaderRenderer": ["privacy": "PRIVATE"]],
                     "header": [
-                        "musicResponsiveHeaderRenderer": [
-                            "title": ["runs": [["text": "My Playlist"]]],
-                        ],
+                        "musicResponsiveHeaderRenderer": responsiveHeader,
                     ],
                 ],
             ],
@@ -1082,12 +1326,48 @@ struct PlaylistParserTests {
         ]
     }
 
+    /// The header's actions menu: "Shuffle play", which points at the item itself, and — when the
+    /// item has a radio — the separate mix playlist its "Start mix" item names.
+    private func makeActionsMenu(shufflePlaylistId: String, mixPlaylistId: String?) -> [String: Any] {
+        var items: [[String: Any]] = [
+            [
+                "menuNavigationItemRenderer": [
+                    "text": ["runs": [["text": "Shuffle play"]]],
+                    "navigationEndpoint": [
+                        "watchPlaylistEndpoint": [
+                            "playlistId": shufflePlaylistId,
+                            "params": "wAEB8gECKAE%3D",
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        if let mixPlaylistId {
+            items.append([
+                "menuNavigationItemRenderer": [
+                    "icon": ["iconType": "MIX"],
+                    "text": ["runs": [["text": "Start mix"]]],
+                    "navigationEndpoint": [
+                        "watchPlaylistEndpoint": [
+                            "playlistId": mixPlaylistId,
+                            "params": "wAEB",
+                        ],
+                    ],
+                ],
+            ])
+        }
+
+        return ["menuRenderer": ["items": items]]
+    }
+
     private func makeResponsivePlaylistDetailData(
         title: String,
         author: String,
         reportedTrackCountText: String,
         duration: String,
-        loadedTrackCount: Int
+        loadedTrackCount: Int,
+        mixPlaylistId: String? = nil
     ) -> [String: Any] {
         var tracks: [[String: Any]] = []
 
@@ -1130,6 +1410,12 @@ struct PlaylistParserTests {
                                 "sectionListRenderer": [
                                     "contents": [[
                                         "musicResponsiveHeaderRenderer": [
+                                            "buttons": [
+                                                self.makeActionsMenu(
+                                                    shufflePlaylistId: "PL-shuffle-target",
+                                                    mixPlaylistId: mixPlaylistId
+                                                ),
+                                            ],
                                             "title": ["runs": [["text": title]]],
                                             "subtitle": [
                                                 "runs": [

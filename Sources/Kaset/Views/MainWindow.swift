@@ -17,6 +17,29 @@ struct MainWindow: View {
 
     private enum Layout {
         static let commandBarTopPadding: CGFloat = 72
+        /// The floor the window's own minimum has always been stated at, independent of which panes are
+        /// open. See `WindowShellLayout.minWindowWidth` and `shellLayout`.
+        static let detailMinWidth: CGFloat = 900
+
+        /// The page's own minimum width: what the page's content needs before it crops.
+        ///
+        /// Measured in the running app, not guessed. With the Now Playing column open the split view sized
+        /// itself to 200 + 765 + 300 — each of its three panes at its own floor — and **stayed** there while
+        /// the window was narrower, which is the page drawn past the window's edge and cut off. So 765 is
+        /// the page's real floor. The app states it rather than a smaller number it cannot enforce: a page
+        /// minimum below what the content requires is a page that crops, and AppKit's answer to a split view
+        /// requirement larger than its width is to break a constraint.
+        static let pageMinWidth: CGFloat = 765
+        static let navigationSidebarMinWidth: CGFloat = 200
+        static let navigationSidebarIdealWidth: CGFloat = 220
+        static let navigationSidebarMaxWidth: CGFloat = 300
+        /// Widths of the Now Playing sidebar column. The reader can drag it between these, the way
+        /// every other sidebar in the app behaves.
+        static let nowPlayingSidebarMinWidth: CGFloat = 300
+        static let nowPlayingSidebarIdealWidth: CGFloat = 380
+        static let nowPlayingSidebarMaxWidth: CGFloat = 560
+        /// Minimum content height of the window.
+        static let minimumContentHeight: CGFloat = 600
         static let miniPlayerDefaultWidth: CGFloat = 320
         static let miniPlayerMinWidth: CGFloat = 220
         static let miniPlayerMaxWidth: CGFloat = 760
@@ -49,8 +72,31 @@ struct MainWindow: View {
 
     @State private var showLoginSheet = false
     @State private var isCommandBarPresented = false
+    /// Observed so switching the right sidebar design carries the open panel over instead of
+    /// leaving the overlay empty.
+    @State private var settings = SettingsManager.shared
     @State private var whatsNewToPresent: PresentedWhatsNew?
+    /// What the page on screen wants in the window's toolbar. Owned by the window because the toolbar is
+    /// the window's; the pages publish into it (`PageToolbarModel`), and the window hands whatever is
+    /// current to the toolbar.
+    @State private var pageToolbar = PageToolbarModel()
+    /// Whether the page on screen has somewhere to go back to. Owned by the window for the same reason the
+    /// page's toolbar controls are: the back control is a toolbar item of the window's own toolbar, and the
+    /// pages publish into this (`PageNavigationModel`).
+    @State private var pageNavigation = PageNavigationModel()
+    /// What the page on screen is called. Owned by the window because the titlebar is the window's; the
+    /// pages publish into it (`PageTitleModel`) instead of stating `.navigationTitle`, which would hand
+    /// toolbar ownership to SwiftUI's window controller.
+    @State private var pageTitle = PageTitleModel()
     @State private var miniPlayerWidth: CGFloat = Layout.miniPlayerDefaultWidth
+    /// The pending window-chrome change for the fullscreen player (see `scheduleWindowChromeUpdate`).
+    @State private var windowChromeTask: Task<Void, Never>?
+    /// Whether the fullscreen player has ever been opened this launch.
+    ///
+    /// It is mounted from the first presentation on and then driven by attributes rather than being
+    /// inserted and removed for each one — see the overlay in `body`. Nothing is built for a reader who
+    /// never opens it.
+    @State private var hasPresentedFullscreenNowPlaying = false
 
     /// Video state the fullscreen podcast experience shares with the layer below.
     /// Owned here because this view owns the WebView layer.
@@ -68,8 +114,6 @@ struct MainWindow: View {
     @State private var libraryViewModel: LibraryViewModel?
     @State private var historyViewModel: HistoryViewModel?
 
-    /// Column visibility state for NavigationSplitView - persisted to fix restoration from dock.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(navigationSelection: Binding<SidebarSelection?>, client: any YTMusicClientProtocol) {
         self._navigationSelection = navigationSelection
@@ -210,25 +254,38 @@ struct MainWindow: View {
         }
         .overlay {
             // Podcast episodes get the listening experience above; songs keep artwork + lyrics.
-            if self.playerService.showFullscreenNowPlaying, !self.playerService.isCurrentTrackPodcast {
+            if self.hasPresentedFullscreenNowPlaying, !self.playerService.isCurrentTrackPodcast {
+                // Mounted once and then driven by attributes, never inserted and removed per presentation.
+                //
+                // A `.transition` makes the disappearance something that has to *complete* before the view
+                // leaves the tree, and it runs in a transaction of its own that the reader's key or click
+                // only starts: a removal still waiting to settle is a player that is still on screen with
+                // its state already cleared — reported as "leaving fullscreen sometimes takes really
+                // long", where the model has changed and the screen has not. Opacity carries no completion
+                // step: it is applied with the next draw, and the state change never waits on an animation.
+                // The presentation's own lifecycle is already driven by the flag (`startPresentation` /
+                // `endPresentation` through `onChange`), so it never depended on this view being new.
                 FullscreenNowPlayingView(client: self.client)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .opacity(self.playerService.showFullscreenNowPlaying ? 1 : 0)
+                    .allowsHitTesting(self.playerService.showFullscreenNowPlaying)
+                    .accessibilityHidden(!self.playerService.showFullscreenNowPlaying)
+                    .animation(.easeInOut(duration: 0.22), value: self.playerService.showFullscreenNowPlaying)
                     .zIndex(10)
             }
         }
-        .toolbarVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
-        )
-        .toolbarBackgroundVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .windowToolbar
-        )
         .onAppear {
-            self.updateWindowTitleVisibility(for: self.playerService.showFullscreenNowPlaying)
+            self.hasPresentedFullscreenNowPlaying = self.playerService.showFullscreenNowPlaying
+            self.scheduleWindowChromeUpdate(for: self.playerService.showFullscreenNowPlaying)
         }
         .onChange(of: self.playerService.showFullscreenNowPlaying) { _, isShown in
-            self.updateWindowTitleVisibility(for: isShown)
+            // The flag reached the window. Logged because the whole exit is a sequence across two
+            // objects — the player clears the flag, the window hears it and gives the toolbar back — and
+            // "leaving the player does nothing" is one of them never arriving.
+            let message = "Main window saw the fullscreen player presented=\(isShown)"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+            MainThreadStallReporter.shared.note("the window saw the fullscreen player = \(isShown)")
+            if isShown { self.hasPresentedFullscreenNowPlaying = true }
+            self.scheduleWindowChromeUpdate(for: isShown)
         }
         .onChange(of: self.showCommandBar.wrappedValue) { _, newValue in
             if newValue {
@@ -261,6 +318,25 @@ struct MainWindow: View {
                 self.playerService.handlePlaybackStartedForMiniPlayer()
             }
         }
+        // Diagnostic, and deliberately here rather than inside `hostsPlayerWebView`: that is read from
+        // the view body, so it cannot log without logging a body evaluation. The gate is the thing a
+        // "the mini player does nothing" report turns on, so its transitions are the evidence.
+        .onChange(of: self.hostsPlayerWebView(showsPodcastFullscreen: showsPodcastFullscreen)) { _, hosts in
+            let message = "Main window player layer hosted=\(hosts) "
+                + "detached=\(self.playerService.isPlayerSurfaceDetachedToPanel) "
+                + "pending=\(self.playerService.pendingPlayVideoId ?? "nil") "
+                + "signedIn=\(self.authService.state.isLoggedIn)"
+            DiagnosticsLogger.player.info("\(message, privacy: .public)")
+        }
+        // `pendingPlayVideoId` is what enables the player bar's mini player button, so its transitions
+        // are the other half of "the button does nothing": an enabled control whose action never runs
+        // and a control that is simply disabled look identical from outside, and only one of them is
+        // about the click at all.
+        .onChange(of: self.playerService.pendingPlayVideoId) { _, pending in
+            let message = "Pending play video changed: \(pending ?? "nil") "
+                + "miniPlayerButtonEnabled=\(pending != nil)"
+            DiagnosticsLogger.player.info("\(message, privacy: .public)")
+        }
         .onChange(of: self.accountService.currentAccount?.id) { _, newAccountId in
             self.playerService.resetTrackStatus()
 
@@ -290,6 +366,9 @@ struct MainWindow: View {
         .task {
             NowPlayingManager.shared.configure(playerService: self.playerService)
         }
+        .onChange(of: self.settings.nowPlayingSidebarEnabled) { _, isEnabled in
+            self.handleSidebarStyleChange(isNowPlayingSidebarEnabled: isEnabled)
+        }
         .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
             guard let event else { return }
 
@@ -311,6 +390,19 @@ struct MainWindow: View {
         }
     }
 
+    /// Carries the open right sidebar over when the design changes in Settings.
+    ///
+    /// Without this the panel simply vanishes on the switch: each design reads its own presentation
+    /// state, so the new one has nothing open while the old one stops being rendered.
+    private func handleSidebarStyleChange(isNowPlayingSidebarEnabled: Bool) {
+        if isNowPlayingSidebarEnabled {
+            guard self.playerService.showLyrics || self.playerService.showQueue else { return }
+            self.playerService.setNowPlayingSidebarPage(.overview)
+        } else {
+            self.playerService.closeNowPlayingSidebar()
+        }
+    }
+
     /// TEMPORARY: honors the PerfHUD "WebLayer" switch.
     private var showsWebLayer: Bool {
         !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
@@ -320,8 +412,15 @@ struct MainWindow: View {
     ///
     /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
     /// a pending video (a queue song, or a restored session waiting to resume) needs it regardless.
+    ///
+    /// It stands down while the surface is detached into the mini player panel
+    /// (`PlayerService.isPlayerSurfaceDetachedToPanel`). There is one WebView and it can be in one
+    /// window: the panel is the sole host while it is open, so hosting it here as well would have the
+    /// two containers pull the same view back and forth — the surface would blank in whichever window
+    /// lost, and a DRM stream does not survive being re-parented mid-song.
     private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
         guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
+        guard !self.playerService.isPlayerSurfaceDetachedToPanel else { return false }
         return PlayerWebViewPreload.shouldHostPlayerWebView(
             isSignedIn: self.authService.state.isLoggedIn,
             hasPendingVideo: self.playerService.pendingPlayVideoId != nil
@@ -341,7 +440,10 @@ struct MainWindow: View {
             videoId: videoId,
             isExpanded: isMiniPlayerVisible,
             prefersVideo: self.playerService.hasVideoSurface,
-            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight)
+            viewportSize: CGSize(width: self.miniPlayerWidth, height: miniPlayerHeight),
+            // The main window is the fallback host: it stands down the moment the surface is detached
+            // into the mini player panel, so the two never both try to own the WebView.
+            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
         )
         .frame(
             width: self.playerService.showFullscreenNowPlaying ? 1 : (isMiniPlayerVisible ? self.miniPlayerWidth : 1),
@@ -416,7 +518,8 @@ struct MainWindow: View {
             videoId: videoId,
             isExpanded: true,
             prefersVideo: hasVideo,
-            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1)
+            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1),
+            claimsSurface: !self.playerService.isPlayerSurfaceDetachedToPanel
         )
         .frame(width: placesVideo ? slot.width : 1, height: placesVideo ? slot.height : 1)
         .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -449,73 +552,246 @@ struct MainWindow: View {
         }
     }
 
+    /// The window's chrome change waits for the update that asked for it to finish.
+    ///
+    /// Hiding or restoring the toolbar is an AppKit layout of the titlebar, and it used to happen from
+    /// inside the SwiftUI update that was adding or removing the fullscreen overlay. On the way out that is
+    /// the update that has just torn the overlay down *and* is still inside the event that asked for it
+    /// (the `Escape` key, or the close button's click), which is where leaving the player stopped
+    /// responding — see `FullscreenNowPlayingView.closeFullscreenNowPlaying`. One runloop turn later the
+    /// overlay is gone, that event has finished, and the window is free to lay its titlebar out.
+    private func scheduleWindowChromeUpdate(for isFullscreenNowPlaying: Bool) {
+        self.windowChromeTask?.cancel()
+        self.windowChromeTask = Task { @MainActor in
+            self.updateWindowTitleVisibility(for: isFullscreenNowPlaying)
+        }
+    }
+
     private func updateWindowTitleVisibility(for isFullscreenNowPlaying: Bool) {
-        guard let window = NSApplication.shared.keyWindow
+        // Deliberately not `keyWindow`: with the detached mini player open the key window can be the
+        // panel, and this would then hide the *panel's* title while leaving the main window's alone.
+        // The main window is identified by its own autosave name, which is what the rest of the app
+        // does (`AppDelegate.showMainWindowIfNeeded`).
+        guard let window = NSApplication.shared.windows
+            .first(where: { $0.frameAutosaveName == AppDelegate.mainWindowAutosaveName })
             ?? NSApplication.shared.windows.first(where: { $0.isMainWindow })
-            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain })
+            ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain && !($0 is NSPanel) })
         else {
             return
         }
 
-        window.titleVisibility = isFullscreenNowPlaying ? .hidden : .visible
+        MainThreadStallReporter.shared.note("the window's chrome is being changed for the fullscreen player")
+        // Hidden on the way out too, not just on the way in: the page's name lives in the toolbar
+        // beside the back control, so a visible title would hold the region's leading slot and lay the
+        // back control out after it — the control stranded on the right until the next window reopened.
+        window.titleVisibility = .hidden
+        // The fullscreen Now Playing experience takes over the window, so the toolbar goes with it —
+        // the same hidden state SwiftUI's `.toolbarVisibility(.hidden)` used to ask for.
+        window.toolbar?.isVisible = !isFullscreenNowPlaying
+        // The other end of the exit sequence (see the log in `body`): the toolbar and the title are back
+        // and the window is what it was. The line after which nothing arrives is the step that stalled.
+        let message = "Main window chrome for the fullscreen player: fullscreen=\(isFullscreenNowPlaying) "
+            + "toolbarVisible=\(window.toolbar?.isVisible ?? false) "
+            + "titleVisible=\(window.titleVisibility == .visible) key=\(window.isKeyWindow)"
+        DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
     }
 
     // MARK: - Main Content
 
+    /// The window's three panes, laid out by AppKit's split view.
+    ///
+    /// The shell is AppKit's — one `NSSplitViewController` with a real sidebar item and a real inspector
+    /// item — because those are what the window's toolbar derives its regions, and therefore its item
+    /// positions, from. See `WindowShell`.
     private var mainContent: some View {
-        ZStack(alignment: .trailing) {
-            // Main navigation content
-            NavigationSplitView(columnVisibility: self.$columnVisibility) {
-                Sidebar(selection: self.$navigationSelection)
-                    .environment(self.libraryViewModel)
-            } detail: {
-                self.detailView(for: self.navigationSelection, client: self.client)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-                // Ensure sidebar is visible when window becomes key (e.g., restored from dock)
-                if self.columnVisibility != .all {
-                    self.columnVisibility = .all
+        WindowShell(
+            sidebar: AnyView(self.sidebarPane),
+            content: AnyView(self.contentPane),
+            inspector: AnyView(self.inspectorPane),
+            layout: self.shellLayout,
+            showsInspector: self.playerService.isNowPlayingSidebarVisible,
+            seedInspectorWidth: self.seedInspectorWidth,
+            onInspectorCollapsedChange: { collapsed in
+                // The reader moved the pane themselves — the toolbar's toggle, a drag, or a double click
+                // on the divider — so the app's page state follows the pane rather than the other way
+                // round. (`isApplyingState` in the shell keeps the app's own writes out of this.)
+                withAnimation(AppAnimation.standard) {
+                    if collapsed {
+                        self.playerService.closeNowPlayingSidebar()
+                    } else {
+                        self.playerService.setNowPlayingSidebarPage(.overview)
+                    }
                 }
-            }
-
-            // Right sidebar overlay - either lyrics or queue (mutually exclusive)
-            self.rightSidebarOverlay(client: self.client)
-        }
-        .frame(minWidth: 900, minHeight: 600)
-        .toolbarVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
+            },
+            toolbar: WindowToolbarItems(
+                tracksColumn: self.playerService.isNowPlayingSidebarVisible,
+                showsAI: FoundationModelsService.shared.isAvailable,
+                // Shown whenever the column design is on, open or closed: the toggle is the toolbar's
+                // own item in both states (see `WindowToolbarItems`), so it never has to move into the
+                // column — and the column's top band stays the artwork's.
+                showsNowPlayingToggle: self.playerService.isNowPlayingSidebarEnabled,
+                canGoBack: self.pageNavigation.canGoBack,
+                pageTitle: self.pageTitle.title,
+                pageControls: self.pageToolbar.contribution,
+                sidebarHeader: self.nowPlayingSidebarToolbarHeader,
+                onBack: { self.pageNavigation.goBack() },
+                onAI: { self.isCommandBarPresented = true }
+            ),
+            windowTitle: self.pageTitle.title
         )
-        .toolbarBackgroundVisibility(
-            self.playerService.showFullscreenNowPlaying ? .hidden : .automatic,
-            for: .automatic
+        // The window's minimum, stated once and in the same terms the shell enforces it in: the panes' own
+        // minimums plus the dividers, never below the app's long-standing floor. `WindowShellController`
+        // writes the same number to the window, so the two agree rather than fighting — and a window
+        // narrower than this is one at which a pane would have to give up its minimum and crop.
+        .frame(
+            minWidth: self.shellLayout.minimumWindowWidth(
+                tracksColumn: self.playerService.isNowPlayingSidebarVisible
+            ),
+            minHeight: Layout.minimumContentHeight
         )
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    self.isCommandBarPresented = true
-                } label: {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.primary)
-                }
-                .keyboardShortcut("k", modifiers: .command)
-                .help(String(localized: "Ask AI (⌘K)"))
-                .accessibilityIdentifier(AccessibilityID.MainWindow.aiButton)
-                .requiresIntelligence()
-            }
-        }
-        .toolbar(removing: .sidebarToggle)
+        // The shell is the window: its panes are what the window draws, so they own the space under the
+        // titlebar. Each pane then re-insets its own content by AppKit's window safe area (`ShellPane`'s
+        // children lay out below the toolbar) while the panes that *are* a backdrop — the navigation
+        // sidebar's material and the Now Playing column's artwork — run to the window's top edge, which is
+        // what makes the titlebar read as part of the sidebar rather than as a band above it.
+        .ignoresSafeArea(.container, edges: .top)
     }
 
-    /// Right sidebar overlay showing either lyrics or queue as glass panels (mutually exclusive).
+    /// The navigation sidebar, on AppKit's own sidebar surface.
+    ///
+    /// `NavigationSplitView` used to supply this surface. The window shell replaced that split view, so
+    /// the pane supplies it again (`SidebarMaterialPane`: the `.sidebar` material at `.behindWindow`, with
+    /// the sidebar's SwiftUI inside it).
+    ///
+    /// Hosting it there costs one thing, and it is paid in `Sidebar`: the sidebar's content resolves its
+    /// colours in a **vibrant** appearance, where `labelColor` is a lower-alpha colour than the plain one
+    /// (black @ 0.70 against 0.85) — so the nav rows state a literal colour rather than `.primary`.
+    /// Measured, and written up on `EmphasizedMaterialView`.
+    private var sidebarPane: some View {
+        SidebarMaterialPane {
+            Sidebar(selection: self.$navigationSelection)
+                .environment(self.libraryViewModel)
+        }
+        // The material is the pane's surface, so it reaches the window's top edge; the sidebar's own
+        // content inside it still starts below the toolbar.
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+
+    /// The page, plus the classic lyrics/queue panels.
+    ///
+    /// The panels are overlays of the *content pane*, not of the window: they belong to the page, and
+    /// over the window they would sit on top of the Now Playing column.
+    private var contentPane: some View {
+        ZStack(alignment: .trailing) {
+            self.detailView(for: self.navigationSelection, client: self.client)
+
+            // Classic lyrics/queue panels, floating over the content (mutually exclusive).
+            self.classicSidebarOverlay(client: self.client)
+        }
+        // The page is a surface of its own. The window is a clear sheet so the navigation sidebar's
+        // material can blur the desktop (`SidebarMaterialPane`), which means *every* other pane has to
+        // paint its own opaque background or the desktop shows through it. The background bleeds up under
+        // the toolbar for the same reason the sidebar's material does: without that the titlebar band over
+        // the page would be the one strip of the window with nothing behind it.
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea(edges: .top)
+        }
+        // The pages publish their toolbar controls to the window through this (see `PageToolbarModel`),
+        // their navigation stacks state whether they can be popped (`PageNavigationModel`), and every
+        // page states its title (`PageTitleModel`) instead of `.navigationTitle`.
+        .environment(self.pageToolbar)
+        .environment(self.pageNavigation)
+        .environment(self.pageTitle)
+    }
+
+    /// The Now Playing sidebar.
+    ///
+    /// Unmounted rather than merely collapsed while the column is closed: appearing and disappearing is
+    /// what starts and stops its lyrics polling and canvas loading, and a collapsed pane still holds its
+    /// view.
     @ViewBuilder
-    private func rightSidebarOverlay(client: any YTMusicClientProtocol) -> some View {
-        let showRightSidebar = (self.playerService.showLyrics || self.playerService.showQueue)
+    private var inspectorPane: some View {
+        if self.playerService.isNowPlayingSidebarVisible {
+            ShellPane { size, topInset in
+                NowPlayingSidebarView(
+                    columnWidth: size.width,
+                    columnHeight: size.height,
+                    topInset: topInset
+                )
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    /// The column bounds AppKit's split view items enforce.
+    ///
+    /// The page's own minimum is stated as what its content actually needs (`pageMinWidth`), and the
+    /// window's is the panes' sum — so opening the Now Playing column asks for a window wide enough to hold
+    /// it instead of squeezing the page below its floor. See `WindowShellLayout`.
+    private var shellLayout: WindowShellLayout {
+        WindowShellLayout(
+            minSidebarWidth: Layout.navigationSidebarMinWidth,
+            maxSidebarWidth: Layout.navigationSidebarMaxWidth,
+            minContentWidth: Layout.pageMinWidth,
+            minWindowWidth: Layout.detailMinWidth,
+            minInspectorWidth: Layout.nowPlayingSidebarMinWidth,
+            maxInspectorWidth: Layout.nowPlayingSidebarMaxWidth
+        )
+    }
+
+    /// The Now Playing column's header, or `nil` while the column is closed or is on its overview.
+    ///
+    /// The column draws no header of its own: its pages' back control and name are the window toolbar's,
+    /// in the region above the column, so a page's content starts at the top of the column instead of
+    /// below the strip of empty column the window's toolbar band used to leave above it.
+    private var nowPlayingSidebarToolbarHeader: NowPlayingSidebarToolbarHeader? {
+        guard self.playerService.isNowPlayingSidebarVisible,
+              let title = self.playerService.nowPlayingSidebarPage?.toolbarTitle
+        else { return nil }
+        return NowPlayingSidebarToolbarHeader(title: title) {
+            HapticService.toggle()
+            withAnimation(AppAnimation.standard) {
+                self.playerService.setNowPlayingSidebarPage(.overview)
+            }
+        }
+    }
+
+    /// The width the Now Playing sidebar opens at the first time this build runs.
+    ///
+    /// AppKit's autosave owns the divider from then on, and the app never writes a width on a drag —
+    /// which is what removes the whole class of "the stored width fights the divider" bugs the column
+    /// used to have. The stored setting is read here once, as the value to start from.
+    private var seedInspectorWidth: CGFloat {
+        let stored = CGFloat(self.settings.nowPlayingSidebarWidth)
+        guard stored.isFinite, stored > 0 else { return Layout.nowPlayingSidebarIdealWidth }
+        // A stored width is a user-editable default, so it is put through the column's own bounds before it
+        // reaches the split view. `availableWidth: 0` states that the app has no window knowledge here —
+        // the divider's own limits are the split items' (see `WindowShellLayout`), which is what makes this
+        // clamp the column's bounds and nothing else.
+        return NowPlayingSidebarColumnGeometry(
+            availableWidth: 0,
+            detailMinWidth: 0,
+            handleWidth: 0,
+            minWidth: Layout.nowPlayingSidebarMinWidth,
+            maxWidth: Layout.nowPlayingSidebarMaxWidth,
+            floorWidth: Layout.nowPlayingSidebarMinWidth
+        ).effective(desired: stored)
+    }
+
+    /// The classic lyrics/queue panels as glass overlays (mutually exclusive).
+    ///
+    /// Which design the right sidebar uses is a Setting; both keep their own presentation state, so
+    /// these panels are untouched for anyone who prefers them.
+    @ViewBuilder
+    private func classicSidebarOverlay(client: any YTMusicClientProtocol) -> some View {
+        let showsClassicSidebar = !self.playerService.isNowPlayingSidebarEnabled
+            && (self.playerService.showLyrics || self.playerService.showQueue)
             && !self.playerService.showFullscreenNowPlaying
 
-        if showRightSidebar {
+        if showsClassicSidebar {
             VStack {
                 Spacer()
 
@@ -567,6 +843,13 @@ struct MainWindow: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The library goes in here, around *every* page the content pane can show, because that is what
+        // asks for it: a playlist or album page states its library action from this window's snapshot, and
+        // a page that reached the pane through a branch that never injected it — a playlist opened straight
+        // from the sidebar was the one — read `nil` and answered "Add to Library" about items the account
+        // owned, with no write behind the click. The sidebar pane states the same injection for its own copy
+        // of the list; one statement per pane, and both panes are told.
+        .environment(self.libraryViewModel)
     }
 
     private func viewForSidebarSelection(_ selection: SidebarSelection) -> some View {
@@ -578,7 +861,7 @@ struct MainWindow: View {
                 let playlist = self.sidebarPlaylist(for: playlistId)
                 // A stack is what makes the playlist's own links (artist, album) work when the
                 // playlist is opened straight from the sidebar instead of a navigated list.
-                DetailNavigationStack { path in
+                DetailNavigationStack(id: "playlist-\(playlist.id)") { path in
                     PlaylistDetailView(
                         playlist: playlist,
                         viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client),
@@ -644,7 +927,7 @@ struct MainWindow: View {
             case .podcasts:
                 if let vm = podcastsViewModel { PodcastsView(viewModel: vm) }
             case .likedMusic:
-                DetailNavigationStack { path in
+                DetailNavigationStack(id: "likedMusic") { path in
                     PlaylistDetailView(
                         playlist: self.likedMusicPlaylist,
                         viewModel: PlaylistDetailViewModel(playlist: self.likedMusicPlaylist, client: self.client),
@@ -658,7 +941,6 @@ struct MainWindow: View {
                 if let vm = historyViewModel { HistoryView(viewModel: vm) }
             }
         }
-        .environment(self.libraryViewModel)
     }
 
     /// View shown while checking initial login status.
@@ -842,6 +1124,8 @@ enum SidebarSelection: Hashable {
         .environment(WebKitManager.shared)
         .environment(accountService)
 }
+
+// MARK: - MiniPlayerResizeOverlayView
 
 private struct MiniPlayerResizeOverlayView: NSViewRepresentable {
     @Binding var width: CGFloat

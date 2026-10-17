@@ -494,6 +494,67 @@ struct KaraokeFillModelTests {
         #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1280) == 1)
     }
 
+    @Test("A pause waits for a backing vocal that is still sounding, a sung line does not")
+    func aPauseWaitsForABackingVocal() {
+        // A backing phrase whose onset lies past the line's own end: Apple Music writes these
+        // (the "High, the way that you're stuck in my head" under an "I'm sick, I'm sick"),
+        // and the phrase then fills through the interlude the gap after that line becomes.
+        let sung = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 2_000,
+            text: "one two",
+            words: [TimedWord(timeInMs: 0, word: "one"), TimedWord(timeInMs: 1_600, word: " two")],
+            backgroundWords: [TimedWord(timeInMs: 2_100, word: " oh", isBackground: true)]
+        )
+        let pause = SyncedLyricLine(timeInMs: 2_000, duration: 2_000, text: "", words: nil)
+        let next = SyncedLyricLine(timeInMs: 2_000, duration: 2_000, text: "next line", words: nil)
+
+        // Its last word lands at 2150: 150 ms after the line's declared end.
+        #expect(KaraokeFillModel.settleBoundaryMs(for: sung) == 2_150)
+
+        // The dots are silence, and silence does not take the highlight off a row that is still
+        // being sung: the highlight stays for the whole of the backing phrase.
+        let withPause = SyncedLyrics(lines: [sung, pause], source: "HighlightTest")
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_000) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_149) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_150) == 1)
+
+        // A row that *is* being sung still decides for itself — the next line's lead has
+        // arrived, so the highlight has moved even though the preceding backing phrase is
+        // still sweeping (see `settleBoundaryMs` for why the backing never drives this).
+        let withNextLine = SyncedLyrics(lines: [sung, next], source: "HighlightTest")
+        #expect(KaraokeFillModel.highlightIndex(in: withNextLine, at: 2_000) == 1)
+    }
+
+    @Test("A short gap with nothing to sing does not take the highlight either")
+    func aShortSilentRowWaitsToo() {
+        // The `♪` row is the same silence as the dots, one threshold shorter, so the row above
+        // keeps the highlight on the same terms.
+        let sung = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1_000,
+            text: "one",
+            words: [TimedWord(timeInMs: 0, word: "one")],
+            backgroundWords: [TimedWord(timeInMs: 1_300, word: " oh", isBackground: true)]
+        )
+        let gap = SyncedLyricLine(timeInMs: 1_000, duration: 300, text: "", words: nil)
+        let lyrics = SyncedLyrics(lines: [sung, gap], source: "HighlightTest")
+
+        #expect(!lyrics.isPauseLine(at: 1))
+        #expect(KaraokeFillModel.settleBoundaryMs(for: sung) == 1_350)
+        #expect(lyrics.currentLineIndex(at: 1_000) == 1)
+
+        // For the length of the row that has nothing to sing, the highlight stays where the
+        // singing is — the backing phrase lands at 1350, past the row's own 300 ms window.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_000) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_299) == 0)
+
+        // Past the row, the sheet has nothing left at all: the hold is bounded by the silent
+        // row's own window, so it can never outlast it.
+        #expect(lyrics.currentLineIndex(at: 1_300) == nil)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_300) == nil)
+    }
+
     @Test("A line-synced line has settled before the highlight leaves it")
     func lineSyncedLineSettlesBeforeTheHighlightMoves() {
         let line = SyncedLyricLine(timeInMs: 0, duration: 2000, text: "a whole line", words: nil)
@@ -556,18 +617,60 @@ struct KaraokeFillModelTests {
     func frameBudgetsAreOrderedForCost() {
         // The line being sung: the only row anybody is watching move.
         #expect(KaraokeFrameBudget.live < KaraokeFrameBudget.armed)
-        // The line after it: filled by the same clock, but nothing on it moves yet.
-        #expect(KaraokeFrameBudget.armed < KaraokeFrameBudget.covered)
-        // Covered by the fullscreen player: still advanced, just not drawn for anybody.
-        // Never slower than one frame per playback sample, or the clock would drift behind
-        // the samples it corrects against (a frame is capped at 100 ms of playback).
-        #expect(KaraokeFrameBudget.covered <= 0.1)
         // Reduce Motion keeps the fill but drops the decorative motion.
         #expect(KaraokeFrameBudget.reducedMotion > KaraokeFrameBudget.armed)
         // A paused song has a frozen fill: its frames only exist to take up a sample
         // correction or a seek, so they are far apart but never slower than 50 ms.
         #expect(KaraokeFrameBudget.paused > KaraokeFrameBudget.live)
         #expect(KaraokeFrameBudget.paused <= 0.05)
+    }
+
+    /// Which of those budgets a row gets, and which rows are handed no rate at all.
+    ///
+    /// Pinned here because every lyric surface takes this one decision (`KaraokeFrameBudget.plan`), so
+    /// a rule that drifts — a sheet animating where nobody can see it, a paused song redrawing at
+    /// display rate — would otherwise be a difference between the panel, the sidebar and the
+    /// fullscreen player rather than a failing test.
+    @Test("A row's draw plan follows what is on screen, not what is playing")
+    func rowPlansFollowWhatIsOnScreen() {
+        func plan(
+            isLive: Bool = true,
+            isCurrent: Bool = true,
+            isCovered: Bool = false,
+            reduceMotion: Bool = false,
+            isPlaying: Bool = true
+        ) -> KaraokeRowPlan {
+            KaraokeFrameBudget.plan(
+                isLive: isLive,
+                isCurrent: isCurrent,
+                isCovered: isCovered,
+                reduceMotion: reduceMotion,
+                isPlaying: isPlaying
+            )
+        }
+
+        // The line being sung draws at the live rate; a row that is on the clock but is not that
+        // line draws at half of it.
+        #expect(plan() == KaraokeRowPlan(isLive: true, minimumInterval: KaraokeFrameBudget.live))
+        #expect(plan(isCurrent: false).minimumInterval == KaraokeFrameBudget.armed)
+        // A row that is not on the clock is settled: no rate at all, because it draws nothing.
+        #expect(plan(isLive: false) == .settled)
+        #expect(plan(isLive: false).minimumInterval == nil)
+
+        // Reduce Motion and a paused song both keep the fill and drop the display-rate redraw.
+        #expect(plan(reduceMotion: true).minimumInterval == KaraokeFrameBudget.reducedMotion)
+        #expect(plan(isPlaying: false).minimumInterval == KaraokeFrameBudget.paused)
+
+        // A covered sheet draws no frames at all — whatever else is true of it, and including the
+        // line being sung. The panel behind the fullscreen player is out of sight for as long as the
+        // player is up, so its clock is advanced from the playback samples instead of a display link
+        // (`SyncedLyricsDisplayView.receiveClockSample`) and nothing on it is drawn for anybody.
+        for isPlaying in [true, false] {
+            for reduceMotion in [true, false] {
+                #expect(plan(isCovered: true, reduceMotion: reduceMotion, isPlaying: isPlaying) == .settled)
+                #expect(plan(isCovered: true, reduceMotion: reduceMotion, isPlaying: isPlaying).minimumInterval == nil)
+            }
+        }
     }
 
     @Test("The fill ease is monotone between 0 and 1")
@@ -626,31 +729,88 @@ struct KaraokeCharacterTests {
         #expect(characters.allSatisfy { $0.fill(at: word.fillEndMs) == 1 })
     }
 
-    @Test("The emphasis travels through a word one character at a time")
-    func emphasisTravelsCharacterByCharacter() {
+    @Test("The emphasis travels through a word one crest at a time")
+    func emphasisTravelsCrestByCrest() {
         let (word, characters) = Self.word(text: "four", widths: [20, 20, 20, 20])
+        let minimum = KaraokeTiming.standard.minimumCrestMs
+        let crests = KaraokeFillModel.crests(of: characters, minimumDurationMs: minimum)
 
-        // Each character owns its slice, so its lift is spent within that slice: it is not moving
-        // before its own window opens or after it closes, whatever the rest of the word is doing.
-        for character in characters {
-            #expect(character.swell(at: character.fillStartMs) == 0)
-            #expect(character.swell(at: character.fillEndMs) == 0)
-            #expect(character.swell(at: character.fillStartMs - 300) == 0)
-            #expect(character.swell(at: character.fillEndMs + 300) == 0)
+        // This word is slow enough that one character already lasts longer than a crest needs, so
+        // nothing about the wave changes on it: the crests are its characters, one apiece, and each
+        // takes its turn at the head of the wave in reading order — which a lift of the whole word
+        // could never produce.
+        #expect(crests.map(\.range) == characters.indices.map { $0 ... $0 })
+        #expect(characters.allSatisfy { $0.durationMs >= minimum })
+
+        // Each crest's lift is spent within its own window: it is not moving before the window opens
+        // or after it closes, whatever the rest of the word is doing.
+        for crest in crests {
+            #expect(crest.swell(at: crest.fillStartMs) == 0)
+            #expect(crest.swell(at: crest.fillEndMs) == 0)
+            #expect(crest.swell(at: crest.fillStartMs - 300) == 0)
+            #expect(crest.swell(at: crest.fillEndMs + 300) == 0)
         }
 
-        // Every character takes its turn at the head of the wave, in reading order — which is what
-        // a lift of the whole word could never produce.
-        var lifted: [Int] = []
-        var current: Int?
-        for step in stride(from: word.fillStartMs, through: word.fillEndMs, by: 5) {
-            let atEdge = characters.firstIndex { $0.swell(at: step) > 0.5 }
-            if let atEdge, atEdge != current {
-                lifted.append(atEdge)
-                current = atEdge
-            }
+        // And the crests are what the renderer follows: one at a time, in order, with nothing lifted
+        // before the first one opens or after the last one has settled.
+        var lifted: [ClosedRange<Int>] = []
+        for step in stride(from: word.fillStartMs - 300, through: word.fillEndMs + 300, by: 5) {
+            guard let crest = KaraokeFillModel.crest(of: characters, at: step, minimumDurationMs: minimum),
+                  crest.swell(at: step) > 0.5
+            else { continue }
+            if lifted.last != crest.range { lifted.append(crest.range) }
         }
-        #expect(lifted == Array(characters.indices))
+        #expect(lifted == crests.map(\.range))
+        #expect(KaraokeFillModel.crest(of: characters, at: word.fillStartMs - 200, minimumDurationMs: minimum) == nil)
+        #expect(KaraokeFillModel.crest(of: characters, at: word.fillEndMs + 200, minimumDurationMs: minimum) == nil)
+    }
+
+    /// The lift's crest is measured in *time*, not in characters, because what a lift needs to be a
+    /// wave is time: a character sung in 60–90 ms took the whole of its rise and fall inside two or
+    /// three display frames, and the next one took over immediately, so the emphasis read as a
+    /// character popping rather than as a wave crossing the word.
+    @Test("A fast word's emphasis is one crest across several characters")
+    func aFastWordRidesOneCrest() {
+        let text = "twentycharacterslong"
+        let (_, characters) = Self.word(text: text, widths: [CGFloat](repeating: 10, count: text.count))
+        let minimum = KaraokeTiming.standard.minimumCrestMs
+        let crests = KaraokeFillModel.crests(of: characters, minimumDurationMs: minimum)
+
+        // The fast case is the one the crest exists for: the characters are shared out between a
+        // handful of crests rather than one each.
+        #expect(characters.count > 12)
+        #expect(crests.count < characters.count)
+
+        // The crests tile the characters — every one of them belongs to exactly one crest, in reading
+        // order, and a crest never splits a character — so the wave still touches every character once.
+        #expect(crests.map(\.range).flatMap { Array($0) } == Array(characters.indices))
+        #expect(crests.allSatisfy { $0.range.lowerBound <= $0.range.upperBound })
+        for (crest, previous) in zip(crests.dropFirst(), crests) {
+            #expect(crest.range.lowerBound == previous.range.upperBound + 1)
+            // And the windows meet, which is what makes the hand-over continuous: the crest that is
+            // landing has reached rest on the frame the next one leaves it.
+            #expect(crest.fillStartMs == previous.fillEndMs)
+        }
+
+        // Every crest is given the time the minimum asks for: the word's time is shared out evenly
+        // between them, and a crest can only end where a character does, so one comes out within a
+        // character of its share.
+        let total = characters[characters.count - 1].fillEndMs - characters[0].fillStartMs
+        let share = total / Double(crests.count)
+        for crest in crests {
+            let longest = crest.range.map { characters[$0].durationMs }.max() ?? 0
+            #expect(
+                crest.durationMs >= share - longest,
+                "crest \(crest.range) lasted \(crest.durationMs) ms of a \(share) ms share"
+            )
+            // And a crest lasts several display frames, so its rise and fall are seen rather than
+            // aliased: half of one is at least four frames at 60 Hz, where a character's own slice was
+            // two or three frames for the whole of its rise and fall.
+            #expect(
+                crest.durationMs / 2 >= 4 * 1000 / 60,
+                "crest \(crest.range) rose and fell in fewer than eight frames"
+            )
+        }
     }
 
     @Test("A finished word has finished lifting, character by character")
@@ -688,6 +848,100 @@ struct KaraokeCharacterTests {
     func aBlankWordHasNoCharacters() {
         let word = KaraokeWord(index: 0, text: "", isNewWord: true, fillStartMs: 0, fillEndMs: 100)
         #expect(KaraokeFillModel.characters(for: word, weightedBy: []).isEmpty)
+    }
+}
+
+// MARK: - KaraokeFragmentTests
+
+/// A unit a provider timed as a phrase — or as a whole line — is one atom to the flow layout, and
+/// an atom wider than the box it is drawn in cannot wrap: the row was drawn as one line wider than
+/// the panel it was in. These hold the split that gives it somewhere to break — the unit's own
+/// words, each carrying its slice of the unit's fill window, so the row wraps and the karaoke edge
+/// still sweeps the unit in one continuous pass.
+@Suite(.tags(.model))
+struct KaraokeFragmentTests {
+    /// One word-timed unit, as the provider handed it over.
+    private static func unit(text: String) -> KaraokeWord {
+        KaraokeWord(index: 0, text: text, isNewWord: true, fillStartMs: 1000, fillEndMs: 3000)
+    }
+
+    private static func fragments(text: String, widths: [CGFloat]) -> [KaraokeWord] {
+        KaraokeFillModel.fragments(
+            of: Self.unit(text: text),
+            runs: KaraokeFillModel.wordRuns(in: text),
+            characterWidths: widths
+        )
+    }
+
+    @Test("A unit is split at the whitespace it already carries")
+    func unitSplitsAtItsOwnSpaces() {
+        let text = "alpha bravo charlie"
+        let fragments = Self.fragments(text: text, widths: [CGFloat](repeating: 10, count: text.count))
+
+        #expect(fragments.map(\.text) == ["alpha", "bravo", "charlie"])
+        // The whitespace is dropped out of the pieces and the layout puts its own space between
+        // them, as it does between two units: the row reads as the same text with the same gaps.
+        #expect(fragments.allSatisfy { !$0.text.contains(" ") })
+        #expect(fragments.map(\.isNewWord) == [true, true, true])
+
+        // The first piece keeps the unit's own boundary — a provider writes the syllables of one
+        // word as separate units, and that boundary must not become a space — and every later piece
+        // is a word of its own.
+        let glued = KaraokeFillModel.fragments(
+            of: KaraokeWord(index: 0, text: "alpha bravo", isNewWord: false, fillStartMs: 0, fillEndMs: 100),
+            runs: KaraokeFillModel.wordRuns(in: "alpha bravo"),
+            characterWidths: [CGFloat](repeating: 10, count: 11)
+        )
+        #expect(glued.map(\.isNewWord) == [false, true])
+    }
+
+    @Test("The pieces tile the unit's own fill window, in proportion to their widths")
+    func fragmentsTileTheUnitWindow() {
+        let text = "wide narrow"
+        let widths: [CGFloat] = [40, 10, 20, 30, 10, 8, 8, 8, 8, 8, 8]
+        let unit = Self.unit(text: text)
+        let fragments = Self.fragments(text: text, widths: widths)
+        #expect(fragments.count == 2)
+
+        // The slices meet: the first starts with the unit, the next begins where the last ended, and
+        // the last ends with the unit. A unit's fill is therefore unchanged by the split.
+        #expect(fragments[0].fillStartMs == unit.fillStartMs)
+        #expect(fragments[1].fillStartMs == fragments[0].fillEndMs)
+        #expect(abs(fragments[1].fillEndMs - unit.fillEndMs) < 0.001)
+        #expect(abs(fragments.map(\.durationMs).reduce(0, +) - unit.durationMs) < 0.001)
+
+        // The wide word holds the edge for longer than the narrow one, so the edge crosses the unit
+        // at the speed of the text it is crossing — across a break as well as across a word.
+        #expect(fragments[0].durationMs > fragments[1].durationMs)
+    }
+
+    @Test("A unit of one word is one piece, and reads exactly as it did")
+    func aSingleWordUnitIsOnePiece() {
+        let unit = Self.unit(text: "extraordinary")
+        let fragments = Self.fragments(text: "extraordinary", widths: [CGFloat](repeating: 10, count: 13))
+
+        #expect(fragments == [unit])
+    }
+
+    @Test("A unit with nothing to split stays whole")
+    func aUnitWithNothingToSplitStaysWhole() {
+        #expect(KaraokeFillModel.wordRuns(in: "").isEmpty)
+        #expect(KaraokeFillModel.wordRuns(in: "   ").isEmpty)
+
+        let blank = KaraokeWord(index: 0, text: "", isNewWord: true, fillStartMs: 0, fillEndMs: 100)
+        #expect(KaraokeFillModel.fragments(of: blank, runs: [], characterWidths: []) == [blank])
+    }
+
+    @Test("Missing widths still split, sharing the window equally by character")
+    func fragmentsFallBackToEqualShares() {
+        let unit = Self.unit(text: "ab cd")
+        let fragments = Self.fragments(text: "ab cd", widths: [])
+
+        #expect(fragments.map(\.text) == ["ab", "cd"])
+        // Each character is worth the same share, and a piece carries the whitespace that followed
+        // it: two characters plus the space against two characters.
+        #expect(abs(fragments[0].durationMs - unit.durationMs * 0.6) < 0.001)
+        #expect(abs(fragments[1].durationMs - unit.durationMs * 0.4) < 0.001)
     }
 }
 

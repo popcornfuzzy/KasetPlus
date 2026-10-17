@@ -78,6 +78,51 @@ struct SettingsManagerTests {
         #expect(manager.preferAudioVersionsEnabled == true)
     }
 
+    @Test("Default nowPlayingSidebarEnabled is true")
+    func defaultNowPlayingSidebarEnabled() {
+        // The Now Playing sidebar is the default right-sidebar design; the classic lyrics/queue
+        // panels are the opt-out. Like the other default tests, this expects an unmodified
+        // UserDefaults.
+
+        let manager = SettingsManager.shared
+        #expect(manager.nowPlayingSidebarEnabled == true)
+    }
+
+    @Test("nowPlayingSidebarEnabled persists to UserDefaults")
+    func nowPlayingSidebarEnabledPersists() {
+        let manager = SettingsManager.shared
+        let original = manager.nowPlayingSidebarEnabled
+        // Leave UserDefaults exactly as it was found: a machine that has never stored this key must
+        // not gain one from a test run, or the "default is ..." test above would read the test's
+        // leftovers instead of the reader's real state.
+        let hadStoredValue = UserDefaults.standard.object(forKey: "settings.nowPlayingSidebarEnabled") != nil
+        defer {
+            manager.nowPlayingSidebarEnabled = original
+            if !hadStoredValue {
+                UserDefaults.standard.removeObject(forKey: "settings.nowPlayingSidebarEnabled")
+            }
+        }
+
+        manager.nowPlayingSidebarEnabled = false
+
+        #expect(UserDefaults.standard.bool(forKey: "settings.nowPlayingSidebarEnabled") == false)
+
+        manager.nowPlayingSidebarEnabled = original
+    }
+
+    @Test("nowPlayingSidebarWidth persists to UserDefaults")
+    func nowPlayingSidebarWidthPersists() {
+        let manager = SettingsManager.shared
+        let original = manager.nowPlayingSidebarWidth
+        defer { manager.nowPlayingSidebarWidth = original }
+
+        manager.nowPlayingSidebarWidth = 452
+
+        #expect(UserDefaults.standard.double(forKey: "settings.nowPlayingSidebarWidth") == 452)
+
+        manager.nowPlayingSidebarWidth = original
+    }
+
     @Test("Disabling rememberPlaybackSettings clears persisted values")
     func disablingRememberPlaybackSettingsClearsValues() {
         let manager = SettingsManager.shared

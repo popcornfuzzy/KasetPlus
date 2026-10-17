@@ -147,6 +147,23 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether the mini player should be shown.
     var showMiniPlayer: Bool = false
 
+    /// Which window currently hosts the shared player surface (the singleton WebView's layer).
+    ///
+    /// ## Why this has to be stated
+    ///
+    /// The app has exactly one `WKWebView` for playback, and `PersistentPlayerView` *re-parents* it
+    /// into whichever container is on screen. A view can have only one superview, so two windows
+    /// cannot both show it: whichever `PersistentPlayerView` laid out last wins, and the other
+    /// window's layer goes blank. Left implicit, that is a race — a second window appearing would
+    /// silently steal the video mid-song, and a DRM-protected stream does not survive being yanked
+    /// out of its view hierarchy.
+    ///
+    /// So the surface has exactly one owner, named here, and every host asks before it claims it
+    /// (`PlayerSurfaceHost.claimsSurface`). The mini player panel is the only thing that can move the
+    /// surface off the main window, and moving it back is explicit (see `PlayerService
+    /// .setPlayerSurfaceHost(_:)`).
+    private(set) var playerSurfaceHost: PlayerSurfaceHost = .mainWindow
+
     /// True when the user explicitly enabled the mini player with the player bar toggle.
     private(set) var miniPlayerEnabledByUser: Bool = false
 
@@ -208,6 +225,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showLyrics, self.showFullscreenNowPlaying {
                 self.showFullscreenNowPlaying = false
             }
+            // Mutual exclusivity: only one right sidebar design at a time
+            if self.showLyrics, self.nowPlayingSidebarPage != nil {
+                self.nowPlayingSidebarPage = nil
+            }
         }
     }
 
@@ -225,16 +246,45 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             if self.showQueue, self.showFullscreenNowPlaying {
                 self.showFullscreenNowPlaying = false
             }
+            // Mutual exclusivity: only one right sidebar design at a time
+            if self.showQueue, self.nowPlayingSidebarPage != nil {
+                self.nowPlayingSidebarPage = nil
+            }
         }
     }
 
     /// Whether the full-window now playing experience is visible.
+    ///
+    /// It leaves the **Now Playing sidebar where it is**. The player covers the window, so the column
+    /// behind it is out of sight either way — but closing it here changed the reader's window layout from a
+    /// view they did not touch, and gave the presentation a *window* operation to perform (AppKit collapses
+    /// the split item, the window's minimum width is restated for the panes that are left, and it may be
+    /// resized to hold them) in the same turn that the player was being put up. A column that was open is
+    /// still open when the reader comes back out, which is what they left.
     var showFullscreenNowPlaying: Bool = false {
         didSet {
             if self.showFullscreenNowPlaying {
                 self.showLyrics = false
                 self.showQueue = false
             }
+        }
+    }
+
+    /// Page the "Now Playing" right sidebar is showing; `nil` means it is hidden.
+    ///
+    /// Only consulted while `SettingsManager.nowPlayingSidebarEnabled` is on — the classic
+    /// `showLyrics`/`showQueue` panels keep their own state, so switching the setting never leaves a
+    /// stale panel behind. `overview` is the sidebar itself; `lyrics`/`queue` are the two cards
+    /// expanded to the full experience.
+    var nowPlayingSidebarPage: NowPlayingSidebarPage? {
+        didSet {
+            guard self.nowPlayingSidebarPage != nil else { return }
+            // One right sidebar at a time. Opening the column is the reader asking for it, so it also
+            // leaves the fullscreen player — the reverse direction of `showFullscreenNowPlaying`, which
+            // deliberately leaves the column alone.
+            if self.showLyrics { self.showLyrics = false }
+            if self.showQueue { self.showQueue = false }
+            if self.showFullscreenNowPlaying { self.showFullscreenNowPlaying = false }
         }
     }
 
@@ -355,6 +405,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             }
         }
 
+        // The Now Playing sidebar is the app's right sidebar, and the Setting that switches to it is the
+        // reader's choice of design — so the window opens with the column already open rather than making
+        // them open it on every launch. It is stated here, in the service's own construction, because the
+        // window is created from `isNowPlayingSidebarVisible` and has to see it before its first layout.
+        // The column has a "Nothing playing" state, so this is safe with nothing on the transport.
+        if SettingsManager.shared.nowPlayingSidebarEnabled {
+            self.nowPlayingSidebarPage = .overview
+            self.logger.info("Now Playing sidebar opened at launch (the sidebar design is enabled)")
+        }
+
         // Restore volumeBeforeMute for proper unmute behavior
         if UserDefaults.standard.object(forKey: Self.volumeBeforeMuteKey) != nil {
             let savedVolumeBeforeMute = UserDefaults.standard.double(
@@ -433,6 +493,32 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         UserDefaults.standard.set(clampedRate, forKey: Self.playbackRateKey)
         SingletonPlayerWebView.shared.setPlaybackRate(clampedRate)
         self.logger.info("Playback rate set to \(clampedRate)x")
+    }
+
+    /// Whether the shared player surface has been detached into the mini player panel.
+    ///
+    /// The one thing both windows ask before hosting the surface: the main window stands down while
+    /// this is true, and the panel is the only host. Stating it as a property — rather than each host
+    /// testing `playerSurfaceHost` itself — is what keeps the two answers from drifting apart.
+    var isPlayerSurfaceDetachedToPanel: Bool {
+        self.playerSurfaceHost == .miniPlayerPanel
+    }
+
+    /// Whether the player bar's mini player button should detach the player into its own window
+    /// (General settings) rather than float the in-window layer.
+    var isMiniPlayerWindowModeEnabled: Bool {
+        SettingsManager.shared.miniPlayerWindowModeEnabled
+    }
+
+    /// Moves the shared player surface to a window, or back to the main window.
+    ///
+    /// The surface host is what the panel is *for*: detaching the mini player hands the WebView to
+    /// the panel, and closing the panel hands it back. A no-op when the host is already the requested
+    /// one, so a panel that is merely being re-laid-out cannot re-trigger a move.
+    func setPlayerSurfaceHost(_ host: PlayerSurfaceHost) {
+        guard self.playerSurfaceHost != host else { return }
+        self.playerSurfaceHost = host
+        self.logger.info("Player surface host: \(host.rawValue)")
     }
 
     /// Toggles user-controlled mini player visibility from the player bar.
@@ -542,6 +628,56 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     private func cancelMiniPlayerFallback() {
         self.miniPlayerFallbackTask?.cancel()
         self.miniPlayerFallbackTask = nil
+    }
+
+    // MARK: - Now Playing Sidebar
+
+    /// Whether the Setting that swaps the classic lyrics/queue panels for the Now Playing sidebar is on.
+    var isNowPlayingSidebarEnabled: Bool {
+        SettingsManager.shared.nowPlayingSidebarEnabled
+    }
+
+    /// Whether the Now Playing sidebar is on screen.
+    var isNowPlayingSidebarVisible: Bool {
+        self.nowPlayingSidebarPage != nil
+    }
+
+    /// Whether the transport's lyrics button reads as active.
+    var isLyricsPanelActive: Bool {
+        self.isNowPlayingSidebarEnabled ? self.nowPlayingSidebarPage == .lyrics : self.showLyrics
+    }
+
+    /// Whether the transport's queue button reads as active.
+    var isQueuePanelActive: Bool {
+        self.isNowPlayingSidebarEnabled ? self.nowPlayingSidebarPage == .queue : self.showQueue
+    }
+
+    /// Shows, switches, or collapses the Now Playing sidebar from a transport button.
+    ///
+    /// The first press opens the overview rather than a page, because the overview *is* the design:
+    /// artwork, lyric preview and up next. A second press on the same button expands its card, and
+    /// pressing the other button switches straight to that card. The sidebar's own close button is
+    /// what hides it.
+    func toggleNowPlayingSidebar(page: NowPlayingSidebarPage) {
+        switch self.nowPlayingSidebarPage {
+        case nil:
+            self.nowPlayingSidebarPage = .overview
+        case .overview:
+            self.nowPlayingSidebarPage = page
+        case let current:
+            self.nowPlayingSidebarPage = current == page ? .overview : page
+        }
+        self.logger.debug("Now Playing sidebar page: \(self.nowPlayingSidebarPage?.rawValue ?? "hidden")")
+    }
+
+    /// Shows the Now Playing sidebar on a specific page (used by the cards' expand actions).
+    func setNowPlayingSidebarPage(_ page: NowPlayingSidebarPage) {
+        self.nowPlayingSidebarPage = page
+    }
+
+    /// Hides the Now Playing sidebar.
+    func closeNowPlayingSidebar() {
+        self.nowPlayingSidebarPage = nil
     }
 
     /// Toggles between popup and side panel queue display modes.
@@ -800,16 +936,26 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         if let tokens = song.feedbackTokens {
             self.currentTrackFeedbackTokens = tokens
             self.currentTrackInLibrary = song.isInLibrary ?? false
-            if let likeStatus = song.likeStatus {
-                self.currentTrackLikeStatus = likeStatus
-            }
         }
 
         // SongLikeStatusManager cache is the most up-to-date source for like status;
         // use it to correct stale/missing song.likeStatus immediately.
         if let cachedStatus = SongLikeStatusManager.shared.status(for: song.videoId) {
             self.currentTrackLikeStatus = cachedStatus
+        } else if let likeStatus = song.likeStatus, likeStatus != .indifferent {
+            // A rating the song itself states is trusted and seeded into the cache, exactly as a
+            // restored session does (see `applyRestoredPlaybackSession`). This is what lights the
+            // transport's thumb for a song played from the Liked Music page: that page states each
+            // row's rating (it *is* the list of liked songs) and its rows carry no feedback tokens,
+            // because playlist parsing reads no per-track menus — so gating the stated rating on
+            // tokens dropped it, and the thumb read "not liked" for a liked song.
+            self.currentTrackLikeStatus = likeStatus
+            SongLikeStatusManager.shared.setStatus(likeStatus, for: song.videoId)
         }
+        // Nothing known about this song leaves the status as it is: a new track has already had it
+        // reset above, and replaying the *same* track must not wipe a rating that only exists on this
+        // service (the cache is written on every rating, but a state a surface set directly is not in
+        // it). `fetchSongMetadata` below, and the WebView's own observation, fill an unknown status in.
 
         self.pendingPlayVideoId = song.videoId
 

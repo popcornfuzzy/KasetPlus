@@ -159,9 +159,11 @@ pushes through the page's `onNavigateToArtist` closure and never through a `Navi
 in the header row, the page registers no destination of its own, and the header is the list's first row
 rather than a section header.
 
-`testHeaderActionRowSitsOnTheThumbnail` asserts the geometry and the scrolling: the action row ends
-with the thumbnail, the gap above it stays under 100 pt, the thumbnail stays inside the window, and
-swiping the list carries the header with it. `PlaylistArtistNavigationUITests` clicks the credit,
+`testHeaderActionRowSitsOnTheArtworkBottomEdge` (renamed from `testHeaderActionRowSitsOnTheThumbnail`)
+asserts the geometry and the scrolling: the header is not stretched, the row ends on the thumbnail's
+bottom edge, the thumbnail stays inside the window, and swiping the list carries the header with it.
+[ADR-0033](0033-playlist-header-action-row.md) keeps this alignment and makes the row responsive —
+the controls that do not fit beside Play and Shuffle move into the row's "…" menu. `PlaylistArtistNavigationUITests` clicks the credit,
 presses Back and clicks it again, which is the click that used to be ignored.
 
 ## Consequences
@@ -177,8 +179,9 @@ presses Back and clicks it again, which is the click that used to be ignored.
 ### Negative
 
 - The header's height is the thumbnail's 180 pt plus the row insets, so it cannot be squeezed for a
-  short window the way a flexible height could; the action row clips instead of shrinking below it.
-  Scrolling does recover the space, since the header scrolls with the tracks.
+  short window the way a flexible height could; the action row gives way instead of shrinking — it
+  folds its secondary actions into the "…" menu as its width shrinks (ADR-0033). Scrolling does
+  recover the space, since the header scrolls with the tracks.
 - Every stack that can show the page has to hand it the artist path: `navigationDestinations(client:artistPath:)`
   takes the stack's `NavigationPath`, `LibraryView` passes its own to its hand-rolled destination, and
   `MainWindow`'s `DetailNavigationStack` routes use the binding it gives their content. A stack that

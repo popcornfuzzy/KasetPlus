@@ -158,8 +158,9 @@ Browse endpoints use `POST /browse` with a `browseId` parameter.
 | `FEmusic_charts` | Charts | 🌐 | Top songs, albums by country/genre | `HomeResponseParser` |
 | `FEmusic_moods_and_genres` | Moods & Genres | 🌐 | Browse by mood/genre grids | `HomeResponseParser` |
 | `FEmusic_new_releases` | New Releases | 🌐 | Recent albums, singles, videos | `HomeResponseParser` |
-| `FEmusic_library_landing` | Library Landing | 🔐 | All library content (playlists, podcasts, artists) | `PlaylistParser.parseLibraryContent` |
+| `FEmusic_library_landing` | Library Landing | 🔐 | Library shelves (playlists, podcasts, artists — **not** saved albums) | `PlaylistParser.parseLibraryContent` |
 | `FEmusic_liked_playlists` | Library Playlists | 🔐 | User's saved/created playlists | `PlaylistParser` |
+| `FEmusic_liked_albums` | Library Albums | 🔐 | User's saved albums, listed by album page (`MPREb_…`) | `PlaylistParser.parseLibraryContent` |
 | `VLLM` | Liked Songs | 🔐 | All songs user has liked (with pagination) | `PlaylistParser` |
 | `VL{playlistId}` | Playlist Detail | 🌐 | Playlist tracks and metadata | `PlaylistParser` |
 | `UC{channelId}` | Artist Detail | 🌐 | Artist page with songs, albums | `ArtistParser` |
@@ -168,6 +169,15 @@ Browse endpoints use `POST /browse` with a `browseId` parameter.
 | `MPSPP{id}` | Podcast Show Detail | 🌐 | Podcast episodes with playback progress | `PodcastParser` |
 
 > **Note**: Charts, Moods & Genres, and New Releases all use `HomeResponseParser` since they share the same section-based response structure. `VLLM` is a special case of `VL{playlistId}` where `LM` is the Liked Music playlist ID. Do NOT use `FEmusic_liked_videos` — it returns only ~13 songs without pagination.
+>
+> ⚠️ **Saved albums are not in the landing.** They live behind their own filter, `FEmusic_liked_albums`
+> (verified 2026-10-16: `HTTP 200`, sign-in gated, so the ID is real), the way followed artists have
+> `FEmusic_library_corpus_artists`. A library built from the landing alone therefore loses every saved
+> album — including one just added, which is why "Add to Library" on an album looked like it undid itself
+> on the next refresh. `FEmusic_library_albums` is **not** the endpoint: bare it answers `HTTP 400`
+> *Request contains an invalid argument*, and so does the `params` this doc used to pair with it.
+> `YTMusicClient.getLibraryContent()` fetches the landing, the artists corpus and the albums filter, and
+> merges them by normalized ID.
 
 #### Home (`FEmusic_home`)
 
@@ -508,7 +518,7 @@ let body: [String: Any] = [
 - `getLyrics(videoId:)` - Extracts lyrics browse ID
 - `getSong(videoId:)` - Gets full song metadata with tokens
 - `getRadioQueue(videoId:)` - Gets radio mix (with `playlistId: "RDAMVM{videoId}"`)
-- `getMixQueue(playlistId:)` - Gets artist mix (with `playlistId: "RDEM..."`)
+- `getMixQueue(playlistId:)` - Gets artist mix (with `playlistId: "RDEM..."`) and a playlist's or album's radio (with the `RDAMPL…` mix its browse header names — see *Playlist and album radio* below)
 - `getTunedMixQueue(playlistId:params:videoId:)` - Gets a re-tuned automix (a `QueueTunerChip`)
 
 ##### Queue tuning row (automix filters)
@@ -602,6 +612,59 @@ _ = try await request("next", body: body)
 
 Response structure: `continuationContents.playlistPanelContinuation.contents`
 
+##### Playlist and album radio ("Start mix")
+
+A playlist's and an album's page offers **Start mix** — the page's radio — in the header's actions
+menu, and it names a *separate* mix playlist rather than reusing the item's own ID.
+
+**Path** (browse of `VLPL…` or `MPREb_…`, both signed out):
+```
+contents.twoColumnBrowseResultsRenderer.tabs[0].tabRenderer.content
+  .sectionListRenderer.contents[0].musicResponsiveHeaderRenderer.buttons[]
+    .menuRenderer.items[]                      // "Shuffle play", "Find in playlist", "Start mix", …
+      .menuNavigationItemRenderer.icon.iconType = "MIX"
+      .navigationEndpoint.watchPlaylistEndpoint
+```
+
+```json
+{
+  "menuNavigationItemRenderer": {
+    "icon": { "iconType": "MIX" },
+    "text": { "runs": [{ "text": "Start mix" }] },
+    "navigationEndpoint": {
+      "watchPlaylistEndpoint": {
+        "playlistId": "RDAMPLPLC_p_8OePYz9eASKxfWhsG-VOdxbHir-O",
+        "params": "wAEB"
+      }
+    }
+  }
+}
+```
+
+**ID shape**: `RDAMPL` + the item's audio playlist ID — `RDAMPL` + `PL…` for a playlist,
+`RDAMPL` + the album's `OLAK5uy_…` for an album. The sibling **Shuffle play** item points at the
+item itself (`PL…` / `OLAK5uy_…`), so the `RDAMPL` prefix is what identifies the radio. The item's
+label is localized and its position in the menu is not fixed.
+
+**A playlist's ID can be derived, an album's cannot.** For a *playlist*, the header's target is
+exactly `RDAMPL` + the raw playlist ID (browse id minus a `VL` prefix) — confirmed byte-for-byte on
+three public playlists. An album is different: its mix names the album's `OLAK5uy_…` audio playlist,
+which no derived form of its `MPREb_…` page ID produces.
+
+> ⚠️ Deriving from the *displayed* ID only works when it is the bare playlist ID. `RDAMPL` +
+> `VLPL…` (left intact) and `RDAMPL` + `MPREb_…` both answer an unrelated generic mix rather than
+> the item's radio, and a mix-shaped playlist (`RDCLAK…`) must not be wrapped either.
+
+**Queue**: fetched exactly like an artist mix — `next` with that `playlistId`. The header's
+`params` (`wAEB`) is optional: probing with and without it returns the same mix queue shape (50
+songs, a `nextRadioContinuationData` token and a `subHeaderChipCloud` tuning row).
+
+**Parser**: `PlaylistParser.parseRadioPlaylistId(_:playlistId:)` → `PlaylistDetail.mixPlaylistId`.
+It reads the header first — the header renderers are collected by name anywhere in the response,
+because an owned playlist wraps its own in `musicEditablePlaylistDetailHeaderRenderer` — and falls
+back to the derived `RDAMPL` + raw-ID target for a playlist. A page with neither (an item whose mix
+nobody named, an album without a header target) gets `nil`.
+
 ---
 
 #### Like/Dislike (`like/*`)
@@ -614,10 +677,29 @@ _ = try await request("like/like", body: body)
 // Like a playlist
 let body = ["target": ["playlistId": "PLxyz..."]]
 _ = try await request("like/like", body: body)
+// The page's own save/remove menu item names this target: its `likeEndpoint` carries
+// `target.playlistId`, which is the ID to prefer over anything derived here.
 
 // Remove like
 _ = try await request("like/removelike", body: body)
 ```
+
+> ⚠️ **The library write takes a playlist ID, not a page ID.** `like/like` and `like/removelike` with
+> `target.playlistId` are what "Add to / Remove from Library" sends (the song path uses `feedback`
+> tokens instead). The IDs it acts on are a playlist's own ID (`PL…`) and an album's `OLAK5uy_…` audio
+> playlist — the same ID the library lists an album under, so it is also the ID membership has to be read
+> back by. An album's page ID (`MPREb_…`) is not one of them: it is the browse ID, and the album's audio
+> playlist has to come from somewhere else — the album header's radio target names it (`RDAMPL` +
+> `OLAK5uy_…`, see *Playlist and album radio* above), which is what `PlaylistDetail.libraryId` reads. A
+> generated mix or radio (`RD…`, `RDCLAK…`) is not a target at all: nothing stores one.
+> `Playlist.isLibraryHoldable(id:)` / `PlaylistDetail.libraryId` are where the app draws that line.
+>
+> ⚠️ **Membership is read back by either spelling.** The library lists a saved album by its page
+> (`MPREb_…`) while the album is saved under its `OLAK5uy_…` audio playlist, so a page has to answer for
+> both (`PlaylistDetail.libraryMatchIds`) or an album the account owns reads as unsaved — and the refresh
+> that follows an add then drops it. Writes go the other way: only the playlist ID is ever sent, because
+> `like/like` answers an `MPREb_…` page ID with `HTTP 404 NOT_FOUND` (the failure ytmusicapi documents as
+> "you are using a browseId, not a playlistId").
 
 ---
 
@@ -1222,10 +1304,15 @@ For authenticated endpoints (🔐), sign in to the Kaset app first:
 # If authenticated, explore library endpoints
 ./Tools/api-explorer.swift browse FEmusic_liked_playlists
 ./Tools/api-explorer.swift browse FEmusic_history
-./Tools/api-explorer.swift browse FEmusic_library_albums ggMGKgQIARAA
+./Tools/api-explorer.swift browse FEmusic_liked_albums
 ```
 
 Debug builds export auth cookies for the API explorer to `~/Library/Application Support/Kaset/cookies.dat`.
+When that file is missing — it is written by DEBUG builds only, and inside its container when the app is
+sandboxed — the explorer falls back to the app's cookie archive in the login Keychain
+(`com.kaset.auth-cookies` / `youtube-music-cookies`), so a signed-in app is reachable either way. macOS may
+ask the human to allow the read; a refusal is reported as "no cookies found". No cookie value is ever
+printed, not even truncated.
 
 ### Brand Account Support
 

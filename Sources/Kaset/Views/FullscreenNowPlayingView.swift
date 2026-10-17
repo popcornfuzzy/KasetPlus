@@ -12,10 +12,6 @@ struct FullscreenNowPlayingView: View {
     let client: any YTMusicClientProtocol
 
     private enum Layout {
-        /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
-        /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
-        /// artwork surface in the app — render slightly upscaled from its own downloaded data.
-        static let artworkMaxDimension: CGFloat = 380
         /// Corner radius of the artwork card. Apple Music's full-screen artwork is only gently rounded —
         /// noticeably squarer than the 22pt card this replaced.
         static let artworkCornerRadius: CGFloat = 14
@@ -32,7 +28,6 @@ struct FullscreenNowPlayingView: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var isLoadingFallback = false
     @State private var seekValue: Double = 0
-    @State private var lyricsTimeMs: Int = 0
     @State private var isSeeking = false
     /// The fullscreen player's key monitor, installed for one presentation.
     ///
@@ -51,14 +46,16 @@ struct FullscreenNowPlayingView: View {
     ///
     /// Scoped to the presentation: installed when the player is presented and removed when it is
     /// not (see `startPresentation`/`endPresentation`), so nothing outside the player is affected.
+    ///
+    /// It is deliberately not remembered *which* window it answers for: the host is resolved per
+    /// keystroke (see `FullscreenKeyRouting` and `fullscreenHostWindow`), because a window number
+    /// captured at install time is a number that can be wrong for every key after it.
     @State private var keyMonitor: Any?
-    /// The window the monitor answers for, so a key typed into another window — Settings, a sheet —
-    /// is left alone. The player is an overlay inside the main window, which is found the way
-    /// `KasetApp.showMainWindow()` finds it. `nil` (no window identifiable yet) means the monitor
-    /// answers for every window, which is what it did before it had this guard.
-    @State private var keyMonitorWindowNumber: Int?
     @State private var canvasReady = false
     @State private var canvasFailed = false
+    /// When the reader asked to leave, so the exit can report how long it took to land. The one number
+    /// that says whether "leaving sometimes takes really long" is happening in the build in front of them.
+    @State private var dismissalRequestedAt: Date?
     /// How far the incoming artwork is currently nudged off its resting place: positive for a skip
     /// forward, negative for a skip back, zero when nothing is arriving.
     @State private var trackArrivalOffset: CGFloat = 0
@@ -111,7 +108,7 @@ struct FullscreenNowPlayingView: View {
             .zIndex(10_000)
         }
         .onExitCommand {
-            self.closeFullscreenNowPlaying()
+            self.closeFullscreenNowPlaying(route: .escape)
         }
         // Every feature below is scoped to one *presentation* and is (re)initialized from the flag
         // transition, never from this view instance being new. `MainWindow` keeps the content alive
@@ -129,13 +126,17 @@ struct FullscreenNowPlayingView: View {
                 self.endPresentation()
             }
         }
+        // These three mirrors stop while the player is hidden. It is mounted for the whole session from its
+        // first presentation on (so leaving it is not an insertion/removal that has to complete), which
+        // makes the hidden player's cost something to state explicitly: a karaoke sheet redrawing four
+        // times a second behind an invisible overlay, and a lyric lookup fetched for a player nobody has
+        // open. `startPresentation` seeds all of it again when the reader comes back.
         .onChange(of: self.playerService.progress) { _, _ in
+            guard self.playerService.showFullscreenNowPlaying else { return }
             if !self.isSeeking { self.seekValue = self.normalizedProgress }
         }
-        .onChange(of: self.playerService.currentTimeMs) { _, newTimeMs in
-            self.lyricsTimeMs = newTimeMs
-        }
         .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
+            guard self.playerService.showFullscreenNowPlaying else { return }
             self.startLyricsLoad(for: newVideoId)
             self.animateTrackArrival()
         }
@@ -173,7 +174,10 @@ struct FullscreenNowPlayingView: View {
                     identity: self.playerService.currentTrack?.videoId,
                     // Same decode target as the artwork card: the two views share one fetch per URL, so
                     // matching targets keeps that shared decode at the size the card needs.
-                    targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
+                    targetSize: CGSize(
+                        width: FullscreenArtworkGeometry.maxSide,
+                        height: FullscreenArtworkGeometry.maxSide
+                    )
                 ) { image in
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: { Rectangle().fill(.black) }
@@ -189,14 +193,15 @@ struct FullscreenNowPlayingView: View {
 
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
         let columnSpacing = max(10, min(16, availableHeight * 0.018))
-        let artworkMaxHeight = min(max(200, availableHeight * 0.46), Layout.artworkMaxDimension)
-        let contentWidth = min(width, 440)
-        let mediaWidth = min(contentWidth, artworkMaxHeight)
+        // The art takes the height the column has *left*, not a share of the stage. A share cannot know
+        // what the meta and the transport need, and they need the same in a short window as in a tall one —
+        // see `FullscreenArtworkGeometry`, which is where that arithmetic lives now.
+        let mediaWidth = FullscreenArtworkGeometry(columnWidth: width, stageHeight: availableHeight).side
         return VStack(alignment: .center, spacing: columnSpacing) {
             // The art and the song's name move as one on a skip: Apple Music hands the new
             // song in from the side it was skipped from instead of cutting to it.
             VStack(alignment: .center, spacing: columnSpacing) {
-                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: artworkMaxHeight).padding(.bottom, 12)
+                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: mediaWidth).padding(.bottom, 12)
                 self.trackMeta.frame(width: mediaWidth, alignment: .leading)
             }
             .offset(x: self.trackArrivalOffset)
@@ -241,12 +246,18 @@ struct FullscreenNowPlayingView: View {
     }
 
     private var fullscreenCloseButton: some View {
-        Button { self.closeFullscreenNowPlaying() } label: {
+        Button { self.closeFullscreenNowPlaying(route: .closeButton) } label: {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
                 .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
                 .padding(10).background(.black.opacity(0.36), in: Circle())
         }
         .buttonStyle(.plain)
+        // Deliberately no `.keyboardShortcut(.cancelAction)` here. It reads like a free second route for
+        // `Escape`, but it registers the button with AppKit's key-equivalent machinery, and the button's
+        // action removes the view that key-equivalent registration belongs to — mutating the window's
+        // chrome and its command table from inside the dispatch of the key that just ran. `Escape`
+        // already has two routes that do not do that: `.onExitCommand` above, which is the responder
+        // chain's own cancel action, and the monitor below.
         .accessibilityLabel(String(localized: "Exit Fullscreen Now Playing"))
     }
 
@@ -290,7 +301,10 @@ struct FullscreenNowPlayingView: View {
             url: self.playerService.currentTrack?.thumbnailURL?.highQualityThumbnailURL,
             fallbackURL: self.playerService.currentTrack?.thumbnailURL,
             identity: self.playerService.currentTrack?.videoId,
-            targetSize: CGSize(width: Layout.artworkMaxDimension, height: Layout.artworkMaxDimension)
+            targetSize: CGSize(
+                width: FullscreenArtworkGeometry.maxSide,
+                height: FullscreenArtworkGeometry.maxSide
+            )
         ) { image in
             image.resizable().aspectRatio(contentMode: .fill)
         } placeholder: {
@@ -441,7 +455,23 @@ struct FullscreenNowPlayingView: View {
                 } else {
                     switch self.syncedLyricsService.currentLyrics {
                     case let .synced(synced):
-                        FullscreenSyncedLyricsView(lyrics: synced, currentTimeMs: self.lyricsTimeMs, isPlaying: self.playerService.isPlaying, onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }).background(.clear).mask(self.lyricsFadeMask)
+                        // The clock stream stops at the sheet (`LyricsClockReader`). This overlay is
+                        // mounted for the whole session — a blurred backdrop, the artwork card, the
+                        // transport controls, this sheet — and it used to mirror the playback
+                        // position into its own state, which rebuilt all of that ten times a second
+                        // to hand the sheet a number only the sheet uses.
+                        LyricsClockReader { currentTimeMs, isPlaying, isFullscreenPresented in
+                            FullscreenSyncedLyricsView(
+                                lyrics: synced,
+                                currentTimeMs: currentTimeMs,
+                                isPlaying: isPlaying,
+                                // This sheet is covered by *not* being presented: the overlay is
+                                // faded out rather than unmounted between presentations.
+                                isCovered: !isFullscreenPresented,
+                                onSeek: { timeMs in Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) } }
+                            )
+                        }
+                        .background(.clear).mask(self.lyricsFadeMask)
                     case let .plain(plain):
                         ScrollView {
                             VStack(alignment: .leading, spacing: 0) {
@@ -480,7 +510,40 @@ struct FullscreenNowPlayingView: View {
     }
     private func formatTime(_ time: TimeInterval) -> String { guard time.isFinite else { return "0:00" }; let totalSeconds = max(Int(time), 0); return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60) }
     private func updateLyricsPolling(for result: LyricResult) { if case .synced = result { SingletonPlayerWebView.shared.startLyricsPoll() } else { SingletonPlayerWebView.shared.stopLyricsPoll() } }
-    private func closeFullscreenNowPlaying() { withAnimation(AppAnimation.standard) { self.playerService.showFullscreenNowPlaying = false } }
+    /// Which control asked to leave, so the log says how a presentation ended — the difference
+    /// between "the close button does nothing" and "the player was never presented" is this line.
+    private enum ExitRoute: String {
+        case closeButton = "close button"
+        case escape = "Escape"
+    }
+
+    private func closeFullscreenNowPlaying(route: ExitRoute) {
+        guard self.playerService.showFullscreenNowPlaying else { return }
+        DiagnosticsLogger.ui.notice("Fullscreen now playing dismissed (\(route.rawValue, privacy: .public))")
+        MainThreadStallReporter.shared.note("the fullscreen player was asked to leave (\(route.rawValue))")
+        self.dismissalRequestedAt = Date()
+        // The dismissal leaves the event that asked for it before it touches the flag.
+        //
+        // Every route in here is a key or a click: `Escape` arrives inside AppKit's event dispatch (the
+        // monitor runs from `nextEventMatchingMask`, `.onExitCommand` from the responder chain) and the
+        // button inside the mouse event that pressed it. Clearing the flag from there tears down the
+        // overlay, restores the window's toolbar and re-lays the titlebar *while AppKit is still inside
+        // that dispatch* — and a titlebar layout that waits on the runloop turn the event itself is
+        // holding is a window that stops responding until something else happens. Reported as "it hangs
+        // when I press Escape or the button, and then pressing play/pause with the mouse lets it go".
+        // One turn of the runloop later none of it is re-entrant, and the reader cannot see the turn.
+        Task { @MainActor in
+            guard self.playerService.showFullscreenNowPlaying else { return }
+            MainThreadStallReporter.shared.note("the fullscreen dismissal is being applied")
+            // Deliberately **no** `withAnimation` around this write: called from this `Task` it is a
+            // transaction belonging to no update, and the write then left the window's own update (the
+            // overlay's opacity, the toolbar, the titlebar) unflushed for 5 to 33 seconds, with the player
+            // still covering the window and both of its controls inert for the whole of it. The fade is
+            // declared on the value (`MainWindow`'s overlay), so nothing is lost. See ADR-0026.
+            self.playerService.showFullscreenNowPlaying = false
+            DiagnosticsLogger.ui.notice("Fullscreen now playing dismissal applied")
+        }
+    }
 
     /// Sets up everything scoped to one fullscreen presentation: the local seek/lyrics mirrors, the
     /// canvas crossfade state, the Escape key monitor, the shared lyrics poll, and the lyric lookup for
@@ -493,13 +556,54 @@ struct FullscreenNowPlayingView: View {
         // A previous presentation may have ended mid-drag; the slider has to follow playback again.
         self.isSeeking = false
         self.seekValue = self.normalizedProgress
-        self.lyricsTimeMs = self.playerService.currentTimeMs
         // A fresh canvas player reports readiness again; a canvas that failed last time gets retried.
         self.canvasReady = false
         self.canvasFailed = false
+        DiagnosticsLogger.ui.notice("Fullscreen now playing presentation started")
+        MainThreadStallReporter.shared.note("the fullscreen player is being presented")
+        self.scheduleClaimHostWindow()
         self.installKeyMonitorIfNeeded()
         self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
+    }
+
+    /// The claim, one runloop turn after the update that asked for it.
+    ///
+    /// Outside that update for the same reason the dismissal is (see `closeFullscreenNowPlaying`):
+    /// making a window key and active re-enters the window's own layout, and this is not the only code
+    /// that responds to the presentation flag.
+    @MainActor
+    private func scheduleClaimHostWindow() {
+        Task { @MainActor in
+            self.claimHostWindow()
+        }
+    }
+
+    /// Takes the window's focus for the presentation, because the player now covers that window.
+    ///
+    /// Without it a presentation begun over a window the app no longer keys — the floating mini player
+    /// was clicked, another app came forward, the reader was in a second window — leaves `Escape`
+    /// going to that other window and the first click on the close button being spent activating the
+    /// window instead of pressing the button. Both look exactly like a player that cannot be left.
+    @MainActor
+    private func claimHostWindow() {
+        guard self.playerService.showFullscreenNowPlaying,
+              let window = Self.fullscreenHostWindow()
+        else { return }
+        // A sheet on the window is presenting something of its own; taking the key back from it would
+        // put the sheet behind the window it belongs to.
+        guard window.attachedSheet == nil else { return }
+        let wasActive = NSApp.isActive
+        let wasKey = window.isKeyWindow
+        if !wasActive { NSApp.activate() }
+        if !wasKey { window.makeKeyAndOrderFront(nil) }
+        // Only when something actually had to change: the line answers "did the presentation have to
+        // take the window back", which is the state the exit routes used to fail in.
+        if !wasActive || !wasKey {
+            let message = "Fullscreen now playing took the window: appActive=\(wasActive) "
+                + "windowKey=\(wasKey) window=\(window.title)"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+        }
     }
 
     /// Tears the presentation down and hands the shared lyrics poll over when the sidebar lyrics panel
@@ -508,16 +612,48 @@ struct FullscreenNowPlayingView: View {
     /// Called from the presentation change *and* from `onDisappear`, so it must be idempotent.
     @MainActor
     private func endPresentation() {
+        DiagnosticsLogger.ui.notice("Fullscreen now playing presentation ended")
+        MainThreadStallReporter.shared.note("the fullscreen presentation ended")
+        // How long the reader's exit actually took, end to end: the number that turns "leaving sometimes
+        // takes really long" into something a log can be read against.
+        if let requestedAt = self.dismissalRequestedAt {
+            self.dismissalRequestedAt = nil
+            let seconds = Date().timeIntervalSince(requestedAt)
+            let message = "Fullscreen now playing exit sequence completed in "
+                + "\(String(format: "%.2f", seconds))s"
+            DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+        }
         self.loadTask?.cancel()
         self.loadTask = nil
         self.removeKeyMonitor()
+        // The poll is *reconciled* here, not merely stopped. It is what reports playback time
+        // (`PlayerService.currentTimeMs`), so stopping it while a lyrics sheet is still on screen freezes
+        // that sheet — and the sheet that remains is now usually the reader's own sidebar, whose column
+        // stays open behind the player. Asking only the classic panel's flag stopped the poll out from
+        // under the sidebar's lyrics and left its karaoke stuck on the line it had reached.
+        let hasSyncedLyrics = self.syncedLyricsService.hasSyncedLyrics(
+            for: self.playerService.currentTrack?.videoId
+        )
+        let isLyricsSheetVisible = LyricsPollHandoff.isLyricsSheetVisible(
+            isClassicPanelVisible: self.playerService.showLyrics,
+            nowPlayingSidebarPage: self.playerService.nowPlayingSidebarPage
+        )
         if LyricsPollHandoff.shouldStopPollingAfterFullscreenDismiss(
-            isSidebarLyricsVisible: self.playerService.showLyrics,
-            hasSyncedLyrics: self.syncedLyricsService.hasSyncedLyrics(
-                for: self.playerService.currentTrack?.videoId
-            )
+            isLyricsSheetVisible: isLyricsSheetVisible,
+            hasSyncedLyrics: hasSyncedLyrics
         ) {
             SingletonPlayerWebView.shared.stopLyricsPoll()
+            DiagnosticsLogger.player.notice("Lyrics poll stopped: no lyrics sheet left on screen")
+        } else {
+            // Something is still showing lyrics, so the poll is left running — and started again if it had
+            // been stopped, which is the state that froze the sidebar's karaoke.
+            SingletonPlayerWebView.shared.startLyricsPoll()
+            SingletonPlayerWebView.shared.sendCurrentLyricsTime()
+            let message = "Lyrics poll handed over on leaving the player: "
+                + "sheetVisible=\(isLyricsSheetVisible) sidebarPage="
+                + "\(self.playerService.nowPlayingSidebarPage?.rawValue ?? "hidden") "
+                + "synced=\(hasSyncedLyrics)"
+            DiagnosticsLogger.player.notice("\(message, privacy: .public)")
         }
     }
 
@@ -567,21 +703,32 @@ struct FullscreenNowPlayingView: View {
 
     private func installKeyMonitorIfNeeded() {
         guard self.keyMonitor == nil else { return }
-        let window = NSApplication.shared.windows.first { $0.frameAutosaveName == "KasetMainWindow" }
-            ?? NSApplication.shared.keyWindow
-        self.keyMonitorWindowNumber = window?.windowNumber
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
             // A key destined for another window is not ours to answer: the player is behind
-            // whatever the user is actually typing into.
-            if let windowNumber = self.keyMonitorWindowNumber, event.window?.windowNumber != windowNumber {
-                return event
-            }
+            // whatever the user is actually typing into. The host is resolved per keystroke rather
+            // than remembered at install time — see `FullscreenKeyRouting`.
+            guard FullscreenKeyRouting.owns(
+                eventWindowNumber: event.window?.windowNumber,
+                hostWindowNumber: Self.fullscreenHostWindow()?.windowNumber,
+                isSheet: event.window?.sheetParent != nil
+            ) else { return event }
             if event.keyCode == 53 {
-                self.closeFullscreenNowPlaying()
+                DiagnosticsLogger.ui.notice("Escape reached the fullscreen player's key monitor")
+                self.closeFullscreenNowPlaying(route: .escape)
                 return nil
             }
             return NSApp.mainMenu?.performKeyEquivalent(with: event) == true ? nil : event
         }
+    }
+
+    /// The window the player is drawn in: the app's main window, found the way the rest of the app
+    /// finds it, with the key window as the fallback for a presentation that happens before the shell
+    /// is installed.
+    @MainActor
+    static func fullscreenHostWindow() -> NSWindow? {
+        NSApplication.shared.windows.first { $0.frameAutosaveName == AppDelegate.mainWindowAutosaveName }
+            ?? NSApplication.shared.windows.first { $0.isMainWindow }
+            ?? NSApplication.shared.keyWindow
     }
     private func removeKeyMonitor() { guard let monitor = self.keyMonitor else { return }; NSEvent.removeMonitor(monitor); self.keyMonitor = nil }
 
@@ -679,11 +826,73 @@ struct FullscreenNowPlayingView: View {
     }
 }
 
+// MARK: - FullscreenArtworkGeometry
+
+/// How wide and tall the fullscreen player's artwork card ends up, given the column it lives in.
+///
+/// Pulled out of the view as a plain value because the size *is* arithmetic here, and because the
+/// arithmetic was wrong in a way a layout hides: the card was sized as a share of the stage
+/// (`availableHeight * 0.46`), which reserved over half the column for the meta and the transport —
+/// except those are a fixed height, not a share. So the art only reached its cap once the stage itself
+/// was ~826pt (a window ~922pt tall): below that it was handed less than the room that was left over,
+/// and the column sat with empty space above and below it. Making the window taller was therefore the
+/// only way to get the artwork to the size it should have had all along. It takes what is left instead
+/// (the same rule the Now Playing sidebar's artwork follows, see
+/// ``NowPlayingSidebarLayout/reservedHeight``).
+struct FullscreenArtworkGeometry {
+    /// Width the column gives the artwork — 40% of the stage, which is what the view passes in.
+    var columnWidth: CGFloat
+    /// Height the column is given: the window's, minus the room the player's own chrome takes above and
+    /// below it (see the stage arithmetic in `body`).
+    var stageHeight: CGFloat
+
+    /// Height of the meta under the artwork: a title that can wrap to two lines at 30pt, the artist
+    /// line under it, and the spacing between them.
+    static let metaHeight: CGFloat = 100
+    /// Height of the transport under that: the scrubber row, the 54pt button row, the spacing between
+    /// them and the padding above the two.
+    static let transportHeight: CGFloat = 110
+    /// The artwork's own bottom padding, plus the spacing the column puts above and below it.
+    static let undrawnInsets: CGFloat = 40
+
+    /// What the column needs besides the artwork, so the art can be given the rest rather than a share
+    /// of the stage. A constant because it is one: these are fixed fonts and fixed rows, and how tall
+    /// they are does not depend on the window.
+    static var reservedHeight: CGFloat {
+        self.metaHeight + self.transportHeight + self.undrawnInsets
+    }
+
+    /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
+    /// card draws at up to 760px, so leaving the default 320 (a 640px cap) made the still — the largest
+    /// artwork surface in the app — render slightly upscaled from its own downloaded data.
+    static let maxSide: CGFloat = 380
+    /// The smallest the art is allowed to get. A very short window is the only way here, and the column
+    /// would rather overflow its stage than shrink the art further.
+    static let minSide: CGFloat = 200
+
+    /// Side of the square the artwork card gets: what is left of the stage once the meta and the
+    /// transport have theirs, capped by the column's width and by ``maxSide``, and floored at
+    /// ``minSide``.
+    var side: CGFloat {
+        let leftover = self.stageHeight - Self.reservedHeight
+        return min(
+            self.columnWidth,
+            Self.maxSide,
+            max(Self.minSide, leftover)
+        )
+    }
+}
+
 @available(macOS 26.0, *)
 private struct FullscreenSyncedLyricsView: View {
     let lyrics: SyncedLyrics
     let currentTimeMs: Int
     let isPlaying: Bool
+    /// Whether something is drawn over this sheet. For this sheet that is the player **not** being
+    /// presented: the overlay is mounted for the whole session and merely faded out between
+    /// presentations, so its timelines keep running behind an invisible cover — a line being sung
+    /// for nobody. A covered sheet draws no frames and keeps its clock from the playback samples.
+    var isCovered: Bool = false
     let onSeek: (Int) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Interpolated playback clock for the karaoke wipe. Owned here so the highlight
@@ -712,10 +921,11 @@ private struct FullscreenSyncedLyricsView: View {
     /// Seeds the highlight from the playback position so the sheet's first frame is already
     /// the right one, which means the rows' emphasis animation never has to be switched off
     /// while the player opens — see `SyncedLyricsDisplayView.init` for the bug that caused.
-    init(lyrics: SyncedLyrics, currentTimeMs: Int, isPlaying: Bool, onSeek: @escaping (Int) -> Void) {
+    init(lyrics: SyncedLyrics, currentTimeMs: Int, isPlaying: Bool, isCovered: Bool = false, onSeek: @escaping (Int) -> Void) {
         self.lyrics = lyrics
         self.currentTimeMs = currentTimeMs
         self.isPlaying = isPlaying
+        self.isCovered = isCovered
         self.onSeek = onSeek
 
         let scrollIndex = lyrics.currentLineIndex(at: currentTimeMs + Int(KaraokeTiming.standard.scrollLookaheadMs))
@@ -733,23 +943,31 @@ private struct FullscreenSyncedLyricsView: View {
                     Spacer().frame(height: 28)
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
+                        // A line is drawn against the edge its singer has; a row with nothing to
+                        // sing follows the line above it (`SyncedLyrics.isTrailingAligned(at:)`).
+                        let isTrailingAligned = self.lyrics.isTrailingAligned(at: index)
+                        let plan = self.plan(forLineAt: index)
                         if self.lyrics.isPauseLine(at: index) {
+                            // The interlude is settled once for the row, not once per frame: only the
+                            // dots' state is a function of the display position.
+                            let interlude = self.lyrics.pauseInterlude(forLineAt: index)
                             KaraokeTimeSource(
                                 line: line,
                                 status: status,
-                                isLive: self.isLive(lineIndex: index),
+                                isLive: plan.isLive,
                                 clock: self.clock,
-                                minimumFrameInterval: self.frameInterval(lineIndex: index)
+                                minimumFrameInterval: plan.minimumInterval
                             ) { displayTimeMs in
                                 FullscreenPauseDotsLineView(
-                                    dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
+                                    dots: SyncedLyrics.PauseDots(interlude: interlude, at: Int(displayTimeMs)),
                                     status: status,
-                                    isHovered: self.hoveredLineId == line.id
+                                    isHovered: self.hoveredLineId == line.id,
+                                    isTrailingAligned: isTrailingAligned
                                 )
                             }
                             .animation(AppAnimation.lyricLine, value: self.currentLineIndex)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
                             .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
                             .onTapGesture { self.onSeek(line.timeInMs) }
@@ -757,22 +975,28 @@ private struct FullscreenSyncedLyricsView: View {
                         } else {
                             FullscreenSyncedLineView(
                                 line: line,
+                                isTrailingAligned: isTrailingAligned,
                                 status: status,
-                                isLive: self.isLive(lineIndex: index),
+                                isLive: plan.isLive,
                                 clock: self.clock,
                                 layoutCache: self.layoutCache,
-                                minimumFrameInterval: self.frameInterval(lineIndex: index),
+                                minimumFrameInterval: plan.minimumInterval,
                                 emphasis: self.karaokeEmphasis
                             )
                             .foregroundStyle(.white)
                             .opacity(self.opacity(for: status, lineId: line.id))
-                            .scaleEffect(self.scale(for: status, lineId: line.id), anchor: .leading)
+                            // Anchored to the edge the row sits on: an other-singer line grows
+                            // and shrinks from its own side.
+                            .scaleEffect(
+                                self.scale(for: status, lineId: line.id),
+                                anchor: isTrailingAligned ? .trailing : .leading
+                            )
                             // Distant lines recede out of focus the way Apple Music lets go
                             // of the lines around the one being sung.
                             .blur(radius: self.blur(for: status))
                             .animation(AppAnimation.lyricLine, value: self.currentLineIndex)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
                             .onHover { isHovered in if status != .current { self.hoveredLineId = isHovered ? line.id : nil } }
                             .onTapGesture { self.onSeek(line.timeInMs) }
@@ -788,6 +1012,11 @@ private struct FullscreenSyncedLyricsView: View {
 
                     Spacer().frame(height: 84)
                 }
+                // A margin on the trailing edge only, because that is the edge a duet's other
+                // singer is drawn against: the sheet runs to the panel's right edge, so a
+                // right-aligned line would otherwise end exactly on it. The leading edge is
+                // where the lyrics column starts, next to the artwork, and stays there.
+                .padding(.trailing, 16)
             }
             .scrollIndicators(.hidden)
             .onScrollPhaseChange { _, phase in
@@ -841,19 +1070,29 @@ private struct FullscreenSyncedLyricsView: View {
             .onDisappear { self.scrollResumeTask?.cancel(); self.hoveredLineId = nil }
         }
     }
-    /// How often a row may redraw, while it is live. A settled row is paused rather than
-    /// removed (see `KaraokeTimeSource`), so this is only about the rate a row that *is*
-    /// drawing gets: the line being sung at the full live rate, and any other row that is on
-    /// the clock at the cheaper armed rate, which loses nothing because the transitions on
-    /// them are Core Animation's rather than redraws of their own.
-    private func frameInterval(lineIndex: Int) -> Double? {
-        if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
-        if !self.isPlaying { return KaraokeFrameBudget.paused }
-        return lineIndex == self.currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
+    /// How this row draws this frame: whether it runs on the display clock at all, and how often it
+    /// may redraw. The same decision the panel and the sidebar's sheets take
+    /// (`KaraokeFrameBudget.plan`), so a rate or a covered rule cannot drift between surfaces.
+    private func plan(forLineAt index: Int) -> KaraokeRowPlan {
+        KaraokeFrameBudget.plan(
+            isLive: self.isLive(lineIndex: index),
+            isCurrent: index == self.currentLineIndex,
+            isCovered: self.isCovered,
+            reduceMotion: self.reduceMotion,
+            isPlaying: self.isPlaying
+        )
     }
     private var karaokeEmphasis: Double { self.reduceMotion ? 0 : 1 }
 
-    private func receiveClockSample(timeMs: Int, isPlaying: Bool) { self.clock.receive(LyricsClockSample(hostTime: Date(), timeMs: timeMs, isPlaying: isPlaying)) }
+    private func receiveClockSample(timeMs: Int, isPlaying: Bool) {
+        self.clock.receive(LyricsClockSample(hostTime: Date(), timeMs: timeMs, isPlaying: isPlaying))
+        // A covered sheet has no row on the display clock, so the clock is advanced here instead:
+        // the player is mounted between presentations, and its sheet must already be on the right
+        // line — and not slew towards it — the moment it is presented again.
+        if self.isCovered {
+            self.clock.advance(to: Date())
+        }
+    }
 
     /// Puts the sheet in position after it appears or is replaced, and turns the sheet's
     /// transitions back on once it has. A jump is repeated because the lazy stack usually
@@ -928,6 +1167,8 @@ private struct FullscreenSyncedLyricsView: View {
 @available(macOS 26.0, *)
 private struct FullscreenSyncedLineView: View {
     let line: SyncedLyricLine
+    /// The edge this row is drawn against, resolved by the sheet like every other row's.
+    let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
     let isLive: Bool
     let clock: LyricsPlaybackClock
@@ -965,27 +1206,30 @@ private struct FullscreenSyncedLineView: View {
                     .lineSpacing(18)
                     .foregroundStyle(.white)
             } else {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: self.isTrailingAligned ? .trailing : .leading, spacing: 6) {
                     if hasLead {
                         KaraokeLyricsLineView(
                             layout: layout,
                             displayTimeMs: displayTimeMs,
                             color: .white,
                             emphasis: self.emphasis,
-                            lineSpacing: 18
+                            lineSpacing: 18,
+                            isTrailingAligned: self.isTrailingAligned
                         )
                     }
                     if let backgroundLayout {
-                        // The backing vocal runs the same per-character wipe as the lead,
-                        // driven by the same display clock position — it overlaps the line
-                        // in time, so synchrony is simply sharing the clock. It is dimmer
-                        // and smaller so it reads as accompaniment, nothing else differs.
+                        // The backing vocal is driven by the same display clock position as the
+                        // lead: a word-timed one runs the same per-character wipe, and a phrase
+                        // the source never timed is drawn as a line-synced row — revealed whole
+                        // at the line's start, with no invented word boundaries. It is dimmer
+                        // and smaller so it reads as accompaniment.
                         KaraokeLyricsLineView(
                             layout: backgroundLayout,
                             displayTimeMs: displayTimeMs,
                             color: .white.opacity(0.55),
                             emphasis: self.emphasis,
-                            lineSpacing: 8
+                            lineSpacing: 8,
+                            isTrailingAligned: self.isTrailingAligned
                         )
                     }
                 }
@@ -1012,7 +1256,10 @@ private struct FullscreenPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
     let isHovered: Bool
-    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
+    /// The dots belong on the edge of the line above them — an interlude inside the other
+    /// singer's section is a pause in *their* part.
+    var isTrailingAligned: Bool = false
+    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: self.isTrailingAligned ? .trailing : .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
     /// The bounce is a value off the row's own display clock rather than a timeline of its own:
     /// the row is already redrawing per frame while it is the one being sung, and two clocks on
     /// one row are two chances to disagree about when that is.

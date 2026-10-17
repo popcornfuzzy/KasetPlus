@@ -154,6 +154,10 @@
 
 "Could not create AI session" = "Yapay zeka oturumu oluşturulamadı";
 
+"Couldn't add this to your library. Try again." = "Kitaplığa eklenemedi. Tekrar deneyin.";
+
+"Couldn't remove this from your library. Try again." = "Kitaplıktan kaldırılamadı. Tekrar deneyin.";
+
 "Couldn't search for music" = "Müzik aranamadı";
 
 "Create or save playlists on YouTube Music to see them here." = "Burada görmek için YouTube Music'te çalma listeleri oluşturun veya kaydedin.";
@@ -414,6 +418,8 @@
 "Refine" = "İyileştir";
 
 "Refine Playlist" = "Çalma Listesini İyileştir";
+
+"Remove from Library" = "Kitaplıktan Kaldır";
 
 "Release Notes" = "Sürüm Notları";
 

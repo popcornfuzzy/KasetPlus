@@ -22,8 +22,7 @@ struct ArtistDiscographyView: View {
                 }
             }
         }
-        .navigationTitle(self.viewModel.destination.sectionTitle)
-        .toolbarBackgroundVisibility(.hidden, for: .automatic)
+        .pageTitle(id: "discography-\(self.viewModel.destination.artistName)-\(self.viewModel.destination.sectionTitle)", title: self.viewModel.destination.sectionTitle)
         .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {

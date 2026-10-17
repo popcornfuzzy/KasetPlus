@@ -28,7 +28,7 @@ struct SearchView: View {
     }
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "search", path: self.$navigationPath) {
             VStack(spacing: 0) {
                 // Search bar
                 self.searchBar
@@ -38,11 +38,13 @@ struct SearchView: View {
                 // Content
                 self.contentView
             }
-            .navigationTitle("Search")
+            .pageTitle(id: "search", title: String(localized: "Search"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it, so the bar goes away with the page that owns it instead
+            // of stacking onto the pushed page's own. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             self.isSearchFieldFocused = true
@@ -550,19 +552,24 @@ struct SearchView: View {
 
     @ViewBuilder
     private func playlistContextMenu(_ playlist: Playlist) -> some View {
-        Button {
-            Task {
-                await SongActionsHelper.addPlaylistToLibrary(
-                    playlist,
-                    client: self.viewModel.client,
-                    libraryViewModel: self.libraryViewModel
-                )
+        // Offered only for a playlist the library can hold: the write sends the playlist's ID as a
+        // `playlistId`, so a mix or radio (`RD…`) that search can list has no membership to add (see
+        // `Playlist.isLibraryHoldable(id:)`). An album's own context menu already offers no library action.
+        if playlist.supportsLibraryMembership {
+            Button {
+                Task {
+                    await SongActionsHelper.addPlaylistToLibrary(
+                        playlist,
+                        client: self.viewModel.client,
+                        libraryViewModel: self.libraryViewModel
+                    )
+                }
+            } label: {
+                Label("Add to Library", systemImage: "plus.circle")
             }
-        } label: {
-            Label("Add to Library", systemImage: "plus.circle")
-        }
 
-        Divider()
+            Divider()
+        }
 
         FavoritesContextMenu.menuItem(for: playlist, manager: self.favoritesManager)
 

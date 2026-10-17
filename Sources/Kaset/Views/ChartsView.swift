@@ -9,7 +9,7 @@ struct ChartsView: View {
     @State private var networkMonitor = NetworkMonitor.shared
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "charts", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -32,11 +32,13 @@ struct ChartsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Charts")
+            .pageTitle(id: "charts", title: String(localized: "Charts"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
+            // a second bar under the destination's own. See `PlayerBar`.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {

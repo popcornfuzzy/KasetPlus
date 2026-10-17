@@ -54,6 +54,13 @@ struct GeneralSettingsView: View {
                 Toggle("Prefer Audio (Song) Versions", isOn: self.$settings.preferAudioVersionsEnabled)
                     .help("Play the song-only version of a music video so it shows album art. The music video stays available in the mini player.")
 
+                // Detached Mini Player
+                Toggle("Mini Player in Its Own Window", isOn: self.$settings.miniPlayerWindowModeEnabled)
+                    .help(
+                        "Make the player bar's Mini Player button open a detached, always-on-top player window "
+                            + "that keeps playing when the main window is closed."
+                    )
+
                 // Default Launch Page
                 Picker("Default Page on Launch", selection: self.$settings.defaultLaunchPage) {
                     ForEach(SettingsManager.LaunchPage.allCases) { page in
@@ -106,6 +113,19 @@ struct GeneralSettingsView: View {
                 .padding(.vertical, 4)
             } header: {
                 Text("Animated Canvas")
+            }
+
+            // MARK: - Now Playing Sidebar Section
+
+            Section {
+                Toggle("Use Now Playing Sidebar", isOn: self.$settings.nowPlayingSidebarEnabled)
+                    .help("Replace the Lyrics and Queue side panels with one artwork sidebar: animated canvas, a live three-line lyric preview and the next song, each expanding to the full experience")
+
+                Text("This is the default. When off, the Lyrics and Queue buttons keep opening their own panels.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Now Playing Sidebar")
             }
 
             // MARK: - Now Playing Section

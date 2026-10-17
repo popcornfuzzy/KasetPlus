@@ -163,9 +163,12 @@ envelope with the unit means a finished unit is a unit nothing is happening to, 
 lets the completed-unit layer reduction above be invisible — a word whose ramp is over drops its mask and
 its halo.
 
-The character being sung **lifts, and is never scaled**, by `fontSize × 0.02` at the peak — a fraction of
-a pixel at 16 pt, deliberately: it exists to keep the character being sung from being perfectly static,
-not to be read as movement. The glow is what marks it. (It was first written at `fontSize × 0.06`, which
+The characters being sung **lift, and are never scaled**, by `fontSize × 0.02` at the peak — a fraction of
+a pixel at 16 pt, deliberately: it exists to keep the characters being sung from being perfectly static,
+not to be read as movement. The glow is what marks it. What lifts is one **crest** at a time — the run of
+characters the fill edge is in whose own fill lasts `KaraokeTiming.minimumCrestMs` — which is a single
+character wherever the text is slow enough to give one that much time; see *the emphasis rides a crest,
+not a character* below. (It was first written at `fontSize × 0.06`, which
 was visible enough to be distracting.) That envelope is likewise measured in time
 (`KaraokeFillUnit.swell`, rising over 130 ms, releasing over 170 ms, zero slope at both ends) rather than
 in fill, so a short window no longer reaches full lift within its first few frames. Scaling was
@@ -181,10 +184,13 @@ rows of its own cell at full emphasis as it does with the emphasis off, and sits
 
 The lift is also the reason the emphasis had to become per *character* rather than per word: a lift is a
 translation of a raster, so one glyph of a text layer cannot move without being pulled out of that layer
-and cut out of the text around it. The effect is small on purpose — a lift is there so the character under the edge is
-not perfectly static — but it is the wave that follows the fill edge, and `liftTravelsAcrossTheWord`
-follows it through the pixels: the same character is a pixel or two higher on the frame the edge is on it
-than on the frame the edge has passed it.
+and cut out of the text around it. The unit that is pulled out is the **crest** (`KaraokeCrest`): the
+characters the fill edge is in, taken together, so that the run it cuts is one rectangle of the word and
+the movement has the time to be a movement. The effect is small on purpose — a lift is there so the
+characters under the edge are not perfectly static — but it is the wave that follows the fill edge, and
+`liftTravelsAcrossTheWord` follows it through the pixels, one character at a time on text slow enough for
+that: the same character is a pixel or two higher on the frame the edge is on it than on the frame the
+edge has passed it.
 
 A line a provider timed only as a whole takes the other path in the same view (`lineSyncedText`): the
 whole line is one `Text` under the dim layer, the lit copy's opacity is its appear progress, and the
@@ -197,6 +203,27 @@ first-fit wrapping mirrors what `Text` does with the same words as one string, t
 is carried as a layout value (so syllable runs stay glued), and a wrapped row starts at the margin
 instead of inheriting the gap of its first word. Fill direction is per word: a right-to-left word fills
 from its trailing edge, so Arabic and Hebrew lyrics fill the way they read.
+
+### A unit is split into the words it carries
+
+A provider is free to timestamp a **phrase** — or a whole line — as one unit. The line then arrives with
+word timings (`isLineSynced` is false), so it is drawn through the flow layout, where one unit is one
+**atom**: an atom wider than the box it is drawn in cannot wrap, because the layout can only break
+*between* subviews. So the row was drawn as one line wider than the panel and ran out of it — on this
+app's Now Playing sidebar, straight out of the lyric card, which is how it was reported.
+
+The layout therefore splits each unit into the words it already contains
+(`KaraokeFillModel.wordRuns(in:)` / `fragments(of:runs:characterWidths:)`), and each piece is its own
+subview with its own fill mask. It costs nothing where timings are per word — a unit with no whitespace
+in it is one piece, and one that happens to be a whole line's text is deliberately **not** routed to the
+line-synced `Text` path, because its progressive wipe is the point of word-by-word sync. The pieces take
+slices of the unit's own fill window, weighted by the character widths, which is the tiling
+`characters(for:weightedBy:)` already applies inside a word, one level up: a piece's window ends where
+the character at its boundary would have ended, and a piece carries the whitespace that followed it, so
+the pieces tile the unit exactly and the karaoke edge sweeps it in one continuous pass — across a break
+as well as across a word. The first piece keeps the unit's own word boundary (a provider writes the
+syllables of one word as separate units, and that boundary must not become a space); every later piece
+is a word of its own.
 
 `KaraokeTimeSource` decides per row whether it is live: the line being sung, the line after it, and
 the line that has just finished until its content is settled run on the display clock; every other row
@@ -372,13 +399,12 @@ and only the word actually being sung carries a mask and the halo blur.
 
 **Rows redraw at the rate they need** (`KaraokeFrameBudget`): the line being sung at 60 Hz; the line
 after it at 30 Hz (nothing on it is moving — its transitions are Core Animation's, not redraws of its
-own); 10 Hz while the fullscreen player covers the panel, which is one frame per playback sample and
-keeps the clock correct without paying for frames nobody can see; and 20 Hz while playback is paused,
-where the fill is frozen and a frame only exists to take up a sample correction or a seek. Reduce Motion
-uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so 60 Hz is already smoother than the motion
-needs; on a 120 Hz display, halving the rate is the single largest saving. A row's rate is about how
-often it may redraw *while it is live*; when it is not, its timeline is paused entirely (see below),
-and the rate it would have had is not paid.
+own); and 20 Hz while playback is paused, where the fill is frozen and a frame only exists to take up a
+sample correction or a seek. Reduce Motion uses 20 Hz. A karaoke fill is slow — a few pixels a frame — so
+60 Hz is already smoother than the motion needs; on a 120 Hz display, halving the rate is the single
+largest saving. A row's rate is about how often it may redraw *while it is live*; when it is not, its
+timeline is paused entirely (see below), and the rate it would have had is not paid. A row of a sheet
+the fullscreen player covers is not live at all, so it has no rate: see the second amendment.
 
 **A settled row draws nothing.** It is not merely throttled: its timeline is paused
 (`KaraokeTimeSource`), so it is handed its settled position once and then not drawn again until the
@@ -429,6 +455,112 @@ Reduce Motion (via the SwiftUI `accessibilityReduceMotion` environment, the reac
 the `NSWorkspace` check used elsewhere) keeps the fill — it is the information — and drops the
 decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw instead of display rate.
 
+## Amendment: a sheet nobody can see draws nothing, and a wave nobody can see is not drawn
+
+The amendments above removed the frames a sheet did not need. What was left was frames nobody could
+see — which is a different thing, and cheaper to fix.
+
+**A covered sheet draws no frames at all.** A sheet the fullscreen player is drawn over used to get a
+tenth of the live rate: one frame per playback sample, so the clock kept correcting "without paying for
+frames nobody can see". But a covered sheet is out of sight for as long as the player is up, and a tenth
+of the rate is still a whole row redrawn ten times a second, of a line being sung behind an opaque
+cover. Worse, the surfaces were not exclusive in practice: the sidebar is deliberately left open behind
+the player (`PlayerService.showFullscreenNowPlaying` does not close it, because closing it changed the
+reader's window layout from a view they had not touched), and the sidebar's two sheets were passing
+`isCovered: false` — so the player's sheet and the sidebar's sheet animated at the live rate together,
+the exact case the harness prices at a third of a core.
+
+The couple is now impossible. Both lyric surfaces — and the panel — take the same decision, in one
+place (`KaraokeFrameBudget.plan`): a covered row is never live, and a row that is not live has a paused
+timeline, so a covered sheet draws nothing at all. The clock is advanced from the playback samples
+instead (`SyncedLyricsDisplayView.receiveClockSample`), which is what keeps a revealed sheet already on
+the right line rather than slewing to it, or snapping back to a stale one, in front of the reader.
+`KaraokeRowPlan` makes "which rows draw, and how often" a value that is unit-tested
+(`KaraokeTimingTests`) instead of a pair of rules that can drift between three surfaces.
+
+**A hidden fullscreen player's sheet is covered too.** The overlay is mounted from its first
+presentation on and merely faded out between them, so its sheet kept running against a frozen playback
+position — a line being sung behind `opacity: 0`. It is covered by *not* being presented, which is the
+same rule read from the other side, and it draws nothing until the player is up again.
+
+**The lift is not drawn where it cannot be seen.** The lift is the most expensive decoration a word
+carries: the character is cut out of the word and drawn again above it, which is two masked layers and a
+compositing group on every frame the word is filling. It is also the one decoration that can be too
+small to see, and the panel is where that happens — a 16 pt line at the 0.55 emphasis the panel carries
+rises a *fifth of a point* at the peak of its envelope, under half a device pixel of travel on any
+display, while the cost is the top of the range that envelope was designed in. The halo and the
+feathered fill are what mark the edge; the lift is there so the character being sung is not perfectly
+static. It is now skipped below a quarter point of travel, so the panel stops paying for a movement it
+cannot show, and the fullscreen player's 36 pt line — most of a point of travel — keeps its wave.
+Measured on the harness's own line, run three times: **1.90/1.97/1.91 ms/frame** with the wave at full
+strength against **1.40/1.46/1.51 ms/frame** at the panel's own emphasis — about a quarter of a panel
+frame, which takes an animating panel surface from ~11% of a core at 60 Hz to ~9%.
+
+**A pause row's dots do not ask when the silence began on every frame.** The interlude — where the
+silence starts — is measured from the line *above* the row (`KaraokeFillModel.settleBoundaryMs`, which
+derives that line's fill windows from its words), and it is settled for as long as the row draws it;
+only the dots' state is a function of the display position. The row resolves one interlude and asks it
+for each frame, which the harness prices at 0.001 ms/frame against 0.009 re-derived per frame.
+
+**The playback stream stops at the sheet.** The position arrives from the WebView's lyrics poll ten
+times a second, and the surface *around* a sheet was reading it: the panel, the sidebar column and the
+fullscreen overlay each rebuilt themselves — glass, artwork, cards, the blurred backdrop, the transport
+controls — ten times a second to hand a sheet a number only the sheet uses. The fullscreen overlay is
+mounted for the whole session, so its share of that ran whether or not it was on screen; the sidebar's
+share was the largest single thing its column did per second. `Observation` tracks a property per view
+body, so `LyricsClockReader` is now the leaf that reads it — the position, the play state, and the
+fullscreen flag a sheet needs to know it is covered — and the invalidation stops there.
+`LyricsClockReaderTests` hosts the real reader beside a probe that reads no playback state, and holds
+that a stream of samples rebuilds the sheet and not the surface around it.
+
+## Amendment: the emphasis rides a crest, not a character
+
+The lift was always described as the character under the edge rising so that it is not perfectly
+static, and it was timed by that character's own slice of the word's fill window — one character's
+worth of time, the same slice the fill mask uses for it. On slow text that is a wave: a character
+holds the edge for 300 ms, so it rises over half of that and settles over the other half, and at 60 Hz
+that is nine frames up and nine down. On a fast line it is not a wave at all. A dense lyric is ten to
+thirteen characters a second, so a slice is 60–90 ms: measured at 36 pt, the character went from rest
+to the top of its swell and back inside **two or three display frames**, and the next character took
+the wave over immediately — a character *popping* at 11–13 Hz, which is the thing the lift exists to
+avoid. The peak itself was at the mercy of where a frame landed inside the slice: the crests came out
+between 0.63 and 1.00 of full amplitude, a different size on every character.
+
+What the emphasis needs is not a character, it is **time**. `KaraokeCrest` is the run of characters the
+edge is in whose own fill together lasts `KaraokeTiming.minimumCrestMs` (250 ms), and the lift now
+rides that:
+
+- The crests **tile** the word's characters — every character belongs to exactly one, in reading order,
+  and a crest never splits a character — so the wave still touches every character of the word once, and
+  the hand-over between two crests is continuous for the same reason it was between two characters: a
+  crest's envelope leaves zero with zero slope, and it is at rest exactly where the next one starts.
+- The crest is a **fill unit** like a word or a character (`fillStartMs`/`fillEndMs`/`swell`), so the
+  emphasis is expressed in the same terms at every scale, and the renderer asks the model for one crest
+  instead of deriving the rise itself.
+- The count is what the word's *time* allows — one crest per `minimumDurationMs`, rounded down so the
+  crests are each at least that long — capped by its characters, and the characters are shared out
+  between them as evenly in time as a character boundary can be (the split is the character boundary
+  nearest each crest's share of the word's window). A word whose characters already last longer than
+  the minimum is untouched: its crests are its characters, one apiece, and the wave is the wave it was.
+- The **cut follows the crest**, not a character: one rectangle spanning the crest's cells, so the masks
+  cost what they cost before — a wider rectangle is the same two layers and the same compositing group.
+  Measured on the harness's own line with the lift at full strength: **1.99 ms/frame** at 36 pt, against
+  1.33 ms/frame with the halo, the feather and the crest all off — unchanged from before the amendment.
+
+Measured with the model driven at 60 Hz on a dense line (twenty-four characters over 1.23 s, 36 pt):
+crests arrive at **2.0/s instead of 11.0/s**; the most any single frame moves the emphasis is
+**0.138 pt instead of 0.603 pt** (a third of a device pixel on a 2x display, against one and a fifth);
+and every crest reaches **full** amplitude where the peaks used to spread over 0.17 pt. On text slow
+enough to give one character the minimum, all of those numbers are identical to what they were.
+
+The trade-off is deliberate and is the point of the amendment: the wave now carries the characters
+being sung **together** rather than one at a time, so a fast line lifts a short run of two to six
+characters as one, and only a line slow enough for a character to hold the edge for a quarter of a
+second still lifts a single character. The old behaviour was not a wave on those lines — the motion was
+faster than the eye reads as motion and the amplitude varied crest to crest — so what was given up is a
+flicker. `KaraokeLyricsRenderTests.theLiftIsSlowEnoughToRead` holds both halves of this by measuring the
+real view's drawn lift at display rate, the crest rule and the wave it replaced side by side.
+
 ## Consequences
 
 ### Positive
@@ -450,14 +582,18 @@ decorative parts: no glow, no swell, no feather, no blur, and a 20 Hz redraw ins
 
 ### Negative
 
-- **Per-frame cost is real, though bounded**: one animating line measures ~1.9 ms/frame in
-  `KaraokeLyricsPerformanceTests` (construction, layout, masking, blur and rasterization into a bitmap
-  — the part the app does on the GPU), which is roughly 11% of one core per surface at 60 Hz for a line
-  of ordinary length, and ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of
-  thirteen lead words plus ten backing words at the fullscreen size). It remains the most expensive
-  per-frame work in the app, and the frame budgets, the measured-layout cache, the row arming rule and
+- **Per-frame cost is real, though bounded**: one animating line measures ~1.45 ms/frame at the panel's
+  own size and emphasis and ~1.9 ms/frame at the fullscreen player's, in `KaraokeLyricsPerformanceTests`
+  (construction, layout, masking, blur and rasterization into a bitmap — the part the app does on the
+  GPU). That is roughly 9% and 11% of one core per surface at 60 Hz for a line of ordinary length, and
+  ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of thirteen lead words plus
+  ten backing words at the fullscreen size). It remains the most expensive per-frame work in the app,
+  and the frame budgets, the measured-layout cache, the row arming rule, the covered-sheet rule and
   the hit-testing prune are what keep it from growing; the harness test fails if a frame's cost
   regresses past its (loose) budget.
+- **The two animating surfaces cannot be priced together, because they can no longer run together**:
+  presenting the fullscreen player covers every other lyric sheet, and a covered sheet draws nothing.
+  The harness prints both numbers so the rule is visible if it ever stops holding.
 - **The clock is stateful and outside SwiftUI's model**: it must be reset on track change
   (`onChange(of: lyrics)`), and it must be fed on `isPlaying` changes as well as position samples.
 - **The highlight and the scroll are separate indices now** (`currentLineIndex`/`scrollLineId` on both

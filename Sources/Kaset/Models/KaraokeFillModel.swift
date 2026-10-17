@@ -128,11 +128,12 @@ struct KaraokeWord: Equatable, Sendable, KaraokeFillUnit {
 /// One character of a karaoke word: the text to draw plus its own slice of the word's fill
 /// window.
 ///
-/// The character is the unit that lifts. A word's emphasis used to be one translation of
-/// the whole word; slicing the word's window per character turns it into a wave that follows
-/// the fill edge, so the character being sung rises and settles while the ones around it stay
-/// at rest. The slices tile the word's window exactly, so the word still fills over exactly
-/// the interval it always did.
+/// The character is the unit the emphasis is *built* from: a word's emphasis used to be one
+/// translation of the whole word, and slicing the word's window per character is what makes it
+/// a wave that follows the fill edge. The character is no longer what lifts, though — a crest is
+/// (`KaraokeCrest`), because a character's slice can be too short for a wave to rise and fall in.
+/// The slices tile the word's window exactly, so the word still fills over exactly the interval
+/// it always did.
 struct KaraokeCharacter: Equatable, Sendable, KaraokeFillUnit {
     /// Index of the character within its word.
     let index: Int
@@ -141,6 +142,31 @@ struct KaraokeCharacter: Equatable, Sendable, KaraokeFillUnit {
     /// Start of this character's slice of the word's fill ramp, in milliseconds.
     let fillStartMs: Double
     /// End of this character's slice of the word's fill ramp, in milliseconds.
+    let fillEndMs: Double
+}
+
+// MARK: - KaraokeCrest
+
+/// The stretch of one word the emphasis is on at a given moment: a run of characters that rises and
+/// settles together, and the window over which it does.
+///
+/// The emphasis used to ride a single character's own slice of the word's fill window, and that is a
+/// crest that has to fit inside the slice. On a fast line a slice is 60–90 ms, so a character went from
+/// rest to the top of its swell and back within two or three display frames, and the next character
+/// took over immediately: a character that *pops* ten to thirteen times a second rather than one that
+/// rises. A crest is now the shortest run of characters whose own fill lasts
+/// `KaraokeTiming.minimumCrestMs`, so the wave gets the time it needs to be a wave — its rise and fall
+/// are several frames each — and it carries the characters being sung together. Text that is already
+/// slow enough to give one character that much time is untouched: its crest is that character.
+///
+/// The crest is a **fill unit**, exactly as a word and a character are: it has a window and its own
+/// swell, so the emphasis is expressed in the same terms at every scale.
+struct KaraokeCrest: Equatable, Sendable, KaraokeFillUnit {
+    /// The characters the crest carries, in reading order.
+    let range: ClosedRange<Int>
+    /// Start of the crest's window, in milliseconds.
+    let fillStartMs: Double
+    /// End of the crest's window, in milliseconds.
     let fillEndMs: Double
 }
 
@@ -186,25 +212,16 @@ enum KaraokeFillModel {
     /// The backing-vocal words to render alongside the lead line, each with its own
     /// fill window — the same windows the same machinery builds for the lead.
     ///
-    /// A backing vocal overlaps the lead line in time and carries its own word
-    /// timings, so it is derived from `backgroundWords` alone: the windows are the
-    /// backing words' own onsets, never interpolated from the lead. A provider that
-    /// timed only the line as a whole gets the whole backing text as one word over
-    /// the line's own window, so line-synced lyrics keep a synchronized backing
-    /// vocal rather than losing one.
+    /// A backing vocal overlaps the lead line in time and, when the source timed it as words,
+    /// carries its own onsets: the windows are those, never interpolated from the lead. A
+    /// backing phrase the source timed only as part of the line has no onsets at all, and gets
+    /// no windows here — inventing one over the line's own duration would put a word-by-word
+    /// wipe on a phrase nobody measured, which is exactly what a line-synced sheet must not
+    /// show. Such a phrase is drawn as a line-synced row instead
+    /// (`SyncedLyricLine.backingVocalLine`), revealed whole when the line begins.
     static func backgroundWords(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> [KaraokeWord] {
         let timedWords = (line.backgroundWords ?? []).filter { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard !timedWords.isEmpty else {
-            guard let text = line.backgroundText else { return [] }
-            return [self.word(
-                index: 0,
-                text: text,
-                isNewWord: true,
-                start: Double(line.timeInMs),
-                end: Double(line.timeInMs + max(line.duration, 1)),
-                timing: timing
-            )]
-        }
+        guard !timedWords.isEmpty else { return [] }
         return self.timedWords(timedWords, line: line, timing: timing)
     }
 
@@ -245,6 +262,81 @@ enum KaraokeFillModel {
                     : word.fillStartMs + word.durationMs * offset
             )
         }
+    }
+
+    /// The crests one word's characters are sung in, in reading order.
+    ///
+    /// The crests **tile** the word's characters: every character belongs to exactly one of them, and
+    /// no crest splits a character. So the wave touches every character of the word once, in order, and
+    /// a crest's window ends exactly where the next one's begins — which is what makes the hand-over
+    /// between two crests continuous: the crest that is landing has reached rest on the same frame the
+    /// next one leaves it.
+    ///
+    /// The count is the number of crests the word's *time* allows — one per `minimumDurationMs` of its
+    /// fill, **rounded down**, so that the crests are each at least that long rather than just under it —
+    /// and never more than its characters, since a crest is at least one character wide however long a
+    /// character lasts. The characters are then shared out between the crests as evenly in time as they
+    /// can be, so a word does not end in one crest carrying a stray character that flashes past in a
+    /// fraction of the time the crests before it took.
+    ///
+    /// A minimum of zero asks for a crest per character, which is the wave this used to be.
+    static func crests(of characters: [KaraokeCharacter], minimumDurationMs: Double) -> [KaraokeCrest] {
+        guard let first = characters.first, let last = characters.last else { return [] }
+        let total = max(0, last.fillEndMs - first.fillStartMs)
+        let count = min(
+            characters.count,
+            max(1, Int(total / max(1, minimumDurationMs)))
+        )
+
+        var crests: [KaraokeCrest] = []
+        var start = characters.startIndex
+        for position in 0 ..< count {
+            // How many characters the crests still to come need: at least one each.
+            let remaining = count - 1 - position
+            // Where this crest's share of the word's time ends.
+            let target = first.fillStartMs + total * Double(position + 1) / Double(count)
+            // The last character this crest may reach and still leave one for every crest to come.
+            let lastAllowed = characters.count - 1 - remaining
+            // The **character boundary nearest** that share: a crest can only end where one character
+            // ends and the next begins, and taking the boundary *before* the share every time would
+            // leave the crests before it short of their share and the last crest carrying whatever was
+            // left over — a crest a fraction of the length of the ones before it.
+            var end = start
+            var best = abs(characters[start].fillStartMs - target)
+            for candidate in start + 1 ... lastAllowed + 1 {
+                let splitMs = candidate < characters.count
+                    ? characters[candidate].fillStartMs
+                    : characters[characters.count - 1].fillEndMs
+                let distance = abs(splitMs - target)
+                if distance > best { break }
+                end = candidate - 1
+                best = distance
+            }
+            crests.append(
+                KaraokeCrest(
+                    range: start ... end,
+                    fillStartMs: characters[start].fillStartMs,
+                    fillEndMs: characters[end].fillEndMs
+                )
+            )
+            start = end + 1
+        }
+        return crests
+    }
+
+    /// The crest the fill edge is in at a playback position, or `nil` when nothing on the word is
+    /// moving — before its first crest opens, and once its last one has settled.
+    static func crest(
+        of characters: [KaraokeCharacter],
+        at timeMs: Double,
+        minimumDurationMs: Double
+    ) -> KaraokeCrest? {
+        guard let edge = characters.lastIndex(where: { $0.fill(at: timeMs) > 0 }),
+              let crest = self.crests(of: characters, minimumDurationMs: minimumDurationMs)
+                  .first(where: { $0.range.contains(edge) }),
+              crest.swell(at: timeMs) > 0
+        else { return nil }
+        return crest
     }
 
     /// The playback position to render a line at when it is not the line being sung.
@@ -314,6 +406,17 @@ enum KaraokeFillModel {
     /// deciding that costs one comparison against that one line's fill windows. Because the
     /// declared rule has already stepped past the earlier line, its declared end is behind us,
     /// so testing against its content end is testing against `settleBoundaryMs`.
+    ///
+    /// A row with nothing to sing never takes the highlight off a row that is still sounding.
+    /// The dots — and the short `♪` gap that is a pause too short to draw them — are silence,
+    /// and silence is not the line being sung: the highlight waits for the whole of the row
+    /// above, **lead and backing alike**. A backing vocal is what makes that matter. Apple Music
+    /// writes a phrase whose onsets lie *after* its own paragraph's end — the `(High, the way
+    /// that you're stuck in my head)` under an `I'm sick, I'm sick` paragraph that has already
+    /// run out — so the phrase is still sweeping through the interlude the sheet inserted after
+    /// that paragraph, and the dots sat under a line that was plainly still being sung. A row
+    /// that *is* being sung keeps the old rule: there the lead decides, because the line being
+    /// sung has changed and the next line's lead has already arrived.
     static func highlightIndex(
         in lyrics: SyncedLyrics,
         at timeMs: Int,
@@ -323,6 +426,12 @@ enum KaraokeFillModel {
         guard declared > 0 else { return declared }
 
         let earlier = lyrics.lines[declared - 1]
+
+        if SyncedLyrics.isSilent(lyrics.lines[declared]) {
+            let soundingEnd = self.settleBoundaryMs(for: earlier, timing: timing)
+            return Double(timeMs) < soundingEnd ? declared - 1 : declared
+        }
+
         let contentEnd = self.words(for: earlier, timing: timing).map(\.fillEndMs).max() ?? 0
         return Double(timeMs) < contentEnd ? declared - 1 : declared
     }
@@ -383,6 +492,90 @@ enum KaraokeFillModel {
         }
         guard lineIndex == currentLineIndex - 1 else { return false }
         return clockMs < self.settleBoundaryMs(for: line, timing: timing)
+    }
+
+    // MARK: - Layout fragments
+
+    /// The stretches of a unit's text that are laid out — and wrapped — as separate words.
+    ///
+    /// A provider is free to timestamp a phrase, or a whole line, as **one** unit: the unit then
+    /// carries several words' text, and the flow layout treats a unit as an atom. An atom wider
+    /// than the box it is drawn in cannot wrap, so the row was drawn as one line wider than the
+    /// panel it was in and was clipped by it. Splitting the unit at the whitespace it already
+    /// contains gives the row somewhere to break, and it is where a reader would break it too.
+    ///
+    /// Ranges are over the unit's **characters** (`Array(text)`), so they line up with the character
+    /// widths the renderer measures, and the whitespace itself is left out of the pieces: the gap
+    /// between two pieces is the renderer's own space, exactly as it is between two units. A unit
+    /// with no whitespace in it is one piece, so every per-word line takes this path unchanged.
+    static func wordRuns(in text: String) -> [Range<Int>] {
+        let characters = Array(text)
+        var runs: [Range<Int>] = []
+        var start: Int?
+        for (index, character) in characters.enumerated() {
+            if character.isWhitespace {
+                if let current = start {
+                    runs.append(current ..< index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+        }
+        if let current = start { runs.append(current ..< characters.count) }
+        return runs
+    }
+
+    /// A unit drawn as the pieces it is laid out in, each carrying the slice of the unit's own fill
+    /// window that matches the share of the unit's text it holds.
+    ///
+    /// The tiling is the one `characters(for:weightedBy:)` applies inside a word, one level up: the
+    /// shares are summed over the unit's character widths, so a piece's window ends exactly where
+    /// the character at its boundary would have ended and the karaoke edge still sweeps the unit in
+    /// one continuous pass — across a break as well as across a word. A piece runs to the start of
+    /// the piece after it, so it carries the slice of the whitespace between them: the pieces tile
+    /// the unit's window exactly, and the edge keeps moving over the gap rather than stalling on it.
+    ///
+    /// The first piece inherits the unit's own word boundary, because a provider writes the
+    /// syllables of one word as several units and that boundary must not become a space. Every
+    /// later piece is a word of its own — it was preceded by whitespace in the unit's text.
+    static func fragments(
+        of word: KaraokeWord,
+        runs: [Range<Int>],
+        characterWidths: [CGFloat]
+    ) -> [KaraokeWord] {
+        let characters = Array(word.text)
+        guard !runs.isEmpty, !characters.isEmpty else { return [word] }
+
+        let total = characterWidths.reduce(0, +)
+        let shares: [Double] = if characterWidths.count == characters.count, total > 0 {
+            characterWidths.map { Double($0 / total) }
+        } else {
+            Array(repeating: 1 / Double(characters.count), count: characters.count)
+        }
+        var cumulative = [Double](repeating: 0, count: characters.count + 1)
+        for index in characters.indices {
+            cumulative[index + 1] = cumulative[index] + shares[index]
+        }
+
+        return runs.enumerated().compactMap { position, run in
+            guard !run.isEmpty,
+                  run.lowerBound >= 0,
+                  run.upperBound <= characters.count
+            else { return nil }
+            let next = position + 1 < runs.count ? runs[position + 1].lowerBound : characters.count
+            return KaraokeWord(
+                index: word.index,
+                text: String(characters[run]),
+                isNewWord: position == 0 ? word.isNewWord : true,
+                fillStartMs: word.fillStartMs + word.durationMs * cumulative[run.lowerBound],
+                // The last piece ends where the unit does, exactly: the tiling never leaves a sliver
+                // of the unit unfilled, whatever the floating-point sum of the shares came to.
+                fillEndMs: position == runs.count - 1
+                    ? word.fillEndMs
+                    : word.fillStartMs + word.durationMs * cumulative[next]
+            )
+        }
     }
 
     // MARK: - Word-timed lines

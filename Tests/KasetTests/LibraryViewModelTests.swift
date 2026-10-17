@@ -55,6 +55,71 @@ struct LibraryViewModelTests {
         #expect(self.viewModel.libraryPodcastIds == Set(["MPSPPL1"]))
     }
 
+    /// A saved album is listed by the page it is browsed by (`MPREb_…`) while the page itself is saved
+    /// under its `OLAK5uy_…` audio playlist. Membership has to be asked with both, or an album the account
+    /// owns reads as unsaved — the control then offers to add it again, and the next refresh drops it.
+    @Test("A saved album is found through either of its IDs")
+    func albumMembershipMatchesBothIds() async {
+        self.mockClient.libraryPlaylists = [TestFixtures.makePlaylist(id: "MPREb_dai-dai", title: "Album")]
+        await self.viewModel.load()
+
+        #expect(self.viewModel.isInLibrary(anyOf: ["MPREb_dai-dai", "OLAK5uy_audioPlaylist"]))
+        #expect(self.viewModel.isInLibrary(playlistId: "MPREb_dai-dai"))
+        #expect(!self.viewModel.isInLibrary(playlistId: "OLAK5uy_audioPlaylist"))
+        #expect(self.viewModel.storedLibraryId(matching: ["OLAK5uy_audioPlaylist", "MPREb_dai-dai"]) == "MPREb_dai-dai")
+
+        // A playlist in the library answers its `VL` alias too.
+        self.mockClient.libraryPlaylists = [TestFixtures.makePlaylist(id: "VLPLxyz123")]
+        await self.viewModel.refresh()
+        #expect(self.viewModel.isInLibrary(playlistId: "PLxyz123"))
+        #expect(self.viewModel.isInLibrary(playlistId: "VLPLxyz123"))
+        #expect(!self.viewModel.isInLibrary(playlistId: "PLother"))
+        #expect(self.viewModel.storedLibraryId(matching: ["PLxyz123"]) == "VLPLxyz123")
+    }
+
+    /// A page's library control states membership, and the window it lives in may never have shown the
+    /// Library: the snapshot was loaded on login and by the Library view alone, so an album or playlist
+    /// page opened anywhere else read "not in the library" about an item the account owned.
+    @Test("loadIfNeeded fills in a library the window never loaded")
+    func loadIfNeededLoadsMissingSnapshot() async {
+        self.mockClient.libraryPlaylists = [TestFixtures.makePlaylist(id: "VLPLowned", title: "Mine")]
+
+        await self.viewModel.loadIfNeeded()
+
+        #expect(self.mockClient.getLibraryContentCallCount == 1)
+        #expect(self.viewModel.loadingState == .loaded)
+        #expect(self.viewModel.isInLibrary(playlistId: "VLPLowned"))
+    }
+
+    @Test("loadIfNeeded leaves a snapshot in hand alone")
+    func loadIfNeededKeepsExistingSnapshot() async {
+        self.mockClient.libraryPlaylists = [TestFixtures.makePlaylist(id: "VLPLowned", title: "Mine")]
+        await self.viewModel.load()
+        #expect(self.mockClient.getLibraryContentCallCount == 1)
+
+        // A second page opening its own membership question must not re-fetch the library.
+        await self.viewModel.loadIfNeeded()
+
+        #expect(self.mockClient.getLibraryContentCallCount == 1)
+        #expect(self.viewModel.isInLibrary(playlistId: "VLPLowned"))
+    }
+
+    /// The load is not the page's: a failed one leaves `loadingState` in error and the page has to be able
+    /// to ask again rather than sit in a failed state for the rest of the window's life.
+    @Test("loadIfNeeded can retry after a failed load")
+    func loadIfNeededRetriesAfterFailure() async {
+        self.mockClient.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
+        await self.viewModel.loadIfNeeded()
+        #expect(self.mockClient.getLibraryContentCallCount == 1)
+
+        self.mockClient.shouldThrowError = nil
+        self.mockClient.libraryPlaylists = [TestFixtures.makePlaylist(id: "VLPLowned", title: "Mine")]
+        await self.viewModel.loadIfNeeded()
+
+        #expect(self.mockClient.getLibraryContentCallCount == 2)
+        #expect(self.viewModel.isInLibrary(playlistId: "VLPLowned"))
+    }
+
     @Test("Load error sets error state")
     func loadError() async {
         self.mockClient.shouldThrowError = YTMusicError.authExpired

@@ -12,7 +12,7 @@ struct PodcastsView: View {
     @State private var networkMonitor = NetworkMonitor.shared
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        PageNavigationStack(id: "podcasts", path: self.$navigationPath) {
             Group {
                 if !self.networkMonitor.isConnected {
                     ErrorView(
@@ -35,14 +35,16 @@ struct PodcastsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Podcasts")
+            .pageTitle(id: "podcasts", title: String(localized: "Podcasts"))
             .navigationDestination(for: PodcastShow.self) { show in
                 PodcastShowView(show: show, client: self.viewModel.client)
             }
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
+            // a second bar under the destination's own (`PodcastShowView`, `AllEpisodesView`).
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                PlayerBar()
+            }
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {
@@ -284,7 +286,7 @@ struct PodcastShowView: View {
             .padding(24)
         }
         .accentBackground(from: self.show.thumbnailURL)
-        .navigationTitle(self.show.title)
+        .pageTitle(id: "podcast-\(self.show.id)", title: self.show.title)
         .navigationDestination(for: AllEpisodesDestination.self) { destination in
             AllEpisodesView(
                 show: destination.show,
@@ -666,7 +668,7 @@ struct AllEpisodesView: View {
             .padding(24)
         }
         .accentBackground(from: self.show.thumbnailURL)
-        .navigationTitle("All Episodes")
+        .pageTitle(id: "all-episodes-\(self.show.id)", title: String(localized: "All Episodes"))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()
         }

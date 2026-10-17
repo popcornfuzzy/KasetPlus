@@ -24,7 +24,7 @@ struct MoodCategoryDetailView: View {
                 }
             }
         }
-        .navigationTitle(self.viewModel.category.title)
+        .pageTitle(id: "mood-\(self.viewModel.category.browseId)", title: self.viewModel.category.title)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
                 PlayerBar()

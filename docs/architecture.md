@@ -9,8 +9,8 @@ The codebase follows a clean architecture pattern:
 ```
 Sources/
   └── Kaset/            → Main app target
-      ├── KasetApp.swift    → App entry point
-      ├── AppDelegate.swift → Window lifecycle
+      ├── KasetApp.swift    → App entry point (scenes, commands, root view)
+      ├── AppDelegate.swift → Window lifecycle (creates the app's main window)
       ├── Models/       → Data types (Song, Playlist, Album, Artist, etc.)
       ├── Services/     → Business logic
       │   ├── API/      → YTMusicClient, Parsers/
@@ -123,8 +123,9 @@ Makes authenticated requests to YouTube Music's internal API:
 - `rateSong(videoId:rating:)` → Like/dislike a song
 - `subscribeToArtist(channelId:)` → Subscribe to an artist
 - `unsubscribeFromArtist(channelId:)` → Unsubscribe from an artist
-- `subscribeToPlaylist(playlistId:)` → Add playlist to library
-- `unsubscribeFromPlaylist(playlistId:)` → Remove playlist from library
+- `getLibraryContent()` → Library shelves; fetches the landing, the artists corpus and `FEmusic_liked_albums`, because saved albums are not in the landing
+- `subscribeToPlaylist(playlistId:)` → Add playlist to library (`like/like`, playlist IDs only: `PlaylistDetail.libraryId` prefers the target the page's own save action names, and falls back through the album's `OLAK5uy_…` audio playlist, never the `MPREb_…` page the album is browsed by)
+- `unsubscribeFromPlaylist(playlistId:)` → Remove playlist from library (`like/removelike`, same ID rule)
 
 ### API Parsers
 
@@ -160,6 +161,7 @@ Controls audio playback via singleton WebView:
 | `pendingPlayVideoId` | `String?` | Video ID to play |
 | `showMiniPlayer` | `Bool` | Mini player visibility |
 | `showLyrics` | `Bool` | Lyrics panel visibility |
+| `nowPlayingSidebarPage` | `NowPlayingSidebarPage?` | Now Playing sidebar page (`nil` = hidden) |
 
 **Key Methods**:
 - `play(videoId:)` — Loads and plays a video
@@ -176,6 +178,7 @@ Manages the singleton WebView for playback:
 - Handles video loading with pause-before-load
 - JavaScript bridge for playback state updates
 - Survives window close for background audio
+- Is **re-parented** into whichever window shows it, so exactly one window may host it at a time — see `PlayerSurfaceHost` and [ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)
 
 ```swift
 @MainActor
@@ -321,7 +324,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 - Preserves plain lyrics fallback state until a higher-quality synced result is resolved
 - Credits community submitters via `LyricsAttribution` (name, profile URL, avatar) and, when a winning `LyricsVariantProvider` (Unison) offers more than one version, loads its alternatives so the lyrics footer can switch between them; the chosen version becomes the cached result
 - The submitter credit renders at the end of the lyric sheet (never pinned over the lyrics); the sticky footer carries only `Source:` and the version picker
-- Models backing vocals: `TimedWord.isBackground` and `SyncedLyricLine.backgroundWords` keep `ttm:role="x-bg"` (and Paxsenix `background`) phrases out of the lead line, so the lead text is never glued to a backing phrase and the karaoke fill is not dragged backwards. Backing vocals animate with the same per-character karaoke wipe as the lead — `KaraokeFillModel.backgroundWords(for:)` builds their fill windows from their own onsets, both lines render from the one display clock inside `KaraokeTimeSource`, and `KaraokeLayoutCache` keys by (line, font size, lead-or-backing) so a row's two layouts never evict each other. Instrumental interludes become pause-dot rows: providers leave them implicit as a **gap between consecutive lines** rather than as an empty line — word-synced TTML has no empty paragraphs at all — so `SyncedLyrics.withPauseInterludes(minimumGapMs:)`, applied once in `SyncedLyricsService.apply`, inserts a row spanning each gap of 600 ms or more. The three dots' bounce is timed by the interlude rather than by a clock of its own (`SyncedLyrics.PauseInterlude.dotLift`, served as `SyncedLyrics.PauseDots`): each dot's turn holds a whole number of bounces sized so one takes about 750 ms, so the dot is at rest at both ends of its turn and never appears mid-air, whatever the gap is — a 600 ms one gets a single quick pulse and a half-minute one does not flutter. See [ADR-0025](adr/0025-background-vocals.md)
+- Models backing vocals: `TimedWord.isBackground` and `SyncedLyricLine.backgroundWords` keep `ttm:role="x-bg"` (and Paxsenix `background`) phrases out of the lead line, so the lead text is never glued to a backing phrase and the karaoke fill is not dragged backwards. A source that marks no backing vocal at all spells one in parentheses — Apple's own TTML keeps the brackets *inside* the `x-bg` span, and KuGo and LRCLib write the phrase inline or as a line of its own — so `LyricsBackingParentheses`, applied in `SyncedLyricsService.forDisplay` ahead of the pause rows, moves such a phrase onto the backing row without its parentheses, drops a phrase that names part of the sheet (`(Chorus)`, `(x2)`), and leaves a line that was nothing else as a backing-only row. A phrase read out of a line's **text** was never timed apart from the line, so it goes to `SyncedLyricLine.untimedBackgroundText` rather than to `backgroundWords`: `KaraokeFillModel.backgroundWords(for:)` returns no fill windows for it, and `backingVocalLine` hands it to the layout as a line-synced row, so the phrase is revealed whole with the line instead of being wiped word by word over a window nobody measured. Backing vocals are driven by the one display clock inside `KaraokeTimeSource`: a word-timed one runs the same per-character wipe as the lead — its fill windows come from its own onsets — and `KaraokeLayoutCache` keys by (line, font size, lead-or-backing) so a row's two layouts never evict each other. A **duet** is modelled on the line too: `SyncedLyricLine.isOppositeTurn` marks a line that belongs to a singer other than the sheet's lead, which is what the display draws against the trailing edge in both the panel and the fullscreen player (the row's frame and scale anchor, the line-synced `Text`'s alignment, and every visual row of `KaraokeWordFlowLayout`). `SyncedLyrics.isTrailingAligned(at:)` is the one question the display asks, so a row with nothing to sing — the pause dots, or the short `♪` gap — is drawn on the edge of the line above it, which is the section it is a pause in. `TTMLParser` resolves a line's turn from `ttm:agent` on each paragraph and the agents declared in the document's metadata — the first `type="person"` declared leads, a `type="group"` agent is both singers together and is therefore not a turn, an agent on the enclosing `<div>` is inherited, and a document that declares no agents is led by the first agent it sings — while `PaxsenixProvider` maps its `oppositeTurn` flag and its ELRC `{v2}` voice markers onto the same field. See [ADR-0032](adr/0032-two-singer-lyrics.md). Instrumental interludes become pause-dot rows: providers leave them implicit as a **gap between consecutive lines** rather than as an empty line — word-synced TTML has no empty paragraphs at all — so `SyncedLyrics.withPauseInterludes(minimumGapMs:)`, applied once in `SyncedLyricsService.apply`, inserts a row spanning each gap of 600 ms or more. The dots' own silence begins where the row above stopped sounding (`KaraokeFillModel.settleBoundaryMs`, the boundary the highlight waits for) rather than at the row's timestamp, so a backing phrase still filling over what the sheet calls a pause leaves the dots resting instead of burning through their thirds (`SyncedLyrics.pauseInterlude(forLineAt:)`). The three dots' bounce is timed by the interlude rather than by a clock of its own (`SyncedLyrics.PauseInterlude.dotLift`, served as `SyncedLyrics.PauseDots`): each dot's turn holds a whole number of bounces sized so one takes about 750 ms, so the dot is at rest at both ends of its turn and never appears mid-air, whatever the gap is — a 600 ms one gets a single quick pulse and a half-minute one does not flutter. See [ADR-0025](adr/0025-background-vocals.md)
 
 **Related Files**:
 - `Sources/Kaset/Services/Lyrics/LyricsProvider.swift` — Provider protocol and search model
@@ -334,6 +337,7 @@ Coordinates synced and plain lyrics resolution for the current track:
 - `Sources/Kaset/Services/Lyrics/Providers/LRCLibProvider.swift` — External synced lyrics provider
 - `Sources/Kaset/Services/API/Parsers/LRCParser.swift` — LRC to `SyncedLyrics` parser
 - `Sources/Kaset/Services/API/Parsers/TTMLParser.swift` — Apple Music TTML to `SyncedLyrics` (and untimed TTML to plain `Lyrics`) parser
+- `Sources/Kaset/Models/LyricsBackingParentheses.swift` — Parenthesized backing vocals to backing rows (and out of plain sheets)
 
 **Integration**: Created once in `KasetApp` and injected through the SwiftUI environment for lyrics views.
 
@@ -390,7 +394,7 @@ Parses YouTube Music and custom `kaset://` URLs:
 | `kaset://album?id=xxx` | `.album(id:)` |
 | `kaset://artist?id=xxx` | `.artist(id:)` |
 
-**Usage**: Called from `KasetApp.onOpenURL` to handle deep links.
+**Usage**: Called from `AppDelegate.application(_:open:)` to handle deep links (it was the `Window` scene's `.onOpenURL`; see [ADR-0030](adr/0030-appkit-window-shell.md) for why the main window is AppKit's now).
 
 ### ScriptCommands (AppleScript)
 
@@ -456,6 +460,10 @@ See [ADR-0007: Sparkle Auto-Updates](adr/0007-sparkle-auto-updates.md) for desig
 
 Application lifecycle management:
 
+- **Creates and owns the app's main window** (`installMainWindow()`): an `NSWindow` with `MainWindow` as its `NSHostingController`'s root view, the app's chrome, a `KasetMainWindow` autosave name, and no SwiftUI window controller behind it — which is what leaves the window's toolbar to the app ([ADR-0030](adr/0030-appkit-window-shell.md)). The view comes from `KasetApp.makeRootView()`, handed over in `KasetApp.init`
+- Because that handover happens in `init`, `KasetApp` holds its services as **plain stored properties** and the window's UI state in an `@Observable` `AppWindowState`: a `@State` read outside a view/scene body is not a read (SwiftUI returns a constant binding and a fresh instance per read), which broke the navigation sidebar's selection and left `MainWindow` on its initializing branch — and therefore without a toolbar — until it was removed
+- Is the app's URL entry point (`application(_:open:)`), since there is no `Window` scene carrying `.onOpenURL`
+- **Owns every window the app makes** ([ADR-0031](adr/0031-window-model-and-player-surface-ownership.md)): the main window, and the detached mini player panel (`showMiniPlayerPanel()` / `closeMiniPlayerPanel()`), which moves the shared player surface between the two. Windows are AppKit's when they have to outlive a scene, be found by the app, or carry an app-owned toolbar; `Settings` stays a SwiftUI scene because nothing else needs to know about it
 - Implements `NSWindowDelegate` to hide window instead of close
 - Keeps app running when window is closed (`applicationShouldTerminateAfterLastWindowClosed` returns `false`)
 - Handles dock icon click to reopen window
@@ -896,11 +904,12 @@ The app uses Apple's **Liquid Glass** design language introduced in macOS 26.
 | Component | Glass Pattern |
 |-----------|---------------|
 | `PlayerBar` | `.glassEffect(.regular.interactive(), in: .capsule)` |
-| `Sidebar` | Wrapped in `GlassEffectContainer` |
+| `Sidebar` | AppKit's `sidebarWithViewController:` material (no hand-rolled effect view) |
 | `FullscreenPodcastView` top bar | `GlassEffectContainer` + `.glassEffect(.regular.interactive(), in: .circle)` (close, transcript toggle) and `.capsule` (volume) |
 | `QueueView` / `LyricsView` | `.glassEffectTransition(.materialize)` |
 | Search field | `.glassEffect(.regular, in: .capsule)` |
 | Search suggestions | `.glassEffect(.regular, in: .rect(cornerRadius: 8))` |
+| Playlist/album header action row | `.buttonStyle(.glassProminent)` (Play) and `.buttonStyle(.glass)` (Shuffle, the secondary actions); the overflow "…" control is drawn by the row — `.buttonStyle(.plain)` + `.menuIndicator(.hidden)` + `.glassEffect(.regular.interactive(), in: .capsule)` on a labelled `Image` whose `.contentShape(.rect)` is what makes the whole 46 × 26 pt capsule clickable rather than just the glyph — because no menu or button style gives a `Menu` that look. See [ADR-0033](adr/0033-playlist-header-action-row.md) |
 
 ### Glass Effect Best Practices
 
@@ -1034,11 +1043,12 @@ Right sidebar panel displaying song lyrics:
 - Starts 10 Hz WebView playback polling only while rendering `.synced` lyrics so line highlighting stays aligned without constant idle polling
 - `SyncedLyricsDisplayView` auto-centers the current line and supports tap-to-seek
 - Word-by-word karaoke wipe: `LyricsPlaybackClock` interpolates the 10 Hz samples into a display-rate position (absorbing sample jitter by changing rate, snapping on seeks, freezing on pause), `KaraokeFillModel` turns word timings into per-word fill windows and slices each word's window per character, and `KaraokeLyricsLineView` draws the dim base plus a bright copy masked to the *word's* own fill edge with a feathered glow, so the emphasis travels through a word as the edge does. Only the rows the highlight needs are redrawn per frame, so a line change is continuous; the same view renders the fullscreen lyrics
-- The wipe's frame budget is bounded on purpose: each line's words are measured once (`KaraokeLineLayout`, memoized in `KaraokeLayoutCache`) so a frame is arithmetic on known widths, a word's text is drawn as **one run cut by a mask** rather than a run per character (a settled word is a single layer, and only the character the edge is crossing is cut out of the word and drawn again above it — drawing the word as runs at their own origins stepped every character behind the edge by a pixel each time the wave moved), and rows redraw at the rate they need (`KaraokeFrameBudget` — 60 Hz for the line being sung, 30 Hz for a row that is on the clock but is not the one being sung, 10 Hz while the fullscreen player covers the panel, 20 Hz while paused or under Reduce Motion). A settled row draws nothing at all: its `TimelineView` is paused rather than removed
+- The wipe's frame budget is bounded on purpose: each line's words are measured once (`KaraokeLineLayout`, memoized in `KaraokeLayoutCache`) so a frame is arithmetic on known widths, a word's text is drawn as **one run cut by a mask** rather than a run per character (a settled word is a single layer, and only the crest the edge is in is cut out of the word and drawn again above it — drawing the word as runs at their own origins stepped every character behind the edge by a pixel each time the wave moved), and rows redraw at the rate they need (`KaraokeFrameBudget` — 60 Hz for the line being sung, 30 Hz for a row that is on the clock but is not the one being sung, 20 Hz while paused or under Reduce Motion, and no frames at all on a sheet the fullscreen player covers, which takes its clock from the playback samples instead). A settled row draws nothing at all: its `TimelineView` is paused rather than removed
+- The 10 Hz playback stream stops at the sheet: `LyricsClockReader` is the leaf that reads `PlayerService.currentTimeMs`, `isPlaying` and the fullscreen flag a sheet needs to know it is covered. The surface *around* a sheet does not change with playback, and reading the stream there rebuilt a panel's glass, a column's artwork and cards, and the fullscreen player's backdrop and controls ten times a second to hand a sheet a number only the sheet uses (`LyricsClockReaderTests`)
 - The line being sung, the line after it *once its own first ramp is approaching* (`armBoundaryMs`, from its lead or backing words — before that it could only redraw the frame it already drew, since a row that has not started renders every word unsung), and the line that has just finished until its own content is settled (`KaraokeFillModel.isLiveRow` / `settleBoundaryMs` — the later of its declared end and the end of its last fill ramp) run on the display clock; every other row is handed a settled position by the *same* `KaraokeTimeSource` timeline, paused in place. The hand-off is therefore a value change in a subtree that keeps its identity rather than a replacement — SwiftUI does not animate a subtree it replaces, and the hand-off lands on the frame the departing line's own departure begins
 - Nothing inside a lyric row is a hit-test target (`.allowsHitTesting(false)` on `KaraokeLyricsLineView`): the row owns the tap through its own content shape, and the per-word text layers and the masks cut out of them are otherwise responders that hit testing walks for every mouse move over a redrawing sheet — sampling the running app with the pointer over heavy lyrics puts that walk at the top of the profile, ahead of any drawing
-- The highlight moves when the line it is on has finished being sung (`KaraokeFillModel.highlightIndex(in:at:)` — when its content is settled), never `scrollLookaheadMs` earlier: that lead belongs to the *scroll*, which has to arrive before the first word. Letting the emphasis share it made a line start to leave while its last word was still filling
-- The character being sung **lifts rather than scales** (`KaraokeCharacter.swell`, while the halo is the *word's* own `glowStrength` — a character's slice of a word's window is far shorter than the halo's rise, so a per-character glow reads as no glow), by a fraction of a pixel at the peak: both envelopes are time-based and reach zero at their own unit's end, because SwiftUI re-rasterizes scaled text every frame (and snaps hardest as it returns to rest — 40 ms before the line ends, in the middle of the line's scale-down, which read as the line jumping in place), and because a glow that vanishes with its unit is a jump too. The lift is what forces the character under the edge to be cut out of the word's text: a translation moves a raster
+- The highlight moves when the line it is on has finished being sung (`KaraokeFillModel.highlightIndex(in:at:)` — when its content is settled), never `scrollLookaheadMs` earlier: that lead belongs to the *scroll*, which has to arrive before the first word. Letting the emphasis share it made a line start to leave while its last word was still filling. A row with nothing to sing never takes the highlight off a row that is still sounding — the dots, and the shorter `♪` gap, are silence — and it waits for that row's lead *and* backing alike: a backing vocal can outlast the line it sits under, and Apple Music writes exactly that (a phrase whose onsets lie past its own paragraph's end), so the dots used to sit under a line that was plainly still being sung. A row that *is* being sung keeps the older, narrower rule: there the lead decides, because the line being sung has changed
+- The characters being sung **lift rather than scale** (`KaraokeCrest.swell` — the crest is the run of characters the fill edge is in whose own fill lasts `KaraokeTiming.minimumCrestMs`, so the wave keeps the time a wave needs rather than fit inside one character's 60–90 ms slice — while the halo is the *word's* own `glowStrength`, because a character's slice of a word's window is far shorter than the halo's rise, so a per-character glow reads as no glow), by a fraction of a pixel at the peak: both envelopes are time-based and reach zero at their own unit's end, because SwiftUI re-rasterizes scaled text every frame (and snaps hardest as it returns to rest — 40 ms before the line ends, in the middle of the line's scale-down, which read as the line jumping in place), and because a glow that vanishes with its unit is a jump too. The lift is what forces the character under the edge to be cut out of the word's text: a translation moves a raster, and it is drawn only where its wave is over a quarter point of travel — the panel's 16 pt line at 0.55 emphasis is under half a device pixel and keeps the halo and the feathered edge instead of paying for two masks and a compositing group a frame
 - Opening the sheet is a settle, not an animation: `settleScroll(using:)` reads the highlight from state (never from the playback time its task captured), repeats an unanimated jump until the lazy stack has materialized the target row (bounded by wall clock, not by iteration count), and holds `isSettling` so no *scroll* animation runs through the sheet's first paint
 - A row's emphasis animation is **never conditional**: `isSettling` means only that the sheet is still being put in position. It used to also suppress the rows' emphasis spring to hide the pop-in of the sheet's first highlight, and that window restarts on every lyric-sheet replacement and stretches with main-thread load — so a line change inside it had its scale, opacity and drift applied in a single step, while the words kept animating (the fill is driven by the display clock, not by an implicit animation). The pop-in is gone at its source instead: the sheet seeds its highlight from the playback position it is handed, so the first frame is already correct and there is nothing to suppress (`LyricsEmphasisAnimationTests` renders the real panel in a window and follows the departing line's scaled width frame by frame)
 - Lyrics a provider timed only as a whole **appear as a line** at their own start and then stay lit, rather than brightening across the line or faking word timings; they keep the same halo, which blooms in with them and settles
@@ -1046,6 +1056,64 @@ Right sidebar panel displaying song lyrics:
 - Width: 280px, animated show/hide
 
 **Integration**: Toggled via `PlayerService.showLyrics`, persists across all navigation states, and consumes playback time from `PlayerService.currentTimeMs`.
+
+### WindowShell / WindowShellController
+
+**File**: `Sources/Kaset/Views/WindowShell.swift`
+
+The window's own layout, and the reason the toolbar's items land where a macOS app puts them:
+
+- The window is the app's `NSWindow`, created by `AppDelegate.installMainWindow()` with `MainWindow` as its hosting controller's root view — no SwiftUI `Window` scene, so no SwiftUI window controller is behind the window and nothing but the app touches its toolbar (see [ADR-0030](adr/0030-appkit-window-shell.md))
+- One `NSSplitViewController` with three panes — `NSSplitViewItem(sidebarWithViewController:)` for the navigation sidebar, a plain item for the page, `NSSplitViewItem(inspectorWithViewController:)` for the Now Playing column — each hosting SwiftUI; older designs nested a `NavigationSplitView` inside SwiftUI and laid the column beside it in an `HStack`
+- Those two *named* items are what AppKit's standard `sidebarTrackingSeparator` / `inspectorTrackingSeparator` items discover and align to, which is what bounds the page's toolbar items by the column's divider (see [ADR-0030](adr/0030-appkit-window-shell.md)); SwiftUI exposes neither the items nor a placement for them
+- The panes' backdrops run to the window's top edge (`fullSizeContentView` + a transparent titlebar, set when the app creates the window and re-asserted from `viewDidLayout` when a value differs) while each pane's content still lays out 52pt down, via the pane's own safe area
+- That window is a **clear sheet**: `isOpaque = false` and `backgroundColor = .clear`, re-asserted from `viewDidLayout` alongside the rest of the chrome. The navigation sidebar's material is `.behindWindow`, so it needs the desktop behind the window to blur — with the window drawing its own opaque background, the same effect view has only that background to composite against and the column reads as a flat grey sheet. Every *other* pane therefore paints an opaque surface of its own: the page (`MainWindow.contentPane`, a `windowBackgroundColor` background that bleeds up under the toolbar) and the Now Playing column (`NowPlayingSidebarBackground`)
+- AppKit owns the divider, its cursor, its clamping, the collapse animation and the width (`autosaveName`); the app states only whether the column is open and the width it opens at the first time, and reads a reader's collapse back off the item
+- The **window's minimum width is the panes' own minimums plus the dividers**, never below the 900pt floor the app has always stated (`WindowShellLayout.minimumWindowWidth(tracksColumn:)`, written to the window by `WindowShellController` and stated again on `MainWindow`'s content so the two agree): 967 with the column closed, 1267 with it open. The page is *not* the pane that gives way — a page squeezed below its own minimum is a page whose controls are cut off, and a split view cannot satisfy a requirement larger than its own width, so what AppKit did with the difference was break a constraint and draw the page past the window's edge (`Shell overflow: …` reports it if it ever happens). What gives way instead is how wide a **side pane** may be: each is capped at what is left once the page and the other pane have theirs (`WindowShellLayout.sidebarMaximum` / `inspectorMaximum`). And a window narrower than its minimum is **grown** to it rather than left to crop (once, never shrinking, and never on a reader's divider drag)
+- `MainWindow.Layout.pageMinWidth` is the page's own minimum, **765**, measured rather than guessed: with the column open the split view sized itself to 200 + 765 + 300 — each pane at its own floor — and stayed there in a narrower window. The player bar is what needs it (`PlayerBar` lays out its controls in both hover states for exactly this reason)
+- The navigation sidebar's surface is AppKit's again: `SidebarMaterialPane` hosts the sidebar's SwiftUI **inside** an `NSVisualEffectView` with the `.sidebar` material at `blendingMode = .behindWindow`, and `Sidebar`'s list hides its own background (`.scrollContentBackground(.hidden)`) — a standalone sidebar list otherwise paints an opaque background over whatever is behind it, so the column read as a flat grey sheet. `.behindWindow` (rather than `.withinWindow`) is what makes it a real macOS sidebar: the material blurs the desktop, the way Finder's and Mail's sidebars do
+- The sidebar's rows are **tagged rows, not `NavigationLink`s**: the split view this shell replaced was the navigation container those links belonged to, and a link with no container left to navigate renders its label in the inactive style — the rendered ink measures 0.498 grey against 0.000 for a tagged row, whatever `foregroundStyle` the label is given. The page has always been driven by the list's own `selection` binding, so nothing was lost (`Sidebar.navigationRow(_:)`), and `WindowShell`'s `Sidebar ink:` line measures the rendered result
+- The sidebar's content also draws in a **vibrant** appearance, so its labels state literal colours: `.primary` *is* `labelColor`, which `VibrantLight`/`VibrantDark` resolve to a lower-alpha colour (black @ 0.70 against `Aqua`'s 0.85). The appearance cannot be overridden from inside the pane, so `Sidebar.rowForeground(for:)` names the colour — and the icons carry `PackageResourceLookup.brandAccent` while the labels stay neutral, the way Apple Music tints its sidebar glyphs. `SidebarBackingStyleConfigurator` keeps each source-list row's emphasis in step with the window's key state, which is what the row's selection highlight draws with; `Sidebar surface rows:` publishes the appearance and the resolved label colour. The row's **emphasis is also re-stated after every first-responder change** (`Coordinator.repairEmphasis`), because AppKit's own rule is not the app's: the list un-emphasises the selected row the moment it stops being the window's first responder — which a page can cause on a key window by focusing a control of its own — and the highlight then draws in the dimmed, unemphasised style. Measured in the running app with `SearchView`'s focus-on-appear: `rowEmph=true effEmph=true` with a red pill (21609 red pixels) before the page appeared, `rowEmph=false effEmph=false` with a grey one (0 red) after. Both the emphasis rule and the window's key state are facts about a **window**, so the coordinator installs its observations from `BackingView.viewDidMoveToWindow` — `makeNSView`/`updateNSView` run with the view not yet in one, and installing from there left the sidebar observing nothing at all
+- `WindowToolbarController` installs the app's own `NSToolbar` (deferred one main-actor turn; a recreated shell controller takes over the toolbar this app already installed, since `NSToolbar.delegate` is weak). Its item list is stated **before** the toolbar goes into the window, so the window is never left with a toolbar that has no items in it. The item list has to be the app's *and* the object has to be the app's, which is why the window is AppKit's: on a SwiftUI-owned window, SwiftUI's window controller rewrote the toolbar's items from its own content every constraint pass, and replacing that toolbar made its `updateToolbarIfNeeded` throw out of `removeObserver:forKeyPath:` inside a constraint pass (`+[NSApplication _crashOnException:]`, `SIGTRAP`)
+- The page's **back control is the app's** (`WindowToolbarItem.back`), a plain bordered chevron, with the page's **name as plain text beside it** (`WindowToolbarItem.pageTitle`, a hosted label broken out of the chevron's glass capsule by a fixed space). Taking SwiftUI's toolbar back takes SwiftUI's back button with it — that item (`com.apple.SwiftUI.navigationStack.back`) is the *only* thing SwiftUI's toolbar carried, so a pushed page was left with the page's other controls and no way back: "the other buttons are there but the back button disappears". So a page's stack publishes whether it can be popped, and how (`PageNavigationModel`), through `PageNavigationStack` — a `NavigationStack` that takes the page's own path binding and adds nothing else, so everything that pushes into it is unchanged. The control is drawn only while `canGoBack`, and `goBack()` refuses to run an action that outlived its page. The window's own title stays hidden in every state — including across the fullscreen player's exit — so no stale visible title can ever hold the back control's slot again
+- That control leads the page's region — and to do so, the **window title gives the slot up** (`WindowShellController.applyTitleVisibility`). AppKit draws the title as a flexible view at the *leading* edge of the region right of the sidebar's tracking separator, and lays the region's items out after it, so an item's place in `WindowToolbarItems.identifiers` cannot put it at that edge. Measured in a reproduction of this window (1240pt, the app's item order): with the title visible the first page item sat at x=740, immediately left of the Ask AI button and the page's own controls; with the title hidden it moved to x=224 — the region's leading edge. So the title is hidden while the page has a back control (verified in the running app: the back item renders at x=244, right of the sidebar's divider at ~204–244) and restored when the page is a root. A hidden toolbar is not something the rule un-hides: the fullscreen Now Playing state hides both, and it is `MainWindow.updateWindowTitleVisibility`'s state, not the shell's
+- The window's **title is the shell's** (`PageTitleModel` → `WindowShell.windowTitle` → `window.title`): no shell-hosted page states `.navigationTitle`, which is toolbar-managed content SwiftUI's window controller would answer by replacing the window's toolbar. See [ADR-0034](adr/0034-shell-owned-window-title.md). The toolbar is still **re-taken** whenever anything else puts its own in the window (`WindowShellController.observeToolbarTakeover`) — it used to be SwiftUI's window controller on every navigation (a page stating a `navigationTitle` as the reader opened an album or a playlist, and `window.toolbar = nil` on the way back) — KVO on `NSWindow.toolbar` (there is no notification for it) plus a restored install on the next main-actor turn; each restore is logged (`Toolbar replaced, restoring the app's: …`) The window is then left with a titlebar holding no sidebar toggle, no page controls and no Now Playing toggle — the "the bar on top disappears and the sort/search icons are gone" report — until something re-states the app's, which used to be the next layout or appearance pass. KVO on `NSWindow.toolbar` (there is no notification for it) plus a restored install on the next main-actor turn; each restore is logged (`Toolbar replaced, restoring the app's: …`)
+
+### WindowPageToolbar / PlaylistToolbarControls
+
+**File**: `Sources/Kaset/Views/WindowPageToolbar.swift`
+
+How a page's own controls (search, sort, refresh) get into the window's titlebar, bounded by the Now Playing column's divider:
+
+- The page *publishes* them (`PageToolbarModel.contribute`, retracted by id on disappearance), kept as a stack so popping a destination falls back to the still-mounted root's entry underneath instead of leaving the popped page's controls (or nothing) behind
+- The window renders the contribution as **one hosted `NSToolbarItem`** (`NSHostingView`, `sizingOptions: [.intrinsicContentSize]`) placed before the inspector tracking separator, and updates it in place as the page changes; the order that puts it there is `WindowToolbarItems.identifiers`, covered by `WindowToolbarTests`
+- The hosted controls read the page's model **during a render of the toolbar's tree**, which is what keeps the titlebar field and the page's list in step — so the state they share lives on the model (`PlaylistDetailViewModel.searchText`, `isRefreshing`; `LibraryViewModel`/`HistoryViewModel.isRefreshing`) rather than in the page's `@State`. A manual refresh is a *background* refresh, so `loadingState` cannot say whether one is running: `isRefreshing` is why the flag exists. The refresh control shows an indeterminate spinner while one runs (a restarted `repeatForever` spin juddered through every load, because the hosted view re-renders on each window update), the playlist toolbar reserves the sort menu's slot before the detail loads so the item never resizes mid-load, and the toolbar controller only re-renders a hosted view when what it draws changed
+- Nested pages publish too (`LibraryView` → `PlaylistDetailView`), so the titlebar follows the page on screen rather than the sidebar selection
+
+### NowPlayingSidebarView
+
+**File**: `Sources/Kaset/Views/NowPlayingSidebarView.swift`
+
+The artwork-first right sidebar, the alternative to the two panels above (see [ADR-0029](adr/0029-now-playing-sidebar.md)):
+
+- The window's third pane, laid out by `WindowShell`'s `NSSplitViewController` as an **inspector** item (300–560pt, draggable divider, remembered width) rather than a card floating over the content; see [ADR-0030](adr/0030-appkit-window-shell.md) and `WindowShell.swift`
+- The collapse toggle is the window toolbar's last item in **both** states: while the column is closed it is the right-aligned run's trailing control, and while the column is open it is the trailing control of the toolbar's *inspector* region, pushed there by a flexible space (`WindowToolbarItems`) — so it is never drawn on the column. It used to move into the column's top-trailing corner when opened; that put a small glyph in the band the cover art owns, and the column has no interactive view over its backdrop any more. The toolbar item carries an explicit target (the shell's own `toggleInspector(_:)`) rather than `target = nil`
+- The navigation sidebar sits on `SidebarMaterialPane` (see `WindowShell`), which hosts it inside AppKit's sidebar material; `Sidebar` no longer wraps its `List` in a `GlassEffectContainer` either, since nothing in it uses a glass effect, and its rows name their own colours because that material puts the content in a vibrant appearance where `labelColor` is dimmed- The column's **own header is the toolbar's**: while one of its pages is open, `WindowToolbarItem.sidebarHeader` leads the region above the column and draws the back chevron plus the page's name (`NowPlayingSidebarToolbarHeaderView`, from `NowPlayingSidebarPage.toolbarTitle`). The pages used to draw that header themselves, just below the window's toolbar — but the band is the window's chrome, so nothing can be laid out in it, and each page carried a strip of empty column above its first row while the toggle was the band's only content. With the header stated as a toolbar item the pages begin at the top of the column, and the back control is AppKit's to hit-test rather than text drawn on the backdrop
+- The column's contents are sized from the *current* layout, never from a remembered one: `ShellPane` hands the pane's size down from a `GeometryReader` (same layout pass as the frame the divider is moving), and the embedded `QueueSidePanelView` fills its width with its AppKit table sizing its column from the scroll view's own width in `viewDidLayout` — a width passed down from SwiftUI state is one pass behind the divider, which is what made a drag look like the contents were tearing away
+- Chosen by `SettingsManager.nowPlayingSidebarEnabled` (on by default; a reader who never touched the setting has no stored key and gets the sidebar, one who turned it off keeps the classic panels and their own presentation state). `SettingsManager.nowPlayingSidebarWidth` is only the width the column opens at the first time — `NSSplitView.autosaveName` owns it after that, and the app never writes a width. With the setting on, the column is **open when the app launches** (`PlayerService.init` sets `nowPlayingSidebarPage = .overview`, before the window reads it), so the choice of design is the choice of what the window opens with; the column has a "Nothing playing" state, so it is safe on the transport's first, empty frame
+- One column, three pages (`NowPlayingSidebarPage`): the `overview` *is* the column — cover art edge to edge at the top, title and artist under it, a three-line lyric window with the line being sung in the middle, and the next song — and the two sections open `lyrics` (the shared `SyncedLyricsDisplayView` sheet plus `LyricsSourceFooter`, whose trailing edge carries the page's refresh control — refreshing means "search again for this song", which is what the provider line right under the sheet is about) and `queue` (the classic `QueueSidePanelView` with its header and card chrome suppressed, whose rows open their context menu through `DraggableTableView.menu(for:)` and whose playing row is locked in place — `PlayerService.reorderMovesPlayingRow`)
+- The three-line window is that *same* sheet in a 116pt window (`allowsScrolling: false`, faded at the edges), so the karaoke wipe, the emphasis, the pause dots and the centering are the panel's; the empty and loading states are the shared `LyricsStateView`, so both surfaces say the same thing
+- The column's background is a blurred copy of the cover (`NowPlayingSidebarBackground`), washing down into the window background and running to the window's top edge: the pane reaches behind the toolbar, so the artwork and its wash are genuinely *behind* the titlebar rather than below it, and both are `.allowsHitTesting(false)` (a `Color` in a background is hit-testable, and an invisible layer over the toolbar band swallowed clicks aimed at what was beneath it); the lyric window and up-next row sit in translucent `NowPlayingSidebarCard` glass so the colours show through
+- The artwork crossfades to the track's animated canvas with the fullscreen player's readiness rule (first *rendered* frame, never "item is ready"); `CanvasService` lookups are cache-backed, so the sidebar and the fullscreen player share one lookup per track
+- Owns one lyrics lookup on its root so the window and the sheet share it — a page change never looks like a new track and never re-searches
+
+**Integration**: Hosted as the inspector pane of `WindowShell` (see [ADR-0030](adr/0030-appkit-window-shell.md)); shown via `PlayerService.nowPlayingSidebarPage`, and the transport's lyrics/queue buttons and ⌘L follow whichever design is enabled (`isLyricsPanelActive` / `isQueuePanelActive`).
+
+### LyricsSurfaceViews
+
+**File**: `Sources/Kaset/Views/LyricsSurfaceViews.swift`
+
+What every lyric surface says when it has no sheet to draw, shared by `LyricsView` and the Now Playing sidebar so the two cannot drift apart: `LyricsStateView` (loading with the provider being searched, no track, no lyrics — `compact` changes only type size), `LyricsSourceFooter` (provider credit and the community-variant picker) and `LyricsSearchingCaption` (the "still searching" shimmer).
 
 ### CommandBarView
 
@@ -1090,7 +1158,7 @@ Reusable components used across the app:
 | `InteractiveCardStyle` | Hover/press effects for cards |
 | `NavigationDestinationsModifier` | Centralized navigation destination handling |
 | `ShareContextMenu` | Context menu for sharing content |
-| `StartRadioContextMenu` | Context menu for starting radio/mix |
+| `StartRadioContextMenu` | Radio controls: context menu items for a song, plus the playlist/album radio action (see [ADR-0033](adr/0033-playlist-header-action-row.md)) |
 | `FavoritesSection` | Horizontal scrolling favorites row |
 | `FavoritesContextMenu` | Context menu for favorites management |
 | `SongActionsHelper` | Common song action handlers |
@@ -1133,19 +1201,36 @@ GlassEffectContainer(spacing: 0) {
 
 ### PlayerBar Integration
 
-The `PlayerBar` must be added to **every navigable view** via `safeAreaInset`:
+The `PlayerBar` is added to **every navigable view** via `safeAreaInset`, and the inset belongs *inside*
+the page's `NavigationStack` — on the page the stack shows, not on the stack itself:
 
 ```swift
 // In HomeView, LibraryView, SearchView, PlaylistDetailView
-.safeAreaInset(edge: .bottom, spacing: 0) {
-    PlayerBar()
+NavigationStack(path: $path) {
+    content
+        .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
 }
 ```
 
 **Why not in MainWindow?**
-- `NavigationSplitView` detail views have their own navigation stacks
-- Views pushed onto a `NavigationStack` don't inherit parent's `safeAreaInset`
+- The shell's content pane shows whichever page the sidebar selects; the pages are what own a stack each
+- Views pushed onto a `NavigationStack` don't inherit the parent's `safeAreaInset`
 - Each view must explicitly include the `PlayerBar`
+
+**Why inside the stack, and not on it.** An inset applied to the stack belongs to the stack's
+*container*, so it outlives a push — and every destination page (`PlaylistDetailView`,
+`ArtistDetailView`, `TopSongsView`, …) brings a bar of its own, which then draws a **second** bar
+directly above it. That is the "the player bar duplicated, two on top of each other" report, and it
+appeared on any push from any page that hosted a stack: Home→album, History→artist, Library→playlist,
+Podcasts→show. Inside the stack the bar goes away with the page that owns it.
+
+Measured, both ways, in a reproduction of exactly this arrangement (root bar red, destination bar green,
+layer tree drawn to a bitmap and the bar bands counted):
+
+| Inset | After a push |
+|-------|--------------|
+| on the `NavigationStack` | `green@568 … red@620` — **two bars**, stacked |
+| on the stack's root page | `green@568` — one bar |
 
 ### Sidebar
 

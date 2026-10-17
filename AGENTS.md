@@ -20,7 +20,7 @@ Kaset is a native macOS YouTube Music client (Swift/SwiftUI) using a hidden WebV
 
 > 🔧 **Improve API Explorer, Don't Write One-Off Scripts** — When exploring or debugging API-related functionality, **always enhance `Sources/APIExplorer/main.swift`** instead of writing temporary scripts.
 
-> 📝 **Document Architectural Decisions** — For significant design changes, create an ADR in `docs/adr/`.
+> 📝 **Document Architectural Decisions** — For significant design changes, create an ADR in `docs/adr/`. You are allowed to write comments in code, but keep them short ant concise. Use ADRs for detailed explanations of design decisions.
 
 > ⌨️ **Preserve Standard macOS Shortcuts** — Do not override standard app/window shortcuts such as `⌘M`, `⌘W`, `⌘Q`, `⌘H`, or `⌘,` unless the human explicitly asks for it. When adding media shortcuts, prefer native macOS and Apple Music conventions, and update `docs/keyboard-shortcuts.md`.
 
@@ -32,7 +32,15 @@ swift build
 
 # Unit Tests (never combine with UI tests)
 swift test --skip KasetUITests
+
+# On-device model tests (opt-in: ~4s per test, so they are skipped by a plain `swift test`)
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter MusicIntentIntegrationTests
 ```
+
+The on-device model suite parses commands with the machine's own language model and asserts what it produced,
+so it costs seconds per test and its result depends on the model's phrasing rather than on the app's logic.
+It is gated behind `KASET_INTEGRATION_TESTS` for that reason (`IntegrationTestGate`) — run it deliberately, on
+its own.
 
 ## API Discovery
 

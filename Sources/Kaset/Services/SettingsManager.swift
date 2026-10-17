@@ -26,6 +26,10 @@ final class SettingsManager {
         static let lyricsDisabledProviders = "settings.lyricsDisabledProviders"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
+        static let nowPlayingSidebarEnabled = "settings.nowPlayingSidebarEnabled"
+        static let nowPlayingSidebarWidth = "settings.nowPlayingSidebarWidth"
+        static let miniPlayerWindowMode = "settings.miniPlayerWindowMode"
+        static let miniPlayerPanelWidth = "settings.miniPlayerPanelWidth"
         static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
     }
 
@@ -340,6 +344,42 @@ final class SettingsManager {
         }
     }
 
+    /// Whether the right sidebar uses the artwork-first "Now Playing" design (canvas artwork, a
+    /// three-line lyric preview and the next song, each expanding to the full experience) instead of
+    /// the classic Lyrics and Queue panels.
+    var nowPlayingSidebarEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.nowPlayingSidebarEnabled, forKey: Keys.nowPlayingSidebarEnabled)
+        }
+    }
+
+    /// Width of the Now Playing sidebar column, so a reader who widens or narrows it gets the same
+    /// width back next launch. Stored unclamped; the layout clamps it to its own limits on read.
+    var nowPlayingSidebarWidth: Double {
+        didSet {
+            UserDefaults.standard.set(self.nowPlayingSidebarWidth, forKey: Keys.nowPlayingSidebarWidth)
+        }
+    }
+
+    /// Whether the player bar's mini player button detaches the player into its own window.
+    ///
+    /// Off by default: the floating in-window mini player stays what the button has always done.
+    /// Turning it on is what makes the button open a real companion window that keeps the player
+    /// surface (and therefore playback) alive when the main window is closed.
+    var miniPlayerWindowModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.miniPlayerWindowModeEnabled, forKey: Keys.miniPlayerWindowMode)
+        }
+    }
+
+    /// Width of the detached mini player panel, so a reader who resizes it gets the same size back
+    /// next launch. Stored unclamped; `MiniPlayerPanelLayout` clamps it on read.
+    var miniPlayerPanelWidth: Double {
+        didSet {
+            UserDefaults.standard.set(self.miniPlayerPanelWidth, forKey: Keys.miniPlayerPanelWidth)
+        }
+    }
+
     /// Whether music videos are played as their song-only versions (album art) with the video
     /// kept for the PiP miniplayer.
     var preferAudioVersionsEnabled: Bool {
@@ -388,6 +428,15 @@ final class SettingsManager {
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
+        // Default on: the sidebar is the app's right-sidebar design out of the box. A reader who
+        // prefers the classic lyrics/queue panels opts out and gets a stored `false` back.
+        self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? true
+
+        self.nowPlayingSidebarWidth = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarWidth) as? Double ?? 380
+        // Default off: the floating in-window mini player remains what the PiP button does.
+        self.miniPlayerWindowModeEnabled = UserDefaults.standard.object(forKey: Keys.miniPlayerWindowMode) as? Bool ?? false
+        self.miniPlayerPanelWidth = UserDefaults.standard.object(forKey: Keys.miniPlayerPanelWidth) as? Double
+            ?? Double(MiniPlayerPanelLayout.defaultWidth)
         self.preferAudioVersionsEnabled = UserDefaults.standard.object(forKey: Keys.preferAudioVersionsEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),

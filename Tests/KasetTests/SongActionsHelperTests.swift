@@ -27,8 +27,13 @@ struct SongActionsHelperTests {
         SongActionsHelper.artistLibraryReconciliationRetryDelays = [.milliseconds(1), .milliseconds(1)]
     }
 
+    /// Waits for the artist library reconciliation to settle (see `ArtistDetailViewModelTests`): the work runs
+    /// in its own task, so waiting for it is what makes these assertions about the reconciliation rather than
+    /// about how fast the machine happened to be.
     private func awaitArtistReconciliation() async {
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitUntil("the artist library reconciliation to settle", timeout: .seconds(5)) {
+            !SongActionsHelper.isReconcilingArtistLibrary
+        }
     }
 
     @Test("addPlaylistToLibrary keeps optimistic playlist when refresh response is stale")
@@ -381,5 +386,21 @@ struct SongActionsHelperTests {
         #expect(self.libraryViewModel.artists.first?.id == libraryBrowseId)
         #expect(self.libraryViewModel.isInLibrary(artistId: libraryBrowseId) == true)
         #expect(self.libraryViewModel.isInLibrary(artistId: subscriptionChannelId) == true)
+    }
+
+    /// A failed library write has to leave a trace a reader of the console can act on, without the
+    /// service's own message about the ID the write named.
+    @Test("A failed write reports how it failed, not what the service said")
+    func writeFailureSummaryStaysLoggable() {
+        #expect(SongActionsHelper.writeFailure(YTMusicError.authExpired) == "authExpired")
+        #expect(
+            SongActionsHelper.writeFailure(YTMusicError.apiError(message: "MPREb_secret-id", code: 404))
+                == "apiError(HTTP 404)"
+        )
+        #expect(
+            SongActionsHelper.writeFailure(YTMusicError.networkError(underlying: URLError(.notConnectedToInternet)))
+                == "networkError(URLError \(URLError.Code.notConnectedToInternet.rawValue))"
+        )
+        #expect(SongActionsHelper.writeFailure(YTMusicError.unknown(message: "MPREb_secret-id")) == "unknown")
     }
 }

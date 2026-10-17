@@ -74,8 +74,10 @@ machinery as the lead:
 - `settleBoundaryMs` now also counts the backing ramps. A held backing note can
   outlast the lead's last word; without this the row would leave the display
   clock — and freeze the backing wipe mid-word — while the accompaniment was
-  still filling. The backing still does not drive `highlightIndex`: which line is
-  being sung is decided by the lead.
+  still filling. The backing still does not move the highlight off a line whose
+  *successor is being sung*: there the lead decides, because the line being sung
+  has changed. It does decide where the successor is silence — see the final
+  amendment.
 - The backing row differs from the lead only in color, opacity and size (sidebar
   14 pt `.secondary`, fullscreen 36 pt × 0.62 at white 55 %), with the same
   emphasis (glow and per-character lift) the lead gets.
@@ -175,16 +177,196 @@ like the fill they sit among. Their rise now comes from the shared playback
 clock, which stops when the app is paused, where the dot's own timeline used to
 keep running to the display's refresh rate.
 
+## Amendment: backing vocals written in parentheses
+
+Modelling backing vocals structurally fixed the rows, but not every source marks
+one. The ones that do not spell it with **parentheses**, and the parentheses
+reached the screen — either as a dimmed backing row printing its own bracket, or
+as text in the middle of a lyric line. Reading the providers' live payloads shows
+where each of them stands:
+
+- **Unison, BetterLyrics and Paxsenix all serve Apple Music TTML**, and Apple's
+  marker keeps the punctuation *inside* the span it marks:
+  `<span ttm:role="x-bg"><span>(Yes)</span></span>` (Espresso), and for a phrase
+  sung over the lead, `<span ttm:role="x-bg"><span>(Dancin'</span> …
+  <span>own)</span></span>` (Shake It Off). Parsing that markup faithfully — which
+  is what `TTMLParser` does — produces a backing row reading `(Yes)`, brackets
+  included.
+- **KuGo's LRC marks nothing at all** and puts the phrase in the words of the
+  line: `[00:47.21]You smart (you smart) 누가 You are` (Kill This Love). The
+  parentheses are the entire signal. Its metadata lines (`[ti:Espresso
+  (Explicit)]`) are a different matter and are already stripped by
+  `KuGoProvider.normalize`.
+- **LRCLib's submissions** use the same convention in two shapes — a whole line
+  of ad-lib (`(Holy shit)`, `(Oh-oh-oh-oh-oh)`) and a leading phrase
+  (`(You got to) shake it off`).
+- **Paxsenix only leaks them through TTML.** Its ELRC spells backing vocals as
+  `[bg: <00:55.644>Yes<00:56.286>]` lines with no brackets — dropped today, since
+  the format has no line-level timestamp for them — and its `content` array flags
+  them with `background: true` and clean text (`Yes`, not `(Yes)`).
+
+The parenthesis is therefore not something to display, it is the instruction: the
+phrase belongs on the backing row, without it. `LyricsBackingParentheses` reads
+them out, and `SyncedLyricsService.forDisplay` applies it to every result before
+it reaches the panel — ahead of `withPauseInterludes`, because a line left holding
+only a backing row has something to sing and is not an interlude.
+
+- **Backing text the provider already modelled** (`backgroundWords`) only loses the
+  parentheses: `(Yes)` reads `Yes`, and `(Dancin'` … `own)` becomes `Dancin' on my
+  own`. The words keep their own onsets, and a syllable continuation that
+  legitimately has no leading space is not given one.
+- **A phrase in a line-synced line's text** goes on the backing row as **untimed
+  text**, and that row is drawn as a line-synced row (see the final amendment).
+  The words were never timed apart from the line, so nothing finer is known and,
+  since that first version, nothing finer is represented either.
+- **A phrase in a word-timed line** keeps the onset of the word that opened it, and
+  the scan carries its depth across the whole word list: a phrase that opens in one
+  word and closes in another (`(you` … `smart)`) is one phrase with one onset, and a
+  word the phrase cuts in half keeps what is left of it. The two representations of
+  a line must never disagree, because karaoke draws the words while everything else
+  reads the text, so a word-timed line's text is rebuilt from the words that remain.
+- **A line that was nothing else** (`(Oh-oh-oh-oh-oh)`) keeps its row as a
+  backing-only line and shows no lead text — it is exactly the shape a Paxsenix
+  `background` line already has, and `isSilent` already reads it as sung rather than
+  as a pause.
+- **A phrase that names part of the sheet** — `(Chorus)`, `(Pre-Chorus 2)`, `(x2)` —
+  is not a vocal: singing it on the backing row would be worse than not showing it,
+  so it is dropped. A line left with nothing after that (a bare `(Chorus)`) loses its
+  line.
+- **A plain sheet has no backing row to move a phrase onto**, so there the phrase is
+  removed instead, and a line that was nothing but a phrase loses its line.
+  `LyricsParser`'s route to plain lyrics is currently commented out, which leaves
+  `LRCLibProvider`'s plain and Unison's plain submissions on this path.
+- **An opener a source never closed is not a phrase** — it did not finish what it
+  started — so its text stays in the lyric rather than disappearing from the sheet.
+
+It is a display-time pass, not a parse-time one, on the same grounds as the pause
+rows: it is a property of the sheet rather than of a format (five providers, three
+shapes of payload), and every index the display works with has to see the result. It
+also means the lyrics cache schema version does not move: the cache still holds what
+the provider returned, and a song cached before this amendment gets the conversion
+when it is next displayed.
+
+## Amendment: a backing vocal that outlasts its own line
+
+The backing vocal was kept out of `highlightIndex` on the grounds that the lead
+decides which line is being sung. That is right while the *next* line is being
+sung and wrong while the next row is silence, and the difference is visible for
+seconds at a time in real payloads. A cached Unison sheet writes
+`I'm sick, I'm sick` as a paragraph ending at 1:42.718 with
+`(High, the way that you're stuck in my head)` under it, whose onsets run
+1:42.783 → 1:44.979: the phrase's last word lands at 105029 ms, **2311 ms after
+the line's own end**. The next paragraph begins at 1:45.753, so the gap — 3035 ms
+— became a pause row, and the highlight sat on those three dots for the whole
+2.3 s with the backing phrase still sweeping underneath. The same song does it
+twice (111360 → 113614).
+
+Two rules fix it, and they share one boundary:
+
+- **A row with nothing to sing never takes the highlight off a row that is still
+  sounding.** The dots are silence and so is the short `♪` gap, and the highlight
+  now waits for the row above it to finish, **lead and backing alike**
+  (`KaraokeFillModel.highlightIndex` against `settleBoundaryMs`). A row that *is*
+  being sung keeps the older rule: the next line's lead has arrived, so the
+  highlight has already moved and the backing does not drag it back. The hold is
+  bounded by the silent row's own window, so it can never outlast it.
+- **The silence begins where the row above stopped sounding.**
+  `PauseInterlude.startTimeMs` was the pause row's own timestamp — the previous
+  paragraph's declared end — which is a provider artifact, not the start of the
+  silence. It is now `max(row start, settleBoundaryMs(row above))`, so the dots
+  rest while the phrase is still filling and begin on the frame it lands, which is
+  the same frame the highlight moves on. The two cannot disagree, because they are
+  the same boundary; a row whose whole window the row above fills has no silence
+  left to show and its dots read as already sung.
+
+The rows themselves are untouched: a gap still produces exactly one row covering
+it, so the scroll target, the row statuses and every index the display works with
+are what they were. This is a display-time rule like the parentheses pass, so
+`LyricsCacheStore.schemaVersion` does not move.
+
+`isPauseLine` no longer routes through `pauseInterlude`: it is asked of every row
+of the sheet on every render, and it is a question about the row's own shape
+(`isSilent` plus the 600 ms threshold), while "has the pause begun" is a question
+about the row before it. Both read the one `isPauseShape` predicate, so the row
+that draws the dots and the rule that decides when they start still cannot
+disagree about which rows are pauses.
+
+Verified against the machine's real lyrics cache: 83 parsed sheets, 20 ms step
+over every one of them, and no frame anywhere highlights a silent row while the
+row above it is still sounding (229 such frames before the change, in the one
+song that has the shape).
+
+## Amendment: a backing phrase with no word timing gets none
+
+The parentheses pass first handed a line-synced phrase to the backing row as **one
+`TimedWord` at the line's own onset**, on the reasoning that the fill model would
+then give it a window over the line — "so line-synced lyrics keep a synchronized
+backing vocal rather than losing one". That is a record of something never
+measured. The onset is the *line's*, not the phrase's, and the window was not
+measured at all; all the entry put on the row was an invented timing, which
+`KaraokeLayoutCache` then read as fidelity: `KaraokeLineLayout` decides
+`isLineSynced` from `(line.words ?? []).isEmpty`, so a phrase that had no words got
+the row's **word-timed** branch — a per-character wipe sweeping the whole phrase
+across the line, with the glow and the character lift that go with an edge the
+source never knew the position of. On a line-by-line sheet, where nothing else on
+screen wipes, the accompaniment was the one thing that did.
+
+The rule now is that a phrase the source never timed is **never given a timing**:
+
+- `SyncedLyricLine` gains `untimedBackgroundText`, alongside `backgroundWords`,
+  for a backing phrase written as words and as text respectively. `backgroundText`
+  reads both (word-timed first), and `hasBackingVocal` is what `isSilent`,
+  `isBackgroundOnly`, `hasBackgroundVocals` and the renderers' backing-layout
+  lookup consult, so a backing-only row stays a row with something to sing instead
+  of becoming a pause row.
+- `LyricsBackingParentheses` sends a phrase read out of a line's **text** to that
+  field, and only a phrase read out of the **words** to `backgroundWords` — those
+  words have onsets and those onsets are the phrase's own.
+- `KaraokeFillModel.backgroundWords(for:)` returns **no windows** for a phrase with
+  no onsets, instead of synthesizing one over the line's duration. Nothing that
+  reads fill windows (`settleBoundaryMs`, `armBoundaryMs`) therefore claims
+  anything about when the phrase is sung; the row's own declared end stays its end.
+- `backingVocalLine` puts such a phrase on the row's `text` with no `words`, which
+  makes the row **line-synced**: one `Text`, revealed whole when the line begins,
+  exactly the treatment the lead of a line-by-line sheet gets. A row whose backing
+  is **partly** timed is read as untimed as a whole, because a wipe needs every one
+  of its words to have an onset; no text is lost either way, since
+  `backgroundText` carries both readings.
+
+Genuine word-timed backing is untouched: Apple Music's `x-bg` spans and Paxsenix's
+`background` lines carry onsets of their own and keep their wipe, which is the
+whole point of having modelled them.
+
+Verified against the machine's real lyrics cache — 22 cached sheets through
+`LyricsCacheStore` → `SyncedLyricsService.fetchLyrics`: the 13 line-by-line sheets
+hold 28 parenthesized phrases, every one of them previously carried as a synthetic
+word and drawn with a wipe (`isLineSynced == false`, non-empty fill windows) and
+none of them any longer (all 28 are untimed text on line-synced rows), while the 34
+word-timed backing phrases still wipe. No untimed phrase became a pause row, and
+no row's settle boundary moved.
+
+This is a model change rather than a parse change, so `LyricsCacheStore` is
+untouched again: the cache holds what the provider returned and the conversion runs
+when the sheet is displayed, which is where the synthetic words were being created
+in the first place.
+
 ## Consequences
 
 - Backing vocals are spaced correctly and no longer drag the lead line's karaoke
   timing backwards.
+- A backing phrase is animated according to what the source actually measured: a
+  word-timed one wipes per character like the lead, and one timed only as part of
+  its line is revealed whole with the line. No row claims an onset nobody timed.
 - The information is available to every provider that can express it, not only
   Unison (whose TTML, BetterLyrics' and Paxsenix's all route through the same
   parser).
-- Backing vocals animate with the same per-character wipe as the lead line,
-  synchronized through the shared display clock, while staying visually
-  subordinate (smaller, dimmer, no effect on the highlight).
+- Backing vocals are synchronized through the shared display clock, while staying
+  visually subordinate (smaller, dimmer): word-timed ones animate with the same
+  per-character wipe as the lead line, and a phrase the source never timed is
+  revealed as one line-synced text instead of wiping. They decide the highlight in exactly one place:
+  a row with nothing to sing — a pause, or a `♪` gap — cannot become the line
+  being sung while the row above it is still sounding, which is what a backing
+  vocal outlasting its own line used to make happen.
 - The per-line credit placement is unchanged by this ADR; see
   [ADR-0024](0024-unison-provider.md) for attribution.
 - Cache invalidation is now coupled to the schema version: any future change to

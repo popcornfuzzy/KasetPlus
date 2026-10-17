@@ -10,9 +10,21 @@ struct SyncedLyricsDisplayView: View {
     /// Strength of the karaoke glow and lift. The narrow panel carries less of it
     /// than the fullscreen view does.
     var emphasis: Double = 0.55
-    /// Whether something is drawn over this panel — the fullscreen player covers it — so
-    /// the highlight has to stay correct but does not have to be drawn for anybody.
+    /// Whether something is drawn over this sheet — the fullscreen player covers it.
+    ///
+    /// A covered sheet draws nothing at all: every row of it is settled, so no timeline of its is
+    /// unpaused (`KaraokeFrameBudget.plan`). Its highlight still has to stay correct, which is done
+    /// from the playback samples instead (`receiveClockSample`), so the sheet is already showing the
+    /// right line when it is revealed rather than slewing to it in front of the reader.
     var isCovered: Bool = false
+    /// Whether the sheet may be scrolled by hand.
+    ///
+    /// The Now Playing sidebar shows this same sheet in a window three lines tall, where the
+    /// highlight is always the middle line: a stray two-finger scroll there would push the line being
+    /// sung out of the window and stop the sheet following playback for the next four seconds. The
+    /// sheet is still driven programmatically (it keeps centering the current line), it just cannot
+    /// be dragged by the reader.
+    var allowsScrolling: Bool = true
     let onSeek: (Int) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -43,19 +55,18 @@ struct SyncedLyricsDisplayView: View {
     @State private var scrollResumeTask: Task<Void, Never>?
     @State private var resumeScrollGeneration = 0
 
-    /// How often a row may redraw.
-    ///
-    /// The line being sung gets the full live rate; a row that is on the display clock but is
-    /// not the one being sung leans on the same clock at the lower *armed* rate — nothing on
-    /// it is moving yet, and its own transitions are Core Animation's, not ours, so the redraw
-    /// rate does not affect how they look.
-    private func frameInterval(lineIndex: Int) -> Double? {
-        // Covered by the fullscreen player: the clock still has to move so the highlight
-        // is correct the moment it is visible again, but no one can see the frames.
-        if self.isCovered { return KaraokeFrameBudget.covered }
-        if self.reduceMotion { return KaraokeFrameBudget.reducedMotion }
-        if !self.isPlaying { return KaraokeFrameBudget.paused }
-        return lineIndex == self.currentLineIndex ? KaraokeFrameBudget.live : KaraokeFrameBudget.armed
+    /// How this row draws this frame: whether it runs on the display clock at all, and how often it
+    /// may redraw. One decision, taken in one place (`KaraokeFrameBudget.plan`), because the two
+    /// answers are the same decision — a row whose timeline is paused is handed its settled frame
+    /// once and then draws nothing.
+    private func plan(forLineAt index: Int) -> KaraokeRowPlan {
+        KaraokeFrameBudget.plan(
+            isLive: self.isLive(lineIndex: index),
+            isCurrent: index == self.currentLineIndex,
+            isCovered: self.isCovered,
+            reduceMotion: self.reduceMotion,
+            isPlaying: self.isPlaying
+        )
     }
 
     private var karaokeEmphasis: Double {
@@ -80,6 +91,7 @@ struct SyncedLyricsDisplayView: View {
         isPlaying: Bool,
         emphasis: Double = 0.55,
         isCovered: Bool = false,
+        allowsScrolling: Bool = true,
         onSeek: @escaping (Int) -> Void
     ) {
         self.lyrics = lyrics
@@ -87,6 +99,7 @@ struct SyncedLyricsDisplayView: View {
         self.isPlaying = isPlaying
         self.emphasis = emphasis
         self.isCovered = isCovered
+        self.allowsScrolling = allowsScrolling
         self.onSeek = onSeek
 
         let scrollIndex = lyrics.currentLineIndex(at: currentTimeMs + Int(KaraokeTiming.standard.scrollLookaheadMs))
@@ -105,20 +118,26 @@ struct SyncedLyricsDisplayView: View {
 
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
+                        let plan = self.plan(forLineAt: index)
                         // A line with nothing to sing is a pause, and a pause is the dots. The
                         // test is the same one the dots themselves use, so the row that draws
                         // them and the state they are drawn from cannot disagree.
                         if self.lyrics.isPauseLine(at: index) {
+                            // When this silence began — asked of the line *above* it, and measured from
+                            // that line's own words — is settled once for the row, not once per frame:
+                            // only the dots' state is a function of the display position.
+                            let interlude = self.lyrics.pauseInterlude(forLineAt: index)
                             KaraokeTimeSource(
                                 line: line,
                                 status: status,
-                                isLive: self.isLive(lineIndex: index),
+                                isLive: plan.isLive,
                                 clock: self.clock,
-                                minimumFrameInterval: self.frameInterval(lineIndex: index)
+                                minimumFrameInterval: plan.minimumInterval
                             ) { displayTimeMs in
                                 SyncedPauseDotsLineView(
-                                    dots: self.lyrics.pauseDots(forLineAt: index, at: Int(displayTimeMs)),
+                                    dots: SyncedLyrics.PauseDots(interlude: interlude, at: Int(displayTimeMs)),
                                     status: status,
+                                    isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                     onTap: { self.onSeek(line.timeInMs) }
                                 )
                             }
@@ -127,11 +146,12 @@ struct SyncedLyricsDisplayView: View {
                             SyncedLineView(
                                 line: line,
                                 lineIndex: index,
+                                isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                 status: status,
-                                isLive: self.isLive(lineIndex: index),
+                                isLive: plan.isLive,
                                 clock: self.clock,
                                 layoutCache: self.layoutCache,
-                                minimumFrameInterval: self.frameInterval(lineIndex: index),
+                                minimumFrameInterval: plan.minimumInterval,
                                 emphasis: self.karaokeEmphasis,
                                 onTap: { self.onSeek(line.timeInMs) }
                             )
@@ -152,6 +172,7 @@ struct SyncedLyricsDisplayView: View {
                 .padding(.horizontal, 16)
             }
             .scrollIndicators(.hidden)
+            .scrollDisabled(!self.allowsScrolling)
             // Attach scrolling state to the actual ScrollView rather than relying
             // on a competing gesture recognizer over its content.
             .onScrollPhaseChange { _, phase in
@@ -224,6 +245,17 @@ struct SyncedLyricsDisplayView: View {
 
     private func receiveClockSample(timeMs: Int, isPlaying: Bool) {
         self.clock.receive(LyricsClockSample(hostTime: Date(), timeMs: timeMs, isPlaying: isPlaying))
+        // While the fullscreen player covers this sheet no row runs on the display clock, so nothing
+        // else advances it: it is advanced here instead, once per playback sample.
+        //
+        // The clock has to keep moving for two reasons. `KaraokeFillModel.isLiveRow` reads its
+        // position, so a sheet revealed over a stale clock would put the wrong rows on the clock
+        // for a frame. And the reveal itself draws from the clock, so a sheet whose clock had been
+        // left at the position it was covered on would slew to the right one — or snap to it — in
+        // front of the reader, instead of already being there.
+        if self.isCovered {
+            self.clock.advance(to: Date())
+        }
     }
 
     /// Puts the sheet in position after it appears or after it is replaced, and turns the
@@ -322,7 +354,7 @@ struct SyncedLyricsDisplayView: View {
 
 // MARK: - KaraokeFrameBudget
 
-/// How often a lyric row redraws.
+/// What a lyric row may spend on a frame.
 @available(macOS 26.0, *)
 enum KaraokeFrameBudget {
     /// The line being sung redraws 60 times a second.
@@ -340,14 +372,6 @@ enum KaraokeFrameBudget {
     /// costs nothing because what is on them is Core Animation's, not a redraw of ours.
     static let armed = 1.0 / 30.0
 
-    /// While the panel is covered by the fullscreen player there is nothing to see, but the
-    /// clock still has to be advanced so the highlight is right the moment it reappears
-    /// (and so it keeps correcting rather than snapping back from a stale position).
-    ///
-    /// One frame per playback sample: the clock moves in step with the samples it is fed,
-    /// so it neither drifts behind them nor pays for frames in between.
-    static let covered = 1.0 / 10.0
-
     /// While playback is paused the fill is frozen, so a row's frames only exist to take up
     /// a sample correction or a seek — 20 a second is prompt enough for both, and it stops
     /// a paused lyric sheet from repainting an unchanging line 60 times a second.
@@ -356,6 +380,52 @@ enum KaraokeFrameBudget {
     /// Reduce Motion keeps the fill — it is the information — but drops the decorative
     /// motion and the display-rate redraw that goes with it.
     static let reducedMotion = 1.0 / 20.0
+
+    /// Whether a row runs on the display clock this frame, and how often it may redraw.
+    ///
+    /// The two answers are one decision — `KaraokeTimeSource` pauses a row's timeline exactly when
+    /// it is not live, so an interval only exists for a row that draws — which is why they are
+    /// answered together, by the same rule, for both lyric surfaces.
+    ///
+    /// **A covered row never draws.** A sheet the fullscreen player is drawn over is out of sight
+    /// for as long as the player is up, so every one of its rows is settled and the panel behind the
+    /// player costs no frames at all. Nothing is lost: its clock is still advanced, from the playback
+    /// samples rather than from a display link (`SyncedLyricsDisplayView.receiveClockSample`), so the
+    /// sheet is already showing the right line when the reader comes back to it.
+    ///
+    /// It was previously given a tenth of the live rate, which is still a whole row redrawn ten
+    /// times a second — a line being sung under an opaque cover, for nobody.
+    static func plan(
+        isLive: Bool,
+        isCurrent: Bool,
+        isCovered: Bool,
+        reduceMotion: Bool,
+        isPlaying: Bool
+    ) -> KaraokeRowPlan {
+        guard isLive, !isCovered else { return .settled }
+        if reduceMotion { return KaraokeRowPlan(isLive: true, minimumInterval: Self.reducedMotion) }
+        if !isPlaying { return KaraokeRowPlan(isLive: true, minimumInterval: Self.paused) }
+        return KaraokeRowPlan(isLive: true, minimumInterval: isCurrent ? Self.live : Self.armed)
+    }
+}
+
+// MARK: - KaraokeRowPlan
+
+/// What one lyric row draws this frame.
+///
+/// A settled row is not merely throttled: its timeline is paused (`KaraokeTimeSource`), so it is
+/// handed its settled position once and then draws nothing at all until the highlight comes back
+/// for it. That is what makes a sheet mostly free — a sheet is mostly lines that have been sung —
+/// and it is why "may this row draw" and "how often" are one value rather than two.
+@available(macOS 26.0, *)
+struct KaraokeRowPlan: Equatable {
+    /// Whether the row runs on the display clock.
+    let isLive: Bool
+    /// The fastest the row may redraw, or `nil` when it is settled and draws nothing.
+    let minimumInterval: Double?
+
+    /// A row that is not drawing: its timeline is paused and it has no rate.
+    static let settled = KaraokeRowPlan(isLive: false, minimumInterval: nil)
 }
 
 // MARK: - KaraokeTimeSource
@@ -420,6 +490,10 @@ struct KaraokeTimeSource<Content: View>: View {
 struct SyncedPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
+    /// Whether the dots belong against the trailing edge, which is the edge of the line above
+    /// them (`SyncedLyrics.isTrailingAligned(at:)`): an interlude inside the other singer's
+    /// section is a pause in *their* part, and the dots are drawn where their lines are.
+    var isTrailingAligned: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -428,10 +502,13 @@ struct SyncedPauseDotsLineView: View {
                 self.dotView(for: self.status(of: dotIndex))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
         .padding(.vertical, 7)
         .opacity(self.lineOpacity(for: self.status))
-        .scaleEffect(self.lineScale(for: self.status), anchor: .leading)
+        .scaleEffect(
+            self.lineScale(for: self.status),
+            anchor: self.isTrailingAligned ? .trailing : .leading
+        )
         .animation(.easeInOut(duration: 0.35), value: self.dots.statuses)
         .animation(AppAnimation.lyricLine, value: self.status)
         .contentShape(Rectangle())
@@ -497,6 +574,10 @@ struct SyncedLineView: View {
     let line: SyncedLyricLine
     /// Index of this line, so the pause-dot lookup never scans the whole lyric sheet.
     let lineIndex: Int
+    /// The edge this row is drawn against, which the sheet resolves — a line from its own
+    /// singer, a row with nothing to sing from the line above it
+    /// (`SyncedLyrics.isTrailingAligned(at:)`).
+    let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
     let isLive: Bool
     let clock: LyricsPlaybackClock
@@ -526,9 +607,11 @@ struct SyncedLineView: View {
         ) { displayTimeMs in
             self.content(at: displayTimeMs, layout: layout, backgroundLayout: backgroundLayout)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: self.alignment)
         .opacity(self.opacity(for: self.status))
-        .scaleEffect(self.scale(for: self.status), anchor: .leading)
+        // Anchored to the edge the row sits on, so an other-singer line grows and shrinks
+        // from its own side rather than sliding across the panel.
+        .scaleEffect(self.scale(for: self.status), anchor: self.alignment == .trailing ? .trailing : .leading)
         .offset(y: self.drift(for: self.status))
         .padding(.vertical, 5)
         // Always animated, including the line that is leaving. A line change is the panel's
@@ -539,6 +622,11 @@ struct SyncedLineView: View {
         .onTapGesture {
             self.onTap()
         }
+    }
+
+    /// The edge this row is drawn against: a duet's second singer gets the trailing one.
+    private var alignment: Alignment {
+        self.isTrailingAligned ? .trailing : .leading
     }
 
     @ViewBuilder
@@ -559,21 +647,24 @@ struct SyncedLineView: View {
                         displayTimeMs: displayTimeMs,
                         color: .primary,
                         emphasis: self.emphasis,
-                        lineSpacing: 2
+                        lineSpacing: 2,
+                        isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 if let backgroundLayout {
-                    // The backing vocal runs the same per-character wipe as the lead,
-                    // driven by the same display clock position — it overlaps the line
-                    // in time, so synchrony is simply sharing the clock. It is dimmer
-                    // and smaller so it reads as accompaniment, nothing else differs.
+                    // The backing vocal is driven by the same display clock position as the
+                    // lead: a word-timed one runs the same per-character wipe, and a phrase
+                    // the source never timed is drawn as a line-synced row — revealed whole at
+                    // the line's start, with no invented word boundaries. It is dimmer and
+                    // smaller so it reads as accompaniment.
                     KaraokeLyricsLineView(
                         layout: backgroundLayout,
                         displayTimeMs: displayTimeMs,
                         color: .secondary,
                         emphasis: self.emphasis,
-                        lineSpacing: 2
+                        lineSpacing: 2,
+                        isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 }
