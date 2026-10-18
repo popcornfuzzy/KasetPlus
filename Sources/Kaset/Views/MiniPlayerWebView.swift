@@ -299,7 +299,27 @@ final class SingletonPlayerWebView {
     private var mediaControlUsesNextPrev: Bool
     private var miniPlayerPresentationEnabled = false
     private var miniPlayerPrefersVideo = false
-    private var miniPlayerViewportSize = CGSize(width: 320, height: 180)
+    /// Container view that owns the DOM presentation. Weak: a dismantled host must
+    /// never pin its view alive, and a dead owner simply means "unowned".
+    /// See ``PlayerSurfaceOwnership`` for the single-writer rule.
+    private weak var presentationOwner: NSView?
+
+    /// Containers the WebView can be shown in, oldest first. The WebView is never
+    /// left behind when one of them is dismantled — it moves to the best survivor
+    /// (see ``PlayerWebViewHosting``).
+    private var hosts: [PlayerHost] = []
+
+    /// A registered container. A class because `weak` storage is not allowed in a
+    /// struct, and a dismantled host must never be kept alive by this list.
+    private final class PlayerHost {
+        weak var container: NSView?
+        let isExpanded: Bool
+
+        init(container: NSView, isExpanded: Bool) {
+            self.container = container
+            self.isExpanded = isExpanded
+        }
+    }
 
     private init() {
         self.mediaControlUsesNextPrev = SettingsManager.shared.mediaControlStyle == .nextPreviousTrack
@@ -493,18 +513,92 @@ final class SingletonPlayerWebView {
         webView.autoresizingMask = [.width, .height]
     }
 
+    /// Registers `container` as a place the shared WebView may be shown.
+    ///
+    /// Every host does this as it mounts (and on update, so a host that changes role is
+    /// recorded correctly). Registration is what lets a dying host hand the WebView back
+    /// instead of orphaning it: SwiftUI gives a host that is still mounted no update when
+    /// another host disappears, so that host cannot notice on its own.
+    func registerHost(_ container: NSView, isExpanded: Bool) {
+        self.hosts.removeAll { $0.container == nil || $0.container === container }
+        self.hosts.append(PlayerHost(container: container, isExpanded: isExpanded))
+    }
+
+    /// Unregisters a dismantling host and, if the WebView was living in its container,
+    /// hands it to a surviving host immediately.
+    ///
+    /// This is the podcast-fullscreen handoff: the overlay's container is dismantled when
+    /// the experience closes, and the sidebar's representable is not updated because none
+    /// of its inputs changed. Without this the WebView ends up with `window == nil` and
+    /// `superview == nil` — audio playing with nothing to draw the picture in.
+    func unregisterHost(_ container: NSView) {
+        let heldWebView = self.webView?.superview === container
+        self.hosts.removeAll { $0.container == nil || $0.container === container }
+        guard heldWebView else { return }
+        self.rehomeWebViewAfterHostRemoval()
+    }
+
+    /// Moves the WebView to the best surviving host, or leaves it alone when none is left
+    /// (a host mounting next puts it in the hierarchy itself).
+    private func rehomeWebViewAfterHostRemoval() {
+        guard let webView else { return }
+
+        let candidates = self.hosts.map {
+            PlayerWebViewHosting.Candidate(isExpanded: $0.isExpanded, isInWindow: $0.container?.window != nil)
+        }
+        guard let index = PlayerWebViewHosting.preferredHost(candidates),
+              let target = self.hosts[index].container
+        else {
+            self.logger.info("Player host removed; no surviving host to hand the WebView to yet")
+            return
+        }
+
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.frame = target.bounds
+        webView.autoresizingMask = [.width, .height]
+        target.addSubview(webView)
+
+        let message = "Player host removed; WebView moved to a surviving host"
+            + " (expanded: \(self.hosts[index].isExpanded), inWindow: \(target.window != nil),"
+            + " size: \(Int(target.bounds.width))x\(Int(target.bounds.height)))"
+        self.logger.info("\(message, privacy: .public)")
+    }
+
+    /// Releases DOM-presentation ownership when `container` holds it (called from the
+    /// host's `dismantleNSView`), so a parking host mounting afterwards takes over
+    /// deterministically instead of racing a stale owner.
+    func releasePresentationOwner(_ container: NSView) {
+        if PlayerSurfaceOwnership.shouldReleaseOwner(container: container, currentOwner: self.presentationOwner) {
+            self.presentationOwner = nil
+        }
+    }
+
     /// Updates the DOM presentation for the mini player overlay.
     /// When expanded, the page chrome is hidden and the video surface is prioritized.
-    func updateMiniPlayerPresentation(isExpanded: Bool, prefersVideo: Bool, viewportSize: CGSize) {
+    ///
+    /// `owner` is the requesting host's container. A parking (`isExpanded:false`)
+    /// request from a container that does not own an active surface is ignored:
+    /// during a toggle both the dying hidden host and the new video host emit in the
+    /// same pass, and letting the parker win tore down extractions that never came
+    /// back (see ``PlayerSurfaceOwnership``).
+    func updateMiniPlayerPresentation(owner: NSView, isExpanded: Bool, prefersVideo: Bool) {
+        guard PlayerSurfaceOwnership.shouldApply(
+            isExpanded: isExpanded,
+            owner: owner,
+            currentOwner: self.presentationOwner,
+            presentationEnabled: self.miniPlayerPresentationEnabled
+        ) else {
+            self.logger.debug("Ignoring parking presentation from non-owning host while video surface is active")
+            return
+        }
+        self.presentationOwner = owner
+
         let previousIsExpanded = self.miniPlayerPresentationEnabled
         let previousPrefersVideo = self.miniPlayerPrefersVideo
 
         self.miniPlayerPresentationEnabled = isExpanded
         self.miniPlayerPrefersVideo = prefersVideo
-        self.miniPlayerViewportSize = CGSize(
-            width: max(1, viewportSize.width),
-            height: max(1, viewportSize.height)
-        )
 
         // A page the user can see is the page's own controls: if the mini player has just been
         // revealed, a silent page stops being silent and stops being treated as a placeholder.
@@ -525,13 +619,16 @@ final class SingletonPlayerWebView {
         self.applyMiniPlayerPresentationScript()
     }
 
-    private func applyMiniPlayerPresentationScript() {
-        guard let webView else { return }
+    /// Builds the DOM presentation script for a presentation state.
+    ///
+    /// Pure construction (no WebView touch), so the exact script the app injects can be
+    /// driven against a mock page in tests — that is how the podcast-exit handoff is
+    /// reproduced without the app GUI.
+    static func miniPlayerPresentationScript(isExpanded: Bool, prefersVideo: Bool) -> String {
+        let isExpandedLiteral = isExpanded ? "true" : "false"
+        let prefersVideoLiteral = prefersVideo ? "true" : "false"
 
-        let isExpandedLiteral = self.miniPlayerPresentationEnabled ? "true" : "false"
-        let prefersVideoLiteral = self.miniPlayerPrefersVideo ? "true" : "false"
-
-        let script = """
+        return """
             (function() {
                 const enabled = \(isExpandedLiteral);
                 const prefersVideo = \(prefersVideoLiteral);
@@ -540,6 +637,7 @@ final class SingletonPlayerWebView {
                 const containerId = 'kaset-video-container';
                 const blackoutId = 'kaset-video-blackout';
                 const timerIdKey = '__kasetMiniPlayerVideoTimer';
+                const watchdogKey = '__kasetMiniPlayerVideoWatchdog';
 
                 window.__kasetMiniPlayerPresentationEnabled = enabled;
                 window.__kasetMiniPlayerPrefersVideo = prefersVideo;
@@ -549,6 +647,41 @@ final class SingletonPlayerWebView {
                         clearInterval(window[timerIdKey]);
                         window[timerIdKey] = null;
                     }
+                    if (window[watchdogKey]) {
+                        clearInterval(window[watchdogKey]);
+                        window[watchdogKey] = null;
+                    }
+                }
+
+                function containerHasLiveVideo() {
+                    const container = document.getElementById(containerId);
+                    const live = document.querySelector('video');
+                    return !!(container && live && live.parentElement === container);
+                }
+
+                // Slow self-healing poll that outlives the fast attempts: YouTube may swap
+                // the `<video>` element *after* an extraction reported success (Song/Video
+                // tab switch completing late, player re-render), leaving a dead node in the
+                // container and a black box with no retry. It runs in every presentation
+                // state: parking is soft standby that keeps the DOM (the parked host is
+                // always the invisible 1x1 layer, so restoring the page is never visible),
+                // which is what makes host handoffs instant and heals slow variant loads
+                // long after the fast window expired.
+                //
+                // Healing is deliberately side-effect-free: it never clicks the video tab.
+                // A click is a page mutation that can navigate (a false-positive "video"
+                // button on a page without real tabs moves the player to another id, which
+                // the drift handlers then "correct" with a full reload — out from under a
+                // showing video). Tab selection is a one-shot intent owned by the explicit
+                // fast attempt below, not a continuous invariant.
+                function ensureWatchdog() {
+                    if (window[watchdogKey]) return;
+                    window[watchdogKey] = setInterval(function() {
+                        ensureStyle();
+                        if (!containerHasLiveVideo()) {
+                            extractVideoToContainer();
+                        }
+                    }, 1000);
                 }
 
                 function ensureStyle() {
@@ -610,11 +743,6 @@ final class SingletonPlayerWebView {
                     `;
                 }
 
-                function removeStyle() {
-                    const style = document.getElementById(styleId);
-                    if (style) style.remove();
-                }
-
                 function ensureContainer() {
                     let container = document.getElementById(containerId);
                     if (!container) {
@@ -623,11 +751,6 @@ final class SingletonPlayerWebView {
                         (document.body || document.documentElement).appendChild(container);
                     }
                     return container;
-                }
-
-                function removeContainer() {
-                    const container = document.getElementById(containerId);
-                    if (container) container.remove();
                 }
 
                 function ensureBlackout() {
@@ -661,7 +784,7 @@ final class SingletonPlayerWebView {
                             || text === 'musikvideo'
                             || text === 'music video'
                             || label === 'video'
-                            || label.includes('video');
+                            || label === 'music video';
                     });
                 }
 
@@ -690,12 +813,6 @@ final class SingletonPlayerWebView {
 
                     const container = ensureContainer();
 
-                    if (!window.__kasetMiniPlayerVideoExtracted) {
-                        window.__kasetMiniPlayerOriginalParent = video.parentElement || null;
-                        window.__kasetMiniPlayerOriginalNextSibling = video.nextSibling || null;
-                        window.__kasetMiniPlayerVideoExtracted = true;
-                    }
-
                     if (video.parentElement !== container) {
                         container.appendChild(video);
                     }
@@ -704,43 +821,43 @@ final class SingletonPlayerWebView {
                     return true;
                 }
 
-                function restoreVideoToOriginalParent() {
-                    const video = document.querySelector('video');
-                    const originalParent = window.__kasetMiniPlayerOriginalParent;
-                    const originalNextSibling = window.__kasetMiniPlayerOriginalNextSibling;
-
-                    if (video && originalParent) {
-                        if (originalNextSibling && originalNextSibling.parentNode === originalParent) {
-                            originalParent.insertBefore(video, originalNextSibling);
-                        } else {
-                            originalParent.appendChild(video);
-                        }
-                    }
-
-                    window.__kasetMiniPlayerVideoExtracted = false;
-                    window.__kasetMiniPlayerOriginalParent = null;
-                    window.__kasetMiniPlayerOriginalNextSibling = null;
-                    removeContainer();
-                    removeStyle();
-                    removeBlackout();
-                }
-
+                // Parking is soft standby, never a teardown: the parked host is always the
+                // invisible 1x1 layer, so restoring the page is never visible — it only
+                // destroys the extraction the next expanded host must then rebuild
+                // asynchronously. That teardown/re-extract race is what left the sidebar
+                // black after leaving podcast fullscreen (re-extract missing a swapped
+                // element, style re-applied over an empty container) and flashed the
+                // page's own controls in between. The DOM stays as it is; the watchdog
+                // keeps healing it while parked.
                 if (!enabled) {
-                    clearPresentationTimer();
-                    restoreVideoToOriginalParent();
+                    if (window[timerIdKey]) {
+                        clearInterval(window[timerIdKey]);
+                        window[timerIdKey] = null;
+                    }
+                    ensureWatchdog();
                     return;
-                }
-
-                ensureStyle();
+                }                ensureStyle();
                 ensureBlackout();
                 ensureVideoTabSelected();
 
+                // The common handoff (leaving podcast fullscreen for the sidebar): same
+                // page, same video, only the native container changed. The extraction
+                // survived parking, so there is nothing to rebuild — return instantly
+                // instead of flashing the page through another timer cycle.
+                if (containerHasLiveVideo()) {
+                    removeBlackout();
+                    ensureWatchdog();
+                    return;
+                }
+
                 let attempts = 0;
                 clearPresentationTimer();
+                ensureWatchdog();
+
                 window[timerIdKey] = setInterval(function() {
                     if (!window.__kasetMiniPlayerPresentationEnabled) {
-                        clearPresentationTimer();
-                        restoreVideoToOriginalParent();
+                        clearInterval(window[timerIdKey]);
+                        window[timerIdKey] = null;
                         return;
                     }
 
@@ -750,19 +867,29 @@ final class SingletonPlayerWebView {
 
                     const extracted = extractVideoToContainer();
                     if (extracted) {
-                        clearPresentationTimer();
+                        clearInterval(window[timerIdKey]);
+                        window[timerIdKey] = null;
                         removeBlackout();
                         return;
                     }
 
-                    if (attempts >= 40) {
-                        clearPresentationTimer();
+                    if (attempts >= 80) {
+                        clearInterval(window[timerIdKey]);
+                        window[timerIdKey] = null;
                         removeBlackout();
                     }
                 }, 150);
             })();
         """
+    }
 
+    private func applyMiniPlayerPresentationScript() {
+        guard let webView else { return }
+
+        let script = Self.miniPlayerPresentationScript(
+            isExpanded: self.miniPlayerPresentationEnabled,
+            prefersVideo: self.miniPlayerPrefersVideo
+        )
         webView.evaluateJavaScript(script) { [weak self] _, error in
             if let error {
                 self?.logger.debug("Failed to apply mini player presentation script: \(error.localizedDescription)")
@@ -789,9 +916,15 @@ final class SingletonPlayerWebView {
         self.webView?.evaluateJavaScript("window.__kasetSafeAdBlockingEnabled = \(enabled ? "true" : "false");")
     }
 
+    /// Test hook: recorded whenever a page load is requested, before anything else.
+    /// Lets scripted-observation tests prove which metadata patterns trigger a page
+    /// reload (the black-video mechanism) without a live page.
+    var onPageLoadRequestForTests: ((String, VideoLoadStrategy) -> Void)?
+
     /// Load a video, stopping any currently playing audio first.
     /// Note: Full page navigation destroys the video element; same-id restarts use ``restartInPlaceFromBeginning()`` when possible.
     func loadVideo(videoId: String, strategy: VideoLoadStrategy = .standard) {
+        self.onPageLoadRequestForTests?(videoId, strategy)
         guard let webView else {
             self.logger.error("loadVideo called but webView is nil")
             return

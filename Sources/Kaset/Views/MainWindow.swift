@@ -395,8 +395,7 @@ struct MainWindow: View {
         PersistentPlayerView(
             videoId: videoId,
             isExpanded: false,
-            prefersVideo: false,
-            viewportSize: CGSize(width: 1, height: 1)
+            prefersVideo: false
         )
         .frame(width: 1, height: 1)
         .opacity(0)
@@ -422,8 +421,7 @@ struct MainWindow: View {
         PersistentPlayerView(
             videoId: videoId,
             isExpanded: true,
-            prefersVideo: hasVideo,
-            viewportSize: placesVideo ? slot.size : CGSize(width: 1, height: 1)
+            prefersVideo: hasVideo
         )
         .frame(width: placesVideo ? slot.width : 1, height: placesVideo ? slot.height : 1)
         .clipShape(RoundedRectangle(cornerRadius: 16))

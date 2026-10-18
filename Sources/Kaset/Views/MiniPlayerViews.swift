@@ -16,7 +16,6 @@ struct PersistentPlayerView: NSViewRepresentable {
     let videoId: String?
     let isExpanded: Bool
     let prefersVideo: Bool
-    let viewportSize: CGSize
 
     private let logger = DiagnosticsLogger.player
 
@@ -26,6 +25,7 @@ struct PersistentPlayerView: NSViewRepresentable {
         let container = NSView(frame: .zero)
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
+        SingletonPlayerWebView.shared.registerHost(container, isExpanded: self.isExpanded)
 
         // Get or create the singleton WebView
         let webView = SingletonPlayerWebView.shared.getWebView(
@@ -41,14 +41,28 @@ struct PersistentPlayerView: NSViewRepresentable {
 
         // Keep the shared WebView in a video-focused presentation when the mini player is visible.
         SingletonPlayerWebView.shared.updateMiniPlayerPresentation(
+            owner: container,
             isExpanded: self.isExpanded,
-            prefersVideo: self.prefersVideo,
-            viewportSize: self.viewportSize
+            prefersVideo: self.prefersVideo
         )
 
         self.loadPageIfNeeded()
 
         return container
+    }
+
+    /// Releases DOM-presentation ownership if this container holds it, so the host
+    /// mounting next (hidden layer vs. video surface) takes over deterministically.
+    /// Without this, toggle order decides whether the video comes back.
+    ///
+    /// Then unregisters the container, which re-parents the shared WebView to a surviving
+    /// host when this one was showing it. Leaving that to the next host does not work: the
+    /// sidebar's representable is not updated when the fullscreen podcast overlay closes
+    /// (none of its inputs changed), so the WebView would stay orphaned in this container
+    /// while the audio kept playing — the black sidebar.
+    static func dismantleNSView(_ container: NSView, coordinator _: ()) {
+        SingletonPlayerWebView.shared.releasePresentationOwner(container)
+        SingletonPlayerWebView.shared.unregisterHost(container)
     }
 
     /// Gives the WebView its page: the track that is playing, the track that will be played, or the
@@ -78,6 +92,10 @@ struct PersistentPlayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ container: NSView, context _: Context) {
+        // Keep the host registry current: a container that changes role must be
+        // recorded as such, or the next handoff would pick the wrong survivor.
+        SingletonPlayerWebView.shared.registerHost(container, isExpanded: self.isExpanded)
+
         // Ensure WebView is in this container
         let webView = SingletonPlayerWebView.shared.getWebView(
             webKitManager: self.webKitManager,
@@ -95,9 +113,9 @@ struct PersistentPlayerView: NSViewRepresentable {
         webView.frame = container.bounds
 
         SingletonPlayerWebView.shared.updateMiniPlayerPresentation(
+            owner: container,
             isExpanded: self.isExpanded,
-            prefersVideo: self.prefersVideo,
-            viewportSize: self.viewportSize
+            prefersVideo: self.prefersVideo
         )
 
         self.loadPageIfNeeded()

@@ -237,7 +237,6 @@ struct NowPlayingSidebarView: View {
             {
                 NowPlayingSidebarVideo(
                     videoId: videoId,
-                    width: self.mediaWidth,
                     height: self.mediaHeight
                 )
             } else {
@@ -274,6 +273,9 @@ struct NowPlayingSidebarView: View {
                     }
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.95))
+                    // The whole capsule is the button: without an explicit content shape
+                    // only the glyphs themselves hit-test and the capsule edges are dead.
+                    .contentShape(.capsule)
                     .glassEffect(.regular.tint(.black.opacity(0.25)).interactive(), in: .capsule)
                 }
                 .buttonStyle(.plain)

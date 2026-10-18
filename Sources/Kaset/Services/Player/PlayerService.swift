@@ -288,6 +288,23 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// resurrects the button on a track the API confirmed has no video.
     private var authoritativeVideoAvailabilityVideoId: String?
 
+    /// Video-variant id learned from the page while the sidebar video is showing.
+    ///
+    /// The Song/Video tab switch moves the page to the video variant, whose id Kaset may
+    /// not know (unresolved pairing, `preferAudioVersions` off, queue-less play). The first
+    /// observation of an unknown id for the current song while its video is on screen *is*
+    /// that switch — not queue drift — so it is learned and folded back onto the song (see
+    /// `foldUnknownObservationIfSidebarSwitch`). Without this the drift handlers reload the
+    /// song page out from under the video. Scoped to one song
+    /// (`observedVideoVariantForVideoId`); reset on every track change. Never learned for
+    /// podcasts (no variants there) and never for an id that belongs to the queue (a
+    /// genuine move must still be caught).
+    /// Internal (not private): the WebQueueSync extension assigns it. Tests read it.
+    var observedVideoVariantVideoId: String?
+    /// Song the learned variant belongs to. Internal (not private): the WebQueueSync
+    /// extension reads it; `private` would confine it to this file.
+    var observedVideoVariantForVideoId: String?
+
     /// Whether a video surface is worth showing for the current playback item: either the
     /// metadata says a video exists, or the WebView player has already reported video dimensions.
     var hasVideoSurface: Bool {
@@ -546,6 +563,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentPlaybackIsPodcast = isPodcastPlayback
         self.podcastClassificationVideoId = isPodcastPlayback ? videoId : nil
         self.miniPlayerVideoAspectRatio = nil
+        // A new video means a newly learnable variant: the previous track's learned
+        // id must not fold observations for this one.
+        self.observedVideoVariantVideoId = nil
+        self.observedVideoVariantForVideoId = nil
         // A new video means a new verdict: the previous track's API answer must not
         // gate the DOM fast path (or `hasVideoSurface`) for this one.
         self.authoritativeVideoAvailabilityVideoId = nil

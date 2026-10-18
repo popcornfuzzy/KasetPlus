@@ -319,15 +319,13 @@ struct NowPlayingSidebarArtwork: View {
 @available(macOS 26.0, *)
 struct NowPlayingSidebarVideo: View {
     let videoId: String
-    let width: CGFloat
     let height: CGFloat
 
     var body: some View {
         PersistentPlayerView(
             videoId: self.videoId,
             isExpanded: true,
-            prefersVideo: true,
-            viewportSize: CGSize(width: self.width, height: self.height)
+            prefersVideo: true
         )
         .frame(maxWidth: .infinity)
         .frame(height: self.height)
