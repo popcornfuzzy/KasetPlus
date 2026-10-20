@@ -229,6 +229,8 @@ final class WindowShellController: NSSplitViewController {
     var onInspectorCollapsedChange: ((Bool) -> Void)?
 
     private let toolbarController = WindowToolbarController()
+    /// The bar's surface, which AppKit draws only in fullscreen (see `WindowBarBackdropView`).
+    private let barBackdrop = WindowBarBackdropController()
 
     private let logger = DiagnosticsLogger.ui
 
@@ -308,11 +310,22 @@ final class WindowShellController: NSSplitViewController {
         self.logLayoutIfNeeded()
         self.logSidebarSurfaceIfNeeded()
         self.installToolbar()
+        if let window = self.view.window {
+            self.barBackdrop.install(in: window, contentPane: self.contentController.view)
+        }
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         self.installToolbar()
+        if let window = self.view.window {
+            self.barBackdrop.install(in: window, contentPane: self.contentController.view)
+        }
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        self.barBackdrop.remove()
     }
 
     // MARK: - Inputs
@@ -391,6 +404,10 @@ final class WindowShellController: NSSplitViewController {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: self.sidebarController)
         sidebarItem.canCollapse = true
         sidebarItem.canCollapseFromWindowResize = false
+        // Stated rather than defaulted: full height is what lets the sidebar's material run under the
+        // transparent titlebar instead of starting below a bar, and it is what the user reported as
+        // missing when the window was briefly made standard.
+        sidebarItem.allowsFullHeightLayout = true
 
         let contentItem = NSSplitViewItem(viewController: self.contentController)
         contentItem.canCollapse = false
@@ -400,6 +417,8 @@ final class WindowShellController: NSSplitViewController {
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: self.inspectorController)
         inspectorItem.canCollapse = true
         inspectorItem.canCollapseFromWindowResize = false
+        // The column's artwork belongs to the top edge of the window, not to a strip below the toolbar.
+        inspectorItem.allowsFullHeightLayout = true
         // Just above the page's, so the column keeps the width the reader gave it when the *window* is
         // resized: without a stated priority the two flexible panes trade width arbitrarily, and the
         // column visibly lost its divider position on every window resize.
@@ -1090,12 +1109,14 @@ final class WindowShellController: NSSplitViewController {
 
     // MARK: - Toolbar
 
-    /// Keeps the window's chrome in the shape a sidebar-plus-toolbar window has.
+    /// Keeps the window's chrome the system's.
     ///
-    /// The app's window sets these when it is created (`AppDelegate.installMainWindow`), so this is
-    /// normally a no-op — it is re-asserted from the layout pass, and only writes when a value actually
-    /// differs, so nothing that takes the window over later can leave the reader's sidebar looking like an
-    /// opaque band above a sidebar.
+    /// The content runs under a transparent titlebar, so AppKit owns the toolbar's floating background,
+    /// the scroll-edge effect where content passes beneath it, and the full-height layout of the sidebar
+    /// and inspector. The window is opaque: the panes and their materials need a surface to composite
+    /// against, and a transparent window is what made the earlier chrome unreadable. Re-asserted from the
+    /// layout pass so nothing that takes the window over later can remove the style mask the full-height
+    /// panes depend on.
     private func applyWindowChrome() {
         guard let window = self.view.window else { return }
         self.applyTitleVisibility()
@@ -1105,20 +1126,17 @@ final class WindowShellController: NSSplitViewController {
         if !window.titlebarAppearsTransparent {
             window.titlebarAppearsTransparent = true
         }
+        if window.toolbarStyle != .unified {
+            window.toolbarStyle = .unified
+        }
         if window.titlebarSeparatorStyle != .none {
-            // A hairline under the toolbar draws a line across the whole window, including over the
-            // navigation sidebar, where the two regions' different materials meet.
             window.titlebarSeparatorStyle = .none
         }
-        // The window is a clear sheet, so the sidebar's material has the desktop to blur rather than the
-        // window's own background to blend against. Re-asserted here for the same reason as the rest of
-        // the chrome: only a value that actually differs is written, and it means nothing that takes the
-        // window over later can put an opaque background back behind the sidebar.
-        if window.isOpaque {
-            window.isOpaque = false
+        if !window.isOpaque {
+            window.isOpaque = true
         }
-        if window.backgroundColor.alphaComponent != 0 {
-            window.backgroundColor = .clear
+        if window.backgroundColor.alphaComponent != 1 {
+            window.backgroundColor = .windowBackgroundColor
         }
     }
 
@@ -1210,9 +1228,8 @@ final class WindowShellController: NSSplitViewController {
 /// **inside** it.
 ///
 /// The effect view is what supplies the sidebar's *own* surface: AppKit's `sidebarWithViewController:`
-/// item gives the pane the sidebar's behaviour, and this gives it the sidebar's material. The pane ignores
-/// the top safe area so the material runs to the window's top edge (the way a macOS sidebar does), while
-/// the hosting view inside it is inset by AppKit's safe area.
+/// item gives the pane the sidebar's behaviour, and this gives it the sidebar's material. The pane simply
+/// fills the content area the window hands it, below the standard titlebar and toolbar.
 ///
 /// ## The sidebar draws in a vibrant appearance, and cannot be talked out of it
 ///
@@ -1233,15 +1250,13 @@ final class WindowShellController: NSSplitViewController {
 /// colour, the link dims the whole row whatever colour it is given. `Sidebar ink:` is the line that
 /// measures the rendered result of both.
 ///
-/// ## `.behindWindow`, and why the window has to be clear
+/// ## `.withinWindow`
 ///
-/// The material blurs what is *behind the window*, not what is behind the view. That is the difference
-/// between a macOS sidebar and a grey panel: `.withinWindow` has only the window's own background to
-/// composite against, so `.sidebar` renders as a flat grey sheet laid over it — which is what the column
-/// looked like. For `.behindWindow` to have the desktop to sample, the window must not be opaque and must
-/// not draw a background (`AppDelegate.installMainWindow`); the panes that *are* a surface — the page and
-/// the Now Playing column — paint their own opaque backgrounds, so the translucency is the sidebar's
-/// alone.
+/// The window is an ordinary opaque one, so the material blurs the window's own surface behind the pane.
+/// `.behindWindow` was tried while the window was a clear sheet: it makes the sidebar sample the desktop,
+/// but it also requires a transparent window — which is what made every other pane, the toolbar band and
+/// the titlebar into rectangles the app then had to draw around. A standard window is worth more than a
+/// desktop-blurred column.
 ///
 /// ## Emphasis, and the rows' contrast
 ///
@@ -1262,10 +1277,9 @@ struct SidebarMaterialPane<Content: View>: NSViewRepresentable {
     func makeNSView(context _: Context) -> NSVisualEffectView {
         let view = EmphasizedMaterialView()
         view.material = .sidebar
-        // Behind the window: the material is the column's own surface, blurring the desktop the way
-        // Finder's and Mail's sidebars do. The window is non-opaque and draws no background for exactly
-        // this (see the type's documentation), and every other pane paints an opaque surface of its own.
-        view.blendingMode = .behindWindow
+        // Within the window: the window is an ordinary opaque one, so the material blurs the surface
+        // behind the pane rather than the desktop.
+        view.blendingMode = .withinWindow
         view.state = .followsWindowActiveState
 
         let host = NSHostingView(rootView: AnyView(self.content()))

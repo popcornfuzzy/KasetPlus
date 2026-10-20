@@ -93,6 +93,16 @@ struct WindowToolbarItems {
     var onBack: () -> Void
     var onAI: () -> Void
 
+    /// How far the page's name sits from the leading edge of the page's region.
+    ///
+    /// At a root the name *leads* the region, and AppKit lays the first item almost against the
+    /// sidebar's divider — measured at 3.5pt in the running window, which read as the title hanging off
+    /// the left edge of the page. A name behind a back control is already separated from the divider by
+    /// that control and its space, so only the leading case is inset.
+    var pageTitleLeadingInset: CGFloat {
+        self.canGoBack ? 0 : 12
+    }
+
     /// The window's item order.
     ///
     /// The order *is* the mechanism: each tracking separator turns the region before it into one whose
@@ -178,12 +188,16 @@ struct WindowToolbarItems {
 @available(macOS 26.0, *)
 struct WindowToolbarTitleView: View {
     let title: String
+    /// See `WindowToolbarItems.pageTitleLeadingInset`: the name needs its own inset when it leads the
+    /// page's region, because nothing ahead of it does.
+    var leadingInset: CGFloat = 0
 
     var body: some View {
         Text(self.title)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.primary)
             .lineLimit(1)
+            .padding(.leading, self.leadingInset)
             .accessibilityIdentifier(AccessibilityID.Toolbar.pageTitle)
     }
 }
@@ -267,14 +281,17 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     /// the refresh spinner judder through every load.
     func apply(items: WindowToolbarItems, onAI: @escaping () -> Void) {
         let pageControlsChanged = items.pageControls?.id != self.items.pageControls?.id
+        // The inset is part of what is drawn: the name moves when a page becomes (or stops being) the
+        // page a back control returns to, and a cached root view would keep the old inset.
         let pageTitleChanged = items.pageTitle != self.items.pageTitle
+            || items.pageTitleLeadingInset != self.items.pageTitleLeadingInset
         let sidebarHeaderChanged = items.sidebarHeader?.title != self.items.sidebarHeader?.title
         self.items = items
         if pageControlsChanged {
             self.pageControlsView?.rootView = items.pageControls?.content ?? AnyView(EmptyView())
         }
         if pageTitleChanged {
-            self.pageTitleView?.rootView = Self.pageTitleContent(title: items.pageTitle)
+            self.pageTitleView?.rootView = Self.pageTitleContent(from: items)
         }
         if sidebarHeaderChanged {
             self.sidebarHeaderView?.rootView = Self.sidebarHeaderContent(for: items.sidebarHeader)
@@ -283,8 +300,13 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The page's name, as the hosted view it is drawn by.
-    private static func pageTitleContent(title: String) -> AnyView {
-        AnyView(WindowToolbarTitleView(title: title))
+    private static func pageTitleContent(from items: WindowToolbarItems) -> AnyView {
+        AnyView(
+            WindowToolbarTitleView(
+                title: items.pageTitle,
+                leadingInset: items.pageTitleLeadingInset
+            )
+        )
     }
 
     /// The column's header, as the hosted view it is drawn by.
@@ -355,12 +377,16 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     private func rehostPageControls(in toolbar: NSToolbar) {
         if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageTitle }) {
             let host = item.view as? NSHostingView<AnyView> ?? {
-                let created = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+                let created = NSHostingView(rootView: Self.pageTitleContent(from: self.items))
                 created.sizingOptions = [.intrinsicContentSize]
                 item.view = created
                 return created
             }()
-            host.rootView = Self.pageTitleContent(title: self.items.pageTitle)
+            host.rootView = Self.pageTitleContent(from: self.items)
+            // Unbordered *after* the view is in place: the glass platter AppKit draws behind a toolbar
+            // item is what `isBordered` removes, and a re-hosted item is exactly where a wrongly
+            // bordered title showed up as a white block behind the text.
+            item.isBordered = false
             self.pageTitleView = host
         }
 
@@ -492,10 +518,12 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             item.paletteLabel = self.items.pageTitle
             // Unbordered: the name is plain titlebar text, not a control, so AppKit draws no glass
             // capsule behind it. (Bordered is what put the title in its own pill beside the chevron.)
-            item.isBordered = false
-            let host = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+            let host = NSHostingView(rootView: Self.pageTitleContent(from: self.items))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
+            // Set after the view: see `rehostPageControls` — this is the setting that keeps the
+            // system from drawing a glass platter behind a non-interactive item.
+            item.isBordered = false
             self.pageTitleView = host
             return item
 

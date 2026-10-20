@@ -155,6 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // An ordinary opaque macOS window, with the content running under a transparent titlebar.
+        //
+        // That combination is what macOS 26 builds its chrome from: the system draws the toolbar's
+        // floating items and its scroll-edge effect over the panes, instead of a solid bar above them.
+        // It is also what lets the sidebar and the inspector be full height, so the sidebar's material
+        // and the Now Playing column's artwork reach the window's top edge — the layout Settings uses.
+        // The window itself stays opaque: a transparent window was tried and made AppKit's glass and
+        // materials composite against nothing, which is what produced the stray rectangle.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -162,21 +170,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Kaset"
-        // The window shell's chrome (`WindowShellController.applyWindowChrome`): the panes are the window,
-        // so their backdrops run to the top edge under a titlebar that is not drawn.
+        // Title inline with the toolbar, over the content: one row of floating items, traffic lights at
+        // its leading edge — the layout Finder, Music and the rest of the system use.
+        window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        // The window is not a surface of its own: it is a clear sheet the panes draw on.
-        //
-        // That is what makes the navigation sidebar's material a real macOS sidebar —
-        // `NSVisualEffectView` with `blendingMode = .behindWindow` blurs what is *behind the window*, so
-        // the column samples the desktop the way Finder's and Mail's do. While the window draws its own
-        // opaque background, the same effect view has nothing but that background to composite against
-        // and the sidebar reads as a flat grey sheet laid over the window — the exact "grey layer" this
-        // removes. The page and the Now Playing column paint their own opaque surfaces (see
-        // `MainWindow.contentPane` and `NowPlayingSidebarBackground`), so only the sidebar is translucent.
-        window.isOpaque = false
-        window.backgroundColor = .clear
         window.contentMinSize = NSSize(width: 900, height: 600)
         // The delegate hides the window on close instead of closing it; a programmatically created
         // window is released on close by default, which would leave the shell's controller without a view.

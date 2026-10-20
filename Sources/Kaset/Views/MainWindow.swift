@@ -551,19 +551,17 @@ struct MainWindow: View {
             ),
             minHeight: Layout.minimumContentHeight
         )
-        // The shell is the window: its panes are what the window draws, so they own the space under the
-        // titlebar. Each pane then re-insets its own content by AppKit's window safe area (`ShellPane`'s
-        // children lay out below the toolbar) while the panes that *are* a backdrop — the navigation
-        // sidebar's material and the Now Playing column's artwork — run to the window's top edge, which is
-        // what makes the titlebar read as part of the sidebar rather than as a band above it.
+        // The panes are the window's surface and run up under the transparent titlebar; their own
+        // content is inset by AppKit's safe area, so rows, artwork and page content still start below
+        // the toolbar. This is what lets the sidebar and the Now Playing column be full height.
         .ignoresSafeArea(.container, edges: .top)
     }
 
     /// The navigation sidebar, on AppKit's own sidebar surface.
     ///
     /// `NavigationSplitView` used to supply this surface. The window shell replaced that split view, so
-    /// the pane supplies it again (`SidebarMaterialPane`: the `.sidebar` material at `.behindWindow`, with
-    /// the sidebar's SwiftUI inside it).
+    /// the pane supplies it again (`SidebarMaterialPane`: the `.sidebar` material, with the sidebar's
+    /// SwiftUI inside it).
     ///
     /// Hosting it there costs one thing, and it is paid in `Sidebar`: the sidebar's content resolves its
     /// colours in a **vibrant** appearance, where `labelColor` is a lower-alpha colour than the plain one
@@ -574,8 +572,8 @@ struct MainWindow: View {
             Sidebar(selection: self.$navigationSelection)
                 .environment(self.libraryViewModel)
         }
-        // The material is the pane's surface, so it reaches the window's top edge; the sidebar's own
-        // content inside it still starts below the toolbar.
+        // The material is the pane's surface, so it reaches the window's top edge under the toolbar;
+        // the sidebar's own content still starts below it.
         .ignoresSafeArea(.container, edges: .top)
     }
 
@@ -591,11 +589,9 @@ struct MainWindow: View {
             // Classic lyrics/queue panels, floating over the content (mutually exclusive).
             self.classicSidebarOverlay(client: self.client)
         }
-        // The page is a surface of its own. The window is a clear sheet so the navigation sidebar's
-        // material can blur the desktop (`SidebarMaterialPane`), which means *every* other pane has to
-        // paint its own opaque background or the desktop shows through it. The background bleeds up under
-        // the toolbar for the same reason the sidebar's material does: without that the titlebar band over
-        // the page would be the one strip of the window with nothing behind it.
+        // The page's surface, reaching the window's top edge under the toolbar. Nothing of it is the
+        // navigation bar: the bar's background is AppKit's floating one, which appears over content
+        // that scrolls beneath it.
         .background {
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea(edges: .top)

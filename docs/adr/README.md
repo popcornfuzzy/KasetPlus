@@ -70,3 +70,5 @@ What becomes easier or more difficult because of this change?
 | [0032](0032-sidebar-video-replaces-mini-player.md) | Sidebar Video Replaces the Mini Player | Accepted |
 | [0032](0032-two-singer-lyrics.md) | Two Singers in Synced Lyrics (Opposite Turns) | Accepted |
 | [0033](0033-playlist-header-action-row.md) | Playlist/Album Header Action Row (Primary Actions + One Overflow Menu) | Accepted |
+| [0034](0034-shell-owned-window-title.md) | Shell-Owned Window Title (No `navigationTitle` in the Shell) | Accepted |
+| [0035](0035-standard-window-chrome.md) | System-Owned Window Chrome (Opaque Window, Transparent Titlebar) | Accepted |
