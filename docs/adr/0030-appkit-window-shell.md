@@ -52,8 +52,9 @@ toolbar is the app's own `NSToolbar`, with the app's `NSToolbarDelegate`.**
 AppDelegate.installMainWindow()
 └── NSWindow  (contentViewController = NSHostingController(rootView: MainWindow))
     ├── window.toolbar = NSToolbar(delegate: WindowToolbarController)
-    │     .toggleSidebar ─ .sidebarTrackingSeparator ─ …page items… ─ .inspectorTrackingSeparator ─
-    │     .flexibleSpace ─ .nowPlaying (the column's toggle, in the region above the column)
+    │     .toggleSidebar ─ .sidebarTrackingSeparator ─ …page items… ─ .flexibleSpace ─
+    │     […page controls, when the column is closed: … .nowPlaying] ─ .inspectorTrackingSeparator ─
+    │     .flexibleSpace ─ .nowPlaying (the column's toggle, when the column is open)
     └── WindowShell (NSViewControllerRepresentable)
         └── WindowShellController (NSSplitViewController)
             ├── NSSplitViewItem(sidebarWithViewController:)    → Sidebar(…)              [pane 0]
@@ -270,6 +271,11 @@ toolbar's controller. Each of those was in the previous design and each was a bu
 - Two bordered controls are never adjacent: macOS 26 fills one glass capsule behind a contiguous run of
   items, so the Ask AI button and the page's own controls are separated by an `NSToolbarItem.Identifier
   .space`. Without it they were drawn as one stretched pill.
+- The Now Playing toggle joins the *trailing run* while the column is closed, because its region is then
+  the window's, not the inspector's. Stated as a separate item after the run, it was only as far right as
+  whatever preceded it: on a page with no controls and no Ask AI button — Home, without Apple
+  Intelligence — that is the page's name, so the toggle was drawn beside "Home" instead of at the
+  window's trailing edge.
 - The column's collapse is applied one runloop turn after the SwiftUI update that asked for it
   (`WindowShellController.scheduleInspectorVisibility`), because it is a window operation — AppKit
   collapses the split item, the window's minimum width is restated for the panes that are left, and the

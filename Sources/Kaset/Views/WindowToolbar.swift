@@ -112,6 +112,11 @@ struct WindowToolbarItems {
     /// the inspector's separator comes last, with the Now Playing toggle pushed to the window's trailing
     /// edge behind it.
     ///
+    /// While the column is **closed** there is no inspector region: the toggle's region is the window's,
+    /// so it belongs to that same right-aligned run as its last member. Stated anywhere else, the toggle
+    /// was only as far right as the thing in front of it — and on a page with no controls and no AI
+    /// button, that thing is the page's name.
+    ///
     /// The toggle never moves into the column. It used to, and the column carried its own control in its
     /// top-trailing corner so that opening the sidebar looked like the toggle sliding into it — but that
     /// put a small glyph on top of the cover art, in the band the artwork should own, while AppKit's
@@ -133,6 +138,19 @@ struct WindowToolbarItems {
         if self.pageControls != nil {
             rightAligned.append(WindowToolbarItem.pageControls)
         }
+        // While the column is closed the toggle shares this run: its region *is* the window's, so it
+        // has to be pushed by the same flexible space that pushes the page's controls rather than
+        // appended behind them. Appended, it sat against whatever came last — with a page that has no
+        // controls and no Ask AI button (Home, no Apple Intelligence), that was the page's own name, so
+        // the toggle read as part of the title instead of as the window's inspector control.
+        if self.showsNowPlayingToggle, !self.tracksColumn {
+            // Its own control, not the page's: a fixed space ends the page's capsule so the toggle is
+            // never drawn as part of the controls beside it (the same rule as the AI button above).
+            if !rightAligned.isEmpty {
+                rightAligned.append(.space)
+            }
+            rightAligned.append(WindowToolbarItem.nowPlaying)
+        }
 
         var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator]
         // Immediately after the sidebar's separator, which is the leading edge of the region the sidebar
@@ -153,7 +171,7 @@ struct WindowToolbarItems {
         identifiers.append(contentsOf: rightAligned)
         // Only while the column is open: with the column closed its divider sits at the window's edge, so
         // the region to the separator's right would be empty and the control that opens the column — which
-        // belongs there — would have nowhere to go.
+        // belongs there — would have nowhere to go. (A closed column's toggle is in the run above.)
         if self.tracksColumn {
             identifiers.append(.inspectorTrackingSeparator)
             // The column's own header, at the leading edge of the region above the column — where the
@@ -163,14 +181,12 @@ struct WindowToolbarItems {
                 identifiers.append(WindowToolbarItem.sidebarHeader)
             }
         }
-        if self.showsNowPlayingToggle {
-            // A flexible space per region: with the column open the toggle's region is the inspector's,
-            // and without one the item would sit against the separator at the *leading* edge of that
-            // region — over the column's left edge, in the middle of its titlebar band. With it, the
-            // toggle is the window's trailing control, where a macOS window puts an inspector toggle.
-            if self.tracksColumn {
-                identifiers.append(.flexibleSpace)
-            }
+        if self.showsNowPlayingToggle, self.tracksColumn {
+            // A flexible space per region: the toggle's region is the inspector's, and without one the
+            // item would sit against the separator at the *leading* edge of that region — over the
+            // column's left edge, in the middle of its titlebar band. With it, the toggle is the
+            // window's trailing control, where a macOS window puts an inspector toggle.
+            identifiers.append(.flexibleSpace)
             identifiers.append(WindowToolbarItem.nowPlaying)
         }
         return identifiers
