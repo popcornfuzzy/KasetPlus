@@ -238,6 +238,13 @@ The column's chrome is deliberately the album art, not a panel:
   re-implemented: the only differences are `allowsScrolling: false` (a stray scroll in a window this
   short would push the highlight out of it and pause auto-follow for four seconds) and its rows
   opening the full page rather than seeking.
+- **A podcast episode gets the transcript in that card's place**, collapsed to its header. A
+  transcript paragraph is long and the overview is the column's quietest surface, so the card states
+  only that the episode has one: no paragraph is drawn, and no lookup runs, until the reader opens it.
+  Opening it draws a 280pt window of `PodcastTranscriptView` — the same rows, chapter headings and
+  follow-the-spoken-paragraph behaviour as the fullscreen experience, at reading size in the sidebar's
+  own style — and starts the transcript request; collapsing drops the window without refetching, and a
+  new episode closes it. Songs keep the lyric card exactly as it was.
 - **The next song** below it, also plain content on the sidebar background.
 - Each section's label and its content expand into the full page — the shared lyric sheet with the
   provider/variant footer that carries the page's **refresh control**, and the classic queue (reorder,

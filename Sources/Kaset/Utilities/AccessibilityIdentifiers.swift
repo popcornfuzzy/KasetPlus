@@ -63,6 +63,10 @@ enum AccessibilityID {
         static let videoToggle = "nowPlayingSidebar.videoToggle"
         static let trackTitle = "nowPlayingSidebar.trackTitle"
         static let lyricsSection = "nowPlayingSidebar.lyricsSection"
+        /// The podcast episode's transcript card and the transcript it opens into.
+        static let transcriptSection = "nowPlayingSidebar.transcriptSection"
+        static let transcript = "nowPlayingSidebar.transcript"
+        static let transcriptChapterHeader = "nowPlayingSidebar.transcriptChapterHeader"
         static let upNextSection = "nowPlayingSidebar.upNextSection"
         static let lyricsPage = "nowPlayingSidebar.lyricsPage"
         static let queuePage = "nowPlayingSidebar.queuePage"

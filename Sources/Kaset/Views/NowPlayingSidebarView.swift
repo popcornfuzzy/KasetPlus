@@ -20,6 +20,7 @@ struct NowPlayingSidebarView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
     @Environment(CanvasService.self) private var canvasService
+    @Environment(PodcastTranscriptService.self) private var transcriptService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Width of the column this view is drawn in, supplied by the window.
@@ -55,6 +56,9 @@ struct NowPlayingSidebarView: View {
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
+    /// Whether the podcast episode's transcript is open. Collapsed is the default and shows no
+    /// transcript text at all — a paragraph is long, and the overview is the column's quiet part.
+    @State private var isTranscriptOpen = false
 
     /// What the lyric surfaces can show for the current track.
     private enum LyricsState {
@@ -108,7 +112,13 @@ struct NowPlayingSidebarView: View {
                 .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.container)
             .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
                 self.loadTask?.cancel()
+                // A new episode starts collapsed: the transcript that was open belongs to the one
+                // that just ended.
+                self.isTranscriptOpen = false
                 self.startLyricsLoad(for: newVideoId)
+            }
+            .onChange(of: self.isTranscriptOpen) { _, _ in
+                self.updatePlaybackPoll()
             }
             .onChange(of: self.playerService.observedWebMetadata) { _, _ in
                 self.retryLyricsLoadIfMetadataImproved()
@@ -129,6 +139,9 @@ struct NowPlayingSidebarView: View {
             }
             .task(id: self.canvasTaskID) {
                 await self.loadCanvasWhenReady()
+            }
+            .task(id: self.transcriptTaskID) {
+                await self.loadTranscriptIfNeeded()
             }
             .task {
                 self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
@@ -361,9 +374,19 @@ struct NowPlayingSidebarView: View {
         )
     }
 
-    // MARK: - Lyrics Section
+    // MARK: - Lyrics / Transcript Section
 
+    /// The section under the titles: the lyric card for a song, the transcript card for an episode.
+    @ViewBuilder
     private var lyricsSection: some View {
+        if self.playerService.isCurrentTrackPodcast {
+            self.transcriptSection
+        } else {
+            self.lyricsCard
+        }
+    }
+
+    private var lyricsCard: some View {
         NowPlayingSidebarCard(onTap: { self.expand(to: .lyrics) }) {
             VStack(alignment: .leading, spacing: 4) {
                 self.sectionHeader(
@@ -385,6 +408,91 @@ struct NowPlayingSidebarView: View {
                     .frame(height: NowPlayingSidebarLayout.lyricsPreviewHeight)
             }
         }
+    }
+
+    // MARK: - Transcript Section
+
+    /// The lyric card's place on an episode: the transcript, collapsed to its own header.
+    ///
+    /// A transcript paragraph is long, and the overview is the column's quietest surface — a preview
+    /// of it there read as clutter. So the card states only that a transcript exists; the reader
+    /// opens it when they want it, and nothing is fetched until they do.
+    private var transcriptSection: some View {
+        NowPlayingSidebarCard {
+            VStack(alignment: .leading, spacing: 8) {
+                self.sectionHeader(
+                    title: String(localized: "Transcript"),
+                    systemImage: "text.bubble",
+                    trailing: self.transcriptCaption,
+                    expandLabel: self.isTranscriptOpen
+                        ? String(localized: "Hide the episode transcript")
+                        : String(localized: "Show the episode transcript"),
+                    chevron: self.isTranscriptOpen ? "chevron.down" : "chevron.right",
+                    identifier: AccessibilityID.NowPlayingSidebar.transcriptSection,
+                    action: { self.toggleTranscript() }
+                )
+
+                if self.isTranscriptOpen {
+                    self.transcriptPanel
+                        .frame(height: NowPlayingSidebarLayout.transcriptPanelHeight)
+                        .transition(.opacity)
+                        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.transcript)
+                }
+            }
+        }
+        .animation(AppAnimation.standard, value: self.isTranscriptOpen)
+    }
+
+    @ViewBuilder
+    private var transcriptPanel: some View {
+        if self.transcriptService.isLoading {
+            LyricsStateView(
+                icon: nil,
+                title: String(localized: "Loading transcript…"),
+                message: nil,
+                isLoading: true,
+                compact: true
+            )
+        } else if self.hasLoadedTranscript {
+            LyricsClockReader { currentTimeMs, _, _ in
+                PodcastTranscriptView(
+                    transcript: self.transcriptService.transcript,
+                    currentTimeMs: currentTimeMs,
+                    onSeek: { timeMs in
+                        Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
+                    },
+                    style: .sidebar
+                )
+            }
+            // Faded at both edges like the lyric window, so the paragraphs run past the card's
+            // window instead of being cut through the middle of their glyphs.
+            .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
+        } else {
+            LyricsStateView(
+                icon: "text.bubble",
+                title: String(localized: "No Transcript Available"),
+                message: self.transcriptService.errorMessage
+                    ?? String(localized: "This episode has no captions on YouTube, so there is no transcript to show."),
+                compact: true
+            )
+        }
+    }
+
+    /// Whether the transcript on hand belongs to the episode that is playing.
+    private var hasLoadedTranscript: Bool {
+        self.transcriptService.transcript.isAvailable
+            && self.transcriptService.transcriptVideoId == self.playerService.currentTrack?.videoId
+    }
+
+    /// Language of the open transcript, or `nil` while it is collapsed or absent.
+    private var transcriptCaption: String? {
+        guard self.isTranscriptOpen, self.hasLoadedTranscript else { return nil }
+        let transcript = self.transcriptService.transcript
+        guard let code = transcript.languageCode else { return nil }
+        let language = Locale.current.localizedString(forLanguageCode: code) ?? code.uppercased()
+        return transcript.isAutoGenerated
+            ? "\(language) · \(String(localized: "Auto-generated"))"
+            : language
     }
 
     /// Three lines of the *same* sheet the classic panel and the fullscreen player render: same rows,
@@ -591,6 +699,7 @@ struct NowPlayingSidebarView: View {
         systemImage: String,
         trailing: String? = nil,
         expandLabel: String,
+        chevron: String = "chevron.right",
         identifier: String,
         action: @escaping () -> Void
     ) -> some View {
@@ -606,7 +715,7 @@ struct NowPlayingSidebarView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
+                Image(systemName: chevron)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
@@ -737,6 +846,47 @@ struct NowPlayingSidebarView: View {
         }
     }
 
+    // MARK: - Transcript Loading
+
+    /// Identity of the transcript the card would show: opening is what starts a lookup, and a new
+    /// episode while it is open is a new transcript.
+    ///
+    /// Whether a transcript is on hand is part of it so the card heals itself: the fullscreen
+    /// podcast experience clears the service when it closes (it owns that reset), and the card that
+    /// stayed open behind it would otherwise sit on "No Transcript Available" until re-opened.
+    private var transcriptTaskID: String {
+        let videoId = self.playerService.currentTrack?.videoId ?? "none"
+        return "\(self.isTranscriptOpen)|\(videoId)|\(self.hasLoadedTranscript)"
+    }
+
+    /// Shows or hides the episode's transcript. Nothing is fetched while it is closed.
+    private func toggleTranscript() {
+        HapticService.toggle()
+        withAnimation(AppAnimation.standard) {
+            self.isTranscriptOpen.toggle()
+        }
+    }
+
+    /// Loads the transcript once the card is opened, never while it is collapsed.
+    @MainActor
+    private func loadTranscriptIfNeeded() async {
+        guard self.isTranscriptOpen,
+              self.playerService.isCurrentTrackPodcast,
+              let videoId = self.playerService.currentTrack?.videoId
+        else { return }
+        await self.transcriptService.loadTranscript(for: videoId)
+    }
+
+    /// Keeps the high-frequency playback clock running for whichever surface needs it: the open
+    /// transcript, or synced lyrics. A collapsed card hands it back to the lyric pipeline.
+    private func updatePlaybackPoll() {
+        if self.isTranscriptOpen {
+            SingletonPlayerWebView.shared.startLyricsPoll()
+        } else {
+            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
+        }
+    }
+
     // MARK: - Lyrics Loading
 
     private func updateLyricsPolling(for result: LyricResult) {
@@ -858,6 +1008,7 @@ struct NowPlayingSidebarView: View {
     NowPlayingSidebarView()
         .environment(PlayerService())
         .environment(SyncedLyricsService())
+        .environment(PodcastTranscriptService(client: MockUITestYTMusicClient()))
         .environment(CanvasService())
         .frame(width: 380, height: 760)
 }

@@ -16,6 +16,12 @@ enum NowPlayingSidebarLayout {
     /// Height of the three-line lyric window in the sidebar's preview.
     static let lyricsPreviewHeight: CGFloat = 116
 
+    /// Height of the podcast transcript window once its card is opened.
+    ///
+    /// Taller than the lyric preview because a transcript paragraph is read, not glanced at — and
+    /// still a window, so the column's overview keeps its shape around it.
+    static let transcriptPanelHeight: CGFloat = 280
+
     /// Side of the small artwork on the up-next row.
     static let rowArtworkSide: CGFloat = 40
 
