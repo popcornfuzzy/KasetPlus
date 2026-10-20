@@ -364,7 +364,7 @@ struct NowPlayingSidebarView: View {
     // MARK: - Lyrics Section
 
     private var lyricsSection: some View {
-        NowPlayingSidebarCard {
+        NowPlayingSidebarCard(onTap: { self.expand(to: .lyrics) }) {
             VStack(alignment: .leading, spacing: 4) {
                 self.sectionHeader(
                     title: String(localized: "Lyrics"),
@@ -451,7 +451,7 @@ struct NowPlayingSidebarView: View {
     // MARK: - Up Next Section
 
     private var upNextSection: some View {
-        NowPlayingSidebarCard {
+        NowPlayingSidebarCard(onTap: { self.expand(to: .queue) }) {
             VStack(alignment: .leading, spacing: 8) {
                 self.sectionHeader(
                     title: String(localized: "Up Next"),
@@ -686,6 +686,10 @@ struct NowPlayingSidebarView: View {
     // MARK: - Actions
 
     private func expand(to page: NowPlayingSidebarPage) {
+        // A card is one click target whose own content also handles clicks, so one press can arrive
+        // twice (the header's button and the card's gesture). Opening the page that is already open is
+        // the same page, so the second arrival is dropped rather than ticking the haptic again.
+        guard self.playerService.nowPlayingSidebarPage != page else { return }
         HapticService.toggle()
         withAnimation(AppAnimation.standard) {
             self.playerService.setNowPlayingSidebarPage(page)

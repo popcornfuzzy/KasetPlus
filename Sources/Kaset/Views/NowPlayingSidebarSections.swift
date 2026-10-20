@@ -203,13 +203,27 @@ struct NowPlayingSidebarBackground: View {
 @available(macOS 26.0, *)
 struct NowPlayingSidebarCard<Content: View>: View {
     var cornerRadius: CGFloat = 16
+    /// Opens what the card previews. Set on the whole card, not just its header and content, so the
+    /// empty space inside its edges is the same target as the text is.
+    var onTap: (() -> Void)?
     @ViewBuilder var content: Content
 
     var body: some View {
-        self.content
+        let card = self.content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
             .glassEffect(.regular, in: .rect(cornerRadius: self.cornerRadius))
+            // The shape is taken after the padding, so the rect is the glass card's bounds rather than
+            // the content's ink.
+            .contentShape(.rect(cornerRadius: self.cornerRadius))
+
+        if let onTap {
+            // Simultaneous, so a row, a scroll view or a button the content draws keeps its own click
+            // instead of losing it to the card — and the card still hears the ones they leave alone.
+            card.simultaneousGesture(TapGesture().onEnded(onTap))
+        } else {
+            card
+        }
     }
 }
 
