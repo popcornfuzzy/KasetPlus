@@ -36,6 +36,62 @@ enum SidebarVideoAspect {
         return min(max(raw, Self.minHeight), Self.maxHeight)
     }
 
+    /// The surface the sidebar draws a video in.
+    struct Box: Equatable {
+        /// Height of the surface, in whole points.
+        let height: CGFloat
+        /// Whether the surface is the video's own shape.
+        ///
+        /// A surface sized from the video's own ratio must draw the picture edge to edge: the
+        /// only difference left is the fraction of a point that layout cannot represent, and
+        /// cropping that is invisible while letterboxing it draws a black hairline. A surface
+        /// whose ratio the column imposed — the fallback before the video reports its own, a
+        /// clamped portrait, a short column — keeps the whole picture instead.
+        let matchesVideoShape: Bool
+    }
+
+    /// The surface for a video of `observedAspectRatio` in a column `width` wide, with
+    /// `availableHeight` to give it after `reservedHeight`.
+    static func box(
+        forWidth width: CGFloat,
+        observedAspectRatio: Double?,
+        availableHeight: CGFloat,
+        reservedHeight: CGFloat
+    ) -> Box {
+        guard width.isFinite, width > 0 else {
+            return Box(height: Self.minHeight, matchesVideoShape: false)
+        }
+
+        let observed = observedAspectRatio.flatMap { $0.isFinite && $0 > 0 ? CGFloat($0) : nil }
+        let ratio = Self.clamped(observedAspectRatio)
+        let natural = width / ratio
+        let ceiling = availableHeight > 0
+            ? max(Self.minHeight, availableHeight - reservedHeight)
+            : Self.maxHeight
+        let height = min(min(max(natural, Self.minHeight), Self.maxHeight), ceiling)
+        let matches = observed == ratio
+            && natural >= Self.minHeight
+            && natural <= Self.maxHeight
+            && natural <= ceiling
+
+        // Whole points: a page lays out in whole points, so a fractional surface leaves a strip
+        // of itself outside its own page — the black hairline along the video's edge.
+        return Box(height: height.rounded(), matchesVideoShape: matches)
+    }
+
+    /// Whether the surface must draw the picture edge to edge.
+    ///
+    /// A box built to the picture's own ratio fills it. So does a box whose shape is not known yet:
+    /// that is the 16:9 fallback, and letterboxing a picture that is not 16:9 inside it is the
+    /// frame of black around the video that shows up for the first moments after switching to it.
+    /// A box whose ratio the column imposed (a clamped portrait, a short column) keeps the whole
+    /// picture instead, so the black there is the letterbox the user asked for by having a column
+    /// too short for the picture.
+    static func fillsSurface(_ box: Box, shapeIsKnown: Bool) -> Bool {
+        guard shapeIsKnown else { return true }
+        return box.matchesVideoShape
+    }
+
     /// Aspect ratio the sidebar artwork is laid out at: square album art for music, fixed 16:9
     /// for podcasts (the episode still).
     ///
@@ -92,6 +148,41 @@ enum PlayerWebViewHosting {
     }
 }
 
+// MARK: - SidebarVideoHosting
+
+/// Where the sidebar's video surface lives.
+///
+/// The surface keeps the shared WebView even while the artwork is on top of it. Parking the
+/// WebView in the invisible 1×1 layer and hosting it again on every toggle is what made the
+/// picture wrong on arrival: a page lays out in CSS pixels, but the video's own rendering layer
+/// takes its size asynchronously, and for the first ~370 ms after the WebView is resized it is
+/// still drawn at the size the page had before (a small picture in the middle of a black
+/// surface). Nothing in the DOM reports that size, so the only place to fix it is here: a
+/// surface that is never resized never draws a frame at the wrong size, and the toggle becomes
+/// what it should have been — an opacity change.
+///
+/// The artwork is drawn above it, so what the reader sees does not change; the cost is that the
+/// video keeps decoding behind the artwork while the sidebar is open, which is the same stream
+/// that is already playing its audio.
+enum SidebarVideoHosting {
+    /// Whether the sidebar holds the WebView at the video's own size.
+    ///
+    /// - The sidebar must be on screen: with the column closed there is no place to keep the
+    ///   surface, and the hidden audio layer hosts it as usual.
+    /// - A video must exist for the current playback item, with an id to draw it for.
+    /// - The fullscreen podcast view has its own surface in the window's own layout: keeping the
+    ///   sidebar's surface alive underneath would be a second host claiming the same WebView.
+    static func keepsSurface(
+        isSidebarVisible: Bool,
+        hasVideoSurface: Bool,
+        hasPendingVideo: Bool,
+        isFullscreenPodcastPresented: Bool
+    ) -> Bool {
+        guard isSidebarVisible, hasVideoSurface, hasPendingVideo else { return false }
+        return !isFullscreenPodcastPresented
+    }
+}
+
 // MARK: - PlayerSurfaceOwnership
 
 /// Single-writer rule for the shared WebView's DOM presentation.
@@ -128,5 +219,26 @@ enum PlayerSurfaceOwnership {
     static func shouldReleaseOwner(container: AnyObject, currentOwner: AnyObject?) -> Bool {
         guard let currentOwner else { return false }
         return currentOwner === container
+    }
+
+    /// Whether a host may move the shared WebView into its own container.
+    ///
+    /// The same single-writer rule governs the WebView's *view* hierarchy, not just the DOM
+    /// presentation: there is one WebView and one superview, and a host that takes it hides the
+    /// picture everywhere else. A parking host (the invisible 1×1 audio layer) is re-mounted for
+    /// a single update whenever `isSidebarVideoShowing` briefly reads false — a track change, a
+    /// metadata refresh — and taking the WebView then left the sidebar's surface drawing a black
+    /// box: the sidebar's representable is not updated when the parker disappears, so nothing
+    /// gave the WebView back. A parking host may take it only when no video surface owns the
+    /// presentation; an expanded host always may, exactly as it always wins the presentation.
+    static func mayHost(
+        isExpanded: Bool,
+        owner: AnyObject?,
+        container: AnyObject,
+        presentationEnabled: Bool
+    ) -> Bool {
+        if isExpanded { return true }
+        guard presentationEnabled, let owner else { return true }
+        return owner === container
     }
 }

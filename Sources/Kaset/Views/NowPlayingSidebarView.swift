@@ -245,14 +245,25 @@ struct NowPlayingSidebarView: View {
     /// window's own trailing toolbar items can overlap it out of sight.
     private var mediaSection: some View {
         ZStack(alignment: .bottomLeading) {
-            if self.playerService.isSidebarVideoShowing,
-               let videoId = self.playerService.pendingPlayVideoId
+            // The video surface stays mounted while the sidebar has a video, even when the
+            // artwork is the one on screen: it is the *host* that must not change. A WebView
+            // that is parked at 1×1 and hosted again draws the first frames of the picture at
+            // the size the page had before the resize — the small, centred picture surrounded
+            // by black right after switching to video. See ``SidebarVideoHosting``.
+            if let videoId = self.playerService.pendingPlayVideoId,
+               self.keepsSidebarVideoSurface
             {
                 NowPlayingSidebarVideo(
                     videoId: videoId,
-                    height: self.mediaHeight
+                    height: self.sidebarVideoHeight,
+                    fillsSurface: self.sidebarVideoFillsSurface(for: videoId)
                 )
-            } else {
+                .opacity(self.playerService.isSidebarVideoShowing ? 1 : 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(!self.playerService.isSidebarVideoShowing)
+            }
+
+            if !self.playerService.isSidebarVideoShowing {
                 NowPlayingSidebarArtwork(
                     track: self.playerService.currentTrack,
                     canvasURL: self.canvasURL,
@@ -266,9 +277,7 @@ struct NowPlayingSidebarView: View {
             {
                 Button {
                     HapticService.toggle()
-                    withAnimation(AppAnimation.standard) {
-                        self.playerService.toggleSidebarVideo()
-                    }
+                    self.playerService.toggleSidebarVideo()
                 } label: {
                     // To video: icon + "Video" text; back to artwork: icon only.
                     Group {
@@ -307,7 +316,29 @@ struct NowPlayingSidebarView: View {
                 .padding(.leading, 8)
             }
         }
-        .animation(AppAnimation.standard, value: self.playerService.isSidebarVideoShowing)
+        // The slot is the media's own height, and a video taller than it (a clamped portrait
+        // behind a square artwork) is clipped rather than shrunk: clipping leaves the WebView's
+        // frame alone, so the surface is the same size in both states.
+        .frame(
+            height: self.playerService.isSidebarVideoShowing ? self.sidebarVideoHeight : self.artworkHeight,
+            alignment: .bottomLeading
+        )
+        .clipped()
+        // Deliberately not animated. The video surface is a live WebView: an animated height
+        // change resizes its viewport on every frame of the curve, and WebKit repaints a
+        // resizing view asynchronously — so the surface could show a black or half-drawn frame
+        // while it grew. The swap is instant, which is also how the picture avoids being
+        // scaled through an intermediate shape it will never have again.
+    }
+
+    /// Whether the video's WebView stays mounted while the artwork is on screen.
+    private var keepsSidebarVideoSurface: Bool {
+        SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: self.playerService.isNowPlayingSidebarVisible,
+            hasVideoSurface: self.playerService.hasVideoSurface,
+            hasPendingVideo: self.playerService.pendingPlayVideoId != nil,
+            isFullscreenPodcastPresented: self.playerService.isFullscreenPodcastPresented
+        )
     }
 
     /// Width the media is drawn at: the column's own width, never measured here.
@@ -315,30 +346,36 @@ struct NowPlayingSidebarView: View {
         self.columnWidth > 0 ? self.columnWidth : NowPlayingSidebarLayout.artworkMaxDimension
     }
 
-    /// Height of the media: the video's own ratio when it is showing, the artwork square
-    /// otherwise. Both give up height on a short window so the rows below keep theirs.
-    private var mediaHeight: CGFloat {
-        self.playerService.isSidebarVideoShowing ? self.sidebarVideoHeight : self.artworkHeight
-    }
-
-    /// The sidebar video height: the column width over the observed video ratio, clamped to a
-    /// sane range and to the column's own bounds.
+    /// The sidebar video's surface: the column width over the observed video ratio, clamped to
+    /// a sane range and to the column's own bounds, plus whether that surface is the video's own
+    /// shape (see ``SidebarVideoAspect/box(forWidth:observedAspectRatio:availableHeight:reservedHeight:)``).
     ///
     /// The ratio is the content's, not a locked one — but a vertical video is floored before it
     /// can become a tower, and the height itself never leaves the artwork's own floor/ceiling.
-    private var sidebarVideoHeight: CGFloat {
-        let observed = self.playerService.miniPlayerVideoAspectRatio.map { CGFloat($0) }
-            ?? NowPlayingSidebarLayout.videoFallbackAspectRatio
-        let ratio = min(
-            max(observed, NowPlayingSidebarLayout.videoMinAspectRatio),
-            NowPlayingSidebarLayout.videoMaxAspectRatio
+    private var sidebarVideoBox: SidebarVideoAspect.Box {
+        SidebarVideoAspect.box(
+            forWidth: self.mediaWidth,
+            observedAspectRatio: self.playerService.miniPlayerVideoAspectRatio,
+            availableHeight: self.columnHeight,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
         )
-        guard ratio.isFinite, ratio > 0 else { return NowPlayingSidebarLayout.videoMinHeight }
-        let raw = self.mediaWidth / ratio
-        let clamped = min(max(raw, NowPlayingSidebarLayout.videoMinHeight), NowPlayingSidebarLayout.videoMaxHeight)
-        guard self.columnHeight > 0 else { return clamped }
-        let leftover = self.columnHeight - NowPlayingSidebarLayout.reservedHeight
-        return min(clamped, max(NowPlayingSidebarLayout.videoMinHeight, leftover))
+    }
+
+    private var sidebarVideoHeight: CGFloat {
+        self.sidebarVideoBox.height
+    }
+
+    /// Whether the video surface is the picture's own shape, so the picture fills it.
+    ///
+    /// The box is only the picture's shape once the page has reported the video's own dimensions;
+    /// before that it is the 16:9 fallback, and letterboxing a picture that is not 16:9 inside it
+    /// is the frame of black around the video right after switching to it. The rule for that
+    /// moment lives in ``SidebarVideoAspect/fillsSurface(_:shapeIsKnown:)``.
+    private func sidebarVideoFillsSurface(for videoId: String) -> Bool {
+        SidebarVideoAspect.fillsSurface(
+            self.sidebarVideoBox,
+            shapeIsKnown: self.playerService.miniPlayerVideoAspectRatioVideoId == videoId
+        )
     }
 
     /// The artwork's shape: square album art for music, fixed 16:9 for podcasts.

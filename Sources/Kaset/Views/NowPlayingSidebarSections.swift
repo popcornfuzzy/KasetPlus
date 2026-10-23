@@ -25,18 +25,6 @@ enum NowPlayingSidebarLayout {
     /// Side of the small artwork on the up-next row.
     static let rowArtworkSide: CGFloat = 40
 
-    /// Bounds for the sidebar video's aspect ratio (width / height).
-    ///
-    /// The video follows the content's own ratio instead of locking to one, but a vertical
-    /// phone video (9:16 = 0.56) would become a tower that pushes everything else off the
-    /// column — so portrait is floored at 3:4 and wide letterbox capped at 2.4:1.
-    static let videoMinAspectRatio: CGFloat = 0.75
-    static let videoMaxAspectRatio: CGFloat = 2.4
-    static let videoFallbackAspectRatio: CGFloat = 16.0 / 9.0
-    /// Floor/ceiling for the video height, matching the artwork's own bounds.
-    static let videoMinHeight: CGFloat = 150
-    static let videoMaxHeight: CGFloat = 520
-
     /// What the fixed content below the artwork needs — title block, both section headers, the lyric
     /// preview, the up-next row and the spacing between them — so the artwork can take what is left.
     static let reservedHeight: CGFloat = 316
@@ -340,12 +328,16 @@ struct NowPlayingSidebarArtwork: View {
 struct NowPlayingSidebarVideo: View {
     let videoId: String
     let height: CGFloat
+    /// Whether the surface is the video's own shape (so the picture fills it) or one the column
+    /// imposed (so the whole picture is letterboxed inside it).
+    var fillsSurface: Bool = false
 
     var body: some View {
         PersistentPlayerView(
             videoId: self.videoId,
             isExpanded: true,
-            prefersVideo: true
+            prefersVideo: true,
+            fillsSurface: self.fillsSurface
         )
         .frame(maxWidth: .infinity)
         .frame(height: self.height)

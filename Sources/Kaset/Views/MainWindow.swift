@@ -372,12 +372,18 @@ struct MainWindow: View {
     /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
     /// a pending video (a queue song, or a restored session waiting to resume) needs it regardless.
     ///
-    /// It stands down while the sidebar video owns the surface (the sidebar hosts it there) and
+    /// It stands down while the sidebar holds the surface (see ``SidebarVideoHosting``: the
+    /// sidebar keeps the WebView at the video's size even while its artwork is on screen) and
     /// while the fullscreen podcast view does: one WebView, one superview, so only one host at a
     /// time or the surface blanks — and a DRM stream does not survive being re-parented mid-song.
     private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
         guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
-        if self.playerService.isSidebarVideoShowing, self.playerService.isNowPlayingSidebarVisible {
+        if SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: self.playerService.isNowPlayingSidebarVisible,
+            hasVideoSurface: self.playerService.hasVideoSurface,
+            hasPendingVideo: self.playerService.pendingPlayVideoId != nil,
+            isFullscreenPodcastPresented: showsPodcastFullscreen
+        ) {
             return false
         }
         return PlayerWebViewPreload.shouldHostPlayerWebView(

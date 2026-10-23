@@ -174,6 +174,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// and tests keep working.
     private(set) var miniPlayerVideoAspectRatio: Double?
 
+    /// The video the observed ratio belongs to.
+    ///
+    /// The ratio describes *one* video, so it must be tagged with it rather than with "the
+    /// current playback": re-classifying the item that is already playing (an API verdict, a
+    /// podcast re-reconciliation) must not forget the shape of the picture on screen, or the
+    /// sidebar falls back to 16:9 and letterboxes a video that was filling its surface.
+    private(set) var miniPlayerVideoAspectRatioVideoId: String?
+
     /// The video ID that needs to be played in the mini player.
     var pendingPlayVideoId: String?
 
@@ -562,7 +570,13 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         let wasPodcast = self.currentPlaybackIsPodcast
         self.currentPlaybackIsPodcast = isPodcastPlayback
         self.podcastClassificationVideoId = isPodcastPlayback ? videoId : nil
-        self.miniPlayerVideoAspectRatio = nil
+        // The observed ratio belongs to a video, not to a playback: keeping it for the item it
+        // describes is what stops a reclassification of the playing song from collapsing the
+        // sidebar surface back to the 16:9 fallback (and letterboxing the picture).
+        if self.miniPlayerVideoAspectRatioVideoId != videoId {
+            self.miniPlayerVideoAspectRatio = nil
+            self.miniPlayerVideoAspectRatioVideoId = nil
+        }
         // A new video means a newly learnable variant: the previous track's learned
         // id must not fold observations for this one.
         self.observedVideoVariantVideoId = nil
@@ -1087,11 +1101,22 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     }
 
     /// Updates the mini player aspect ratio from observed HTML video dimensions.
-    func updateMiniPlayerVideoDimensions(width: Int, height: Int) {
+    ///
+    /// `videoId` is the video the dimensions were read from, so the ratio can outlive a
+    /// reclassification of that same video (see ``miniPlayerVideoAspectRatioVideoId``).
+    func updateMiniPlayerVideoDimensions(width: Int, height: Int, videoId: String? = nil) {
         guard width > 0, height > 0 else { return }
 
         let ratio = Double(width) / Double(height)
         guard ratio.isFinite, ratio >= 0.3, ratio <= 4.0 else { return }
+
+        // A different video is a real change even when the ratio is the same: the tag is what
+        // decides whether the next reclassification keeps this shape.
+        if let videoId, videoId != self.miniPlayerVideoAspectRatioVideoId {
+            self.miniPlayerVideoAspectRatio = ratio
+            self.miniPlayerVideoAspectRatioVideoId = videoId
+            return
+        }
 
         if let currentRatio = self.miniPlayerVideoAspectRatio,
             abs(currentRatio - ratio) < 0.001

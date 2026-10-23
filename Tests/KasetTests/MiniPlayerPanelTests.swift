@@ -51,6 +51,47 @@ struct SidebarVideoAspectTests {
         #expect(abs(height - 560 / (16.0 / 9.0)) < 0.001)
     }
 
+    /// The surface a sidebar video is drawn in. The height is whole points — a page lays out in
+    /// whole points, so a fractional surface left a strip of itself outside its own page, which
+    /// is the black hairline along the video's edge — and the surface says whether it is the
+    /// video's own shape, which decides between filling it (no black edge) and letterboxing the
+    /// whole picture.
+    static let videoSurfaces: [(name: String, observed: Double?, available: CGFloat, height: CGFloat, matches: Bool)] = [
+        ("a landscape video fills a surface built to its ratio", 854.0 / 480.0, 900, 169, true),
+        ("a portrait video is clamped, so the whole picture stays visible", 9.0 / 16.0, 900, 400, false),
+        ("a wide video is capped, so the whole picture stays visible", 3.0, 900, 150, false),
+        ("a short column cuts the surface, so the whole picture stays visible", 854.0 / 480.0, 470, 154, false),
+        ("before the video reports its ratio, the fallback box is not its shape", nil, 900, 169, false),
+    ]
+
+    @Test(arguments: Self.videoSurfaces)
+    func theVideoSurfaceIsWholePointsAndSaysWhetherItIsTheVideosShape(
+        _ testCase: (name: String, observed: Double?, available: CGFloat, height: CGFloat, matches: Bool)
+    ) {
+        let box = SidebarVideoAspect.box(
+            forWidth: 300,
+            observedAspectRatio: testCase.observed,
+            availableHeight: testCase.available,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
+        )
+
+        #expect(box.height == testCase.height, "\(testCase.name)")
+        #expect(box.matchesVideoShape == testCase.matches, "\(testCase.name)")
+    }
+
+    /// The surface is *sized* by the picture's ratio, so a surface that attaches before the video
+    /// reports one would keep the 16:9 fallback — the letterboxed shape with black around the
+    /// picture. It asks the page instead of waiting for the next state update to carry the size.
+    @MainActor
+    @Test func theSurfaceAsksThePageForThePictureItIsAboutToDraw() {
+        let script = SingletonPlayerWebView.videoDimensionsRequestScript()
+
+        #expect(script.contains("videoWidth"))
+        #expect(script.contains("videoHeight"))
+        #expect(script.contains("VIDEO_DIMENSIONS"))
+        #expect(script.contains("singletonPlayer"))
+    }
+
     @Test func artworkStaysSquareForMusic() {
         #expect(SidebarVideoAspect.artworkAspectRatio(isPodcast: false, observedAspectRatio: nil) == 1)
         #expect(SidebarVideoAspect.artworkAspectRatio(isPodcast: false, observedAspectRatio: 16.0 / 9.0) == 1)
@@ -145,6 +186,62 @@ struct SidebarVideoAspectTests {
         )
     }
 
+    /// The box is only the picture's shape once the page has reported it. Until then it is the 16:9
+    /// fallback, and `contain` in it is a letterbox around anything that is not 16:9 — the black
+    /// bars around the video right after switching to it. Filling instead is invisible.
+    @Test func aSurfaceOfUnknownShapeFillsThePicture() {
+        let box = SidebarVideoAspect.box(
+            forWidth: 300,
+            observedAspectRatio: nil,
+            availableHeight: 900,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
+        )
+        #expect(!box.matchesVideoShape)
+        #expect(SidebarVideoAspect.fillsSurface(box, shapeIsKnown: false))
+    }
+
+    @Test func aSurfaceOfKnownShapeFollowsItsOwnRule() {
+        let matching = SidebarVideoAspect.box(
+            forWidth: 300,
+            observedAspectRatio: 854.0 / 480.0,
+            availableHeight: 900,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
+        )
+        #expect(SidebarVideoAspect.fillsSurface(matching, shapeIsKnown: true))
+
+        // A clamped portrait keeps the whole picture: that letterbox is the shape the column
+        // imposed, not a fallback.
+        let clamped = SidebarVideoAspect.box(
+            forWidth: 300,
+            observedAspectRatio: 9.0 / 16.0,
+            availableHeight: 900,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
+        )
+        #expect(!SidebarVideoAspect.fillsSurface(clamped, shapeIsKnown: true))
+    }
+
+    /// The WebView's view hierarchy follows the same single-writer rule as the DOM presentation.
+    /// A parked host that takes the WebView hides the picture everywhere else, and the surface
+    /// that lost it is not updated (none of its inputs changed), so it never gets it back.
+    @Test func onlyThePresentationOwnerMayHostTheWebView() {
+        let sidebar = NSObject()
+        let hidden = NSObject()
+
+        // A video surface always may: it is the surface the user asked for.
+        #expect(PlayerSurfaceOwnership.mayHost(
+            isExpanded: true, owner: sidebar, container: hidden, presentationEnabled: true))
+
+        // The parked layer may while no surface is active, and while it owns the surface.
+        #expect(PlayerSurfaceOwnership.mayHost(
+            isExpanded: false, owner: nil, container: hidden, presentationEnabled: false))
+        #expect(PlayerSurfaceOwnership.mayHost(
+            isExpanded: false, owner: hidden, container: hidden, presentationEnabled: true))
+
+        // Never while a video surface owns the presentation.
+        #expect(!PlayerSurfaceOwnership.mayHost(
+            isExpanded: false, owner: sidebar, container: hidden, presentationEnabled: true))
+    }
+
     @Test func artworkIsFixedSixteenByNineForPodcasts() {
         // Fixed 16:9: the observed video ratio is deliberately ignored — reading it
         // re-rendered the sidebar mid-layout and crashed in `NSProgressIndicator setFont:`.
@@ -154,5 +251,48 @@ struct SidebarVideoAspectTests {
         #expect(abs(observed - CGFloat(16.0 / 9.0)) < 0.0001)
         let extreme = SidebarVideoAspect.artworkAspectRatio(isPodcast: true, observedAspectRatio: 9.0 / 16.0)
         #expect(abs(extreme - CGFloat(16.0 / 9.0)) < 0.0001)
+    }
+
+    /// A WebView that is resized and hosted again draws the first frames of the picture at the
+    /// size the page had before, so the sidebar keeps the surface mounted at the video's size
+    /// behind the artwork and the toggle is only an opacity change.
+    @Test func theSidebarKeepsTheVideoSurfaceMountedBehindItsArtwork() {
+        #expect(SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: true,
+            hasVideoSurface: true,
+            hasPendingVideo: true,
+            isFullscreenPodcastPresented: false
+        ))
+
+        // Nowhere to keep it: the column is closed, so the hidden layer hosts as usual.
+        #expect(!SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: false,
+            hasVideoSurface: true,
+            hasPendingVideo: true,
+            isFullscreenPodcastPresented: false
+        ))
+
+        // Nothing to draw: no video for this item, or no id to play it for.
+        #expect(!SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: true,
+            hasVideoSurface: false,
+            hasPendingVideo: true,
+            isFullscreenPodcastPresented: false
+        ))
+        #expect(!SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: true,
+            hasVideoSurface: true,
+            hasPendingVideo: false,
+            isFullscreenPodcastPresented: false
+        ))
+
+        // The fullscreen podcast view has its own slot: a second surface would fight it for the
+        // one WebView.
+        #expect(!SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: true,
+            hasVideoSurface: true,
+            hasPendingVideo: true,
+            isFullscreenPodcastPresented: true
+        ))
     }
 }

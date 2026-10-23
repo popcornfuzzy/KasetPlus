@@ -406,6 +406,79 @@ struct PlayerServiceTests {
         #expect(self.playerService.miniPlayerVideoAspectRatio == (1920.0 / 1080.0))
     }
 
+    /// The observed ratio describes one video, so re-classifying that same video (an API verdict,
+    /// a podcast re-reconciliation) must not forget it: the sidebar surface is built from the
+    /// ratio, and the fallback shape letterboxes the picture — the black edge around the video.
+    @Test("Observed video ratio survives reclassifying the same video")
+    func videoRatioSurvivesReclassifyingSameVideo() async {
+        let song = Song(
+            id: "video-1",
+            title: "Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "video-1"
+        )
+        await self.playerService.play(song: song)
+        self.playerService.updateMiniPlayerVideoDimensions(width: 854, height: 480, videoId: "video-1")
+        #expect(self.playerService.miniPlayerVideoAspectRatioVideoId == "video-1")
+
+        await self.playerService.play(song: song)
+
+        #expect(self.playerService.miniPlayerVideoAspectRatio == (854.0 / 480.0))
+        #expect(self.playerService.miniPlayerVideoAspectRatioVideoId == "video-1")
+    }
+
+    @Test("A different video drops the previous video's ratio")
+    func differentVideoDropsPreviousRatio() async {
+        let first = Song(
+            id: "video-1",
+            title: "Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "video-1"
+        )
+        let second = Song(
+            id: "video-2",
+            title: "Other Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "video-2"
+        )
+        await self.playerService.play(song: first)
+        self.playerService.updateMiniPlayerVideoDimensions(width: 854, height: 480, videoId: "video-1")
+
+        await self.playerService.play(song: second)
+
+        #expect(self.playerService.miniPlayerVideoAspectRatio == nil)
+        #expect(self.playerService.miniPlayerVideoAspectRatioVideoId == nil)
+    }
+
+    @Test("An untagged observation keeps the video it was read from")
+    func untaggedObservationKeepsTag() async {
+        let song = Song(
+            id: "video-1",
+            title: "Song",
+            artists: [Artist(id: "artist-1", name: "Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "video-1"
+        )
+        await self.playerService.play(song: song)
+        self.playerService.updateMiniPlayerVideoDimensions(width: 854, height: 480, videoId: "video-1")
+
+        self.playerService.updateMiniPlayerVideoDimensions(width: 1280, height: 640)
+
+        #expect(self.playerService.miniPlayerVideoAspectRatio == 2.0)
+        #expect(self.playerService.miniPlayerVideoAspectRatioVideoId == "video-1")
+    }
+
     @Test("Invalid video dimensions are ignored")
     func invalidVideoDimensionsAreIgnored() {
         self.playerService.updateMiniPlayerVideoDimensions(width: 1280, height: 720)

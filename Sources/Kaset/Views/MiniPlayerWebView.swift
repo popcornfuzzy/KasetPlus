@@ -49,7 +49,7 @@ struct MiniPlayerWebView: NSViewRepresentable {
         contentController.add(context.coordinator, name: "miniPlayer")
 
         // Ensure WebView is in this container
-        SingletonPlayerWebView.shared.ensureInHierarchy(container: container)
+        SingletonPlayerWebView.shared.ensureInHierarchy(container: container, isExpanded: true)
 
         // Load the video if needed
         SingletonPlayerWebView.shared.loadVideo(videoId: self.videoId)
@@ -59,7 +59,7 @@ struct MiniPlayerWebView: NSViewRepresentable {
 
     func updateNSView(_ container: NSView, context _: Context) {
         // Update WebView frame if needed
-        SingletonPlayerWebView.shared.ensureInHierarchy(container: container)
+        SingletonPlayerWebView.shared.ensureInHierarchy(container: container, isExpanded: true)
     }
 
     static func dismantleNSView(_: NSView, coordinator _: Coordinator) {
@@ -299,6 +299,9 @@ final class SingletonPlayerWebView {
     private var mediaControlUsesNextPrev: Bool
     private var miniPlayerPresentationEnabled = false
     private var miniPlayerPrefersVideo = false
+    /// Whether the surface that owns the presentation is the video's own shape, so the picture
+    /// fills it instead of being letterboxed inside it.
+    private var miniPlayerFillsSurface = false
     /// Container view that owns the DOM presentation. Weak: a dismantled host must
     /// never pin its view alive, and a dead owner simply means "unowned".
     /// See ``PlayerSurfaceOwnership`` for the single-writer rule.
@@ -399,6 +402,16 @@ final class SingletonPlayerWebView {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(preloadGateScript)
+
+        // A document loaded while the video surface is showing covers itself at parse time, so
+        // the surface never paints the page's own player chrome before the presentation is
+        // applied to the new document. See `presentationCoverScript`.
+        let presentationCoverScript = WKUserScript(
+            source: Self.presentationCoverScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(presentationCoverScript)
 
         let newWebView = WKWebView(frame: .zero, configuration: configuration)
         newWebView.navigationDelegate = self.coordinator
@@ -501,9 +514,33 @@ final class SingletonPlayerWebView {
         return self.isPageReady
     }
 
-    /// Ensures the WebView is in the given container's view hierarchy.
-    func ensureInHierarchy(container: NSView) {
+    /// Ensures the WebView is in the given container's view hierarchy, when that container may
+    /// show it.
+    ///
+    /// `isExpanded` is the host's own intent. A parking host may only take the WebView while no
+    /// video surface owns the presentation (see ``PlayerSurfaceOwnership/mayHost``): the hidden
+    /// audio layer is re-mounted for a single update when the sidebar video's state flickers, and
+    /// taking the WebView then left the sidebar surface black until something else happened to
+    /// move it back.
+    func ensureInHierarchy(container: NSView, isExpanded: Bool) {
         guard let webView, webView.superview !== container else { return }
+
+        // A host is laid out *after* SwiftUI creates it. Showing the page in a 0×0 view builds its
+        // viewport — and the video's layer — at that size and resizes both once layout arrives,
+        // which paints the picture in a box that is not the surface yet (the black band around it
+        // right after switching to the video). The host calls back on layout.
+        guard container.bounds.width >= 1, container.bounds.height >= 1 else { return }
+
+        guard PlayerSurfaceOwnership.mayHost(
+            isExpanded: isExpanded,
+            owner: self.presentationOwner,
+            container: container,
+            presentationEnabled: self.miniPlayerPresentationEnabled
+        ) else {
+            self.logger.info("Parking host asked for the WebView while a video surface owns it; ignoring")
+            return
+        }
+
         webView.removeFromSuperview()
         container.addSubview(webView)
 
@@ -582,7 +619,12 @@ final class SingletonPlayerWebView {
     /// during a toggle both the dying hidden host and the new video host emit in the
     /// same pass, and letting the parker win tore down extractions that never came
     /// back (see ``PlayerSurfaceOwnership``).
-    func updateMiniPlayerPresentation(owner: NSView, isExpanded: Bool, prefersVideo: Bool) {
+    func updateMiniPlayerPresentation(
+        owner: NSView,
+        isExpanded: Bool,
+        prefersVideo: Bool,
+        fillsSurface: Bool = false
+    ) {
         guard PlayerSurfaceOwnership.shouldApply(
             isExpanded: isExpanded,
             owner: owner,
@@ -596,9 +638,11 @@ final class SingletonPlayerWebView {
 
         let previousIsExpanded = self.miniPlayerPresentationEnabled
         let previousPrefersVideo = self.miniPlayerPrefersVideo
+        let previousFillsSurface = self.miniPlayerFillsSurface
 
         self.miniPlayerPresentationEnabled = isExpanded
         self.miniPlayerPrefersVideo = prefersVideo
+        self.miniPlayerFillsSurface = fillsSurface
 
         // A page the user can see is the page's own controls: if the mini player has just been
         // revealed, a silent page stops being silent and stops being treated as a placeholder.
@@ -607,7 +651,10 @@ final class SingletonPlayerWebView {
         }
 
         // Ignore pure size changes while staying expanded; the container now scales with 100% sizing.
-        guard previousIsExpanded != isExpanded || previousPrefersVideo != prefersVideo else {
+        guard previousIsExpanded != isExpanded
+            || previousPrefersVideo != prefersVideo
+            || previousFillsSurface != fillsSurface
+        else {
             return
         }
 
@@ -619,14 +666,94 @@ final class SingletonPlayerWebView {
         self.applyMiniPlayerPresentationScript()
     }
 
+    /// The sessionStorage key the presentation state is remembered under, so a document can
+    /// cover itself before its first paint (see ``presentationCoverScript``).
+    static let presentationStorageKey = "kaset-mini-player-presentation"
+
+    /// Script that hides a page loaded while the video surface is showing.
+    ///
+    /// A navigation replaces the whole document, taking the presentation's container and
+    /// blackout with it. Until the presentation script runs again (after the load finishes) the
+    /// surface would draw the raw YouTube Music page — the flash of its player chrome that the
+    /// sidebar used to show on some track changes. The state is kept in `sessionStorage`, which
+    /// survives a same-origin navigation, so the next document can cover itself at parse time
+    /// and uncover only once there is a picture (the presentation script removes the cover).
+    static var presentationCoverScript: String {
+        """
+        (function() {
+            try {
+                if (sessionStorage.getItem('\(Self.presentationStorageKey)') !== '1') { return; }
+            } catch (error) {
+                return;
+            }
+            const style = document.createElement('style');
+            style.id = 'kaset-presentation-cover';
+            style.textContent = 'html { background: #000 !important; }'
+                + ' body { background: #000 !important; visibility: hidden !important; }';
+            (document.head || document.documentElement).appendChild(style);
+        })();
+        """
+    }
+
+    /// Asks the page for the intrinsic size of the video it is showing.
+    ///
+    /// The surface is sized from that ratio, and the presentation is only re-applied when it
+    /// changes — so a surface that attaches before the video has decoded a frame would otherwise
+    /// keep the 16:9 fallback (and the letterboxed picture that goes with it) until the next
+    /// `STATE_UPDATE` happens to arrive.
+    func requestVideoDimensions() {
+        guard let webView else { return }
+        webView.evaluateJavaScript(Self.videoDimensionsRequestScript()) { [weak self] _, error in
+            if let error {
+                self?.logger.debug("Failed to request video dimensions: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Script asking the page to report the size of the video it is drawing.
+    ///
+    /// Pure construction, like ``miniPlayerPresentationScript(isExpanded:prefersVideo:fillsSurface:)``,
+    /// so the exact snippet the app injects can be asserted without a WebView.
+    static func videoDimensionsRequestScript() -> String {
+        """
+            (function() {
+                const bridge = window.webkit.messageHandlers.singletonPlayer;
+                if (!bridge) { return; }
+
+                // The picture's shape belongs to the element that is playing; a stale node left
+                // behind by a player re-render describes a video that is not on screen.
+                const videos = document.querySelectorAll('video');
+                let video = null;
+                for (let index = 0; index < videos.length; index++) {
+                    const candidate = videos[index];
+                    if (!(candidate.videoWidth > 0) || !(candidate.videoHeight > 0)) continue;
+                    if (!candidate.paused) { video = candidate; break; }
+                    if (!video) video = candidate;
+                }
+                if (!video) { return; }
+
+                bridge.postMessage({
+                    type: 'VIDEO_DIMENSIONS',
+                    width: video.videoWidth,
+                    height: video.videoHeight
+                });
+            })();
+        """
+    }
+
     /// Builds the DOM presentation script for a presentation state.
     ///
     /// Pure construction (no WebView touch), so the exact script the app injects can be
     /// driven against a mock page in tests — that is how the podcast-exit handoff is
     /// reproduced without the app GUI.
-    static func miniPlayerPresentationScript(isExpanded: Bool, prefersVideo: Bool) -> String {
+    static func miniPlayerPresentationScript(
+        isExpanded: Bool,
+        prefersVideo: Bool,
+        fillsSurface: Bool = false
+    ) -> String {
         let isExpandedLiteral = isExpanded ? "true" : "false"
         let prefersVideoLiteral = prefersVideo ? "true" : "false"
+        let objectFit = fillsSurface ? "cover" : "contain"
 
         return """
             (function() {
@@ -636,52 +763,183 @@ final class SingletonPlayerWebView {
                 const styleId = 'kaset-mini-player-video-style';
                 const containerId = 'kaset-video-container';
                 const blackoutId = 'kaset-video-blackout';
+                const coverId = 'kaset-presentation-cover';
+                const storageKey = '\(Self.presentationStorageKey)';
                 const timerIdKey = '__kasetMiniPlayerVideoTimer';
-                const watchdogKey = '__kasetMiniPlayerVideoWatchdog';
+                const observerKey = '__kasetMiniPlayerVideoObserver';
+                const shownVideoKey = '__kasetMiniPlayerShownVideo';
+                const healFrameKey = '__kasetMiniPlayerHealFrame';
 
                 window.__kasetMiniPlayerPresentationEnabled = enabled;
                 window.__kasetMiniPlayerPrefersVideo = prefersVideo;
 
-                function clearPresentationTimer() {
+                // Remembered for the next document: a page loaded while the surface is
+                // showing covers itself before its first paint (see `presentationCoverScript`).
+                try {
+                    sessionStorage.setItem(storageKey, enabled ? '1' : '0');
+                } catch (error) {}
+
+                function clearTabTimer() {
                     if (window[timerIdKey]) {
                         clearInterval(window[timerIdKey]);
                         window[timerIdKey] = null;
                     }
-                    if (window[watchdogKey]) {
-                        clearInterval(window[watchdogKey]);
-                        window[watchdogKey] = null;
-                    }
                 }
 
-                function containerHasLiveVideo() {
-                    const container = document.getElementById(containerId);
-                    const live = document.querySelector('video');
-                    return !!(container && live && live.parentElement === container);
+                function removeCover() {
+                    const cover = document.getElementById(coverId);
+                    if (cover) cover.remove();
                 }
 
-                // Slow self-healing poll that outlives the fast attempts: YouTube may swap
-                // the `<video>` element *after* an extraction reported success (Song/Video
-                // tab switch completing late, player re-render), leaving a dead node in the
-                // container and a black box with no retry. It runs in every presentation
-                // state: parking is soft standby that keeps the DOM (the parked host is
-                // always the invisible 1x1 layer, so restoring the page is never visible),
-                // which is what makes host handoffs instant and heals slow variant loads
-                // long after the fast window expired.
+                // The video the page is actually showing.
                 //
-                // Healing is deliberately side-effect-free: it never clicks the video tab.
-                // A click is a page mutation that can navigate (a false-positive "video"
-                // button on a page without real tabs moves the player to another id, which
-                // the drift handlers then "correct" with a full reload — out from under a
-                // showing video). Tab selection is a one-shot intent owned by the explicit
-                // fast attempt below, not a continuous invariant.
-                function ensureWatchdog() {
-                    if (window[watchdogKey]) return;
-                    window[watchdogKey] = setInterval(function() {
-                        ensureStyle();
-                        if (!containerHasLiveVideo()) {
-                            extractVideoToContainer();
+                // `document.querySelector('video')` is not enough: after YouTube re-renders
+                // its player it can leave the element we took behind while a new one plays the
+                // sound. A container holding that dead node is a black box that never heals,
+                // because the old liveness check only asked whether *some* video was still in
+                // the container. The picture must always be the element that is playing.
+                function currentVideo() {
+                    const videos = document.querySelectorAll('video');
+                    let framed = null;
+                    for (let index = 0; index < videos.length; index++) {
+                        const video = videos[index];
+                        const hasFrame = (video.readyState || 0) >= 2 || (video.videoWidth || 0) > 0;
+                        if (!hasFrame) continue;
+                        if (!video.paused) return video;
+                        if (!framed) framed = video;
+                    }
+                    return framed;
+                }
+
+                function containerShowsCurrentVideo() {
+                    const container = document.getElementById(containerId);
+                    const shown = window[shownVideoKey];
+                    if (!container || !shown || shown.parentElement !== container) return false;
+                    if (container.firstElementChild !== shown) return false;
+                    return currentVideo() === shown;
+                }
+
+                // Tells the app the picture's own shape as soon as the surface draws it. The
+                // surface is *sized* from that ratio, so learning it here — including while the
+                // video is only playing in the invisible layer — means the box is already the
+                // picture's shape when the user switches to it. The alternative, asking after the
+                // switch, leaves the surface as the 16:9 fallback for the first frames, and a
+                // picture that is not 16:9 is letterboxed inside it: black bars around the video
+                // right after switching to it.
+                function reportPictureShape(video) {
+                    const width = video.videoWidth || 0;
+                    const height = video.videoHeight || 0;
+                    if (width <= 0 || height <= 0) return;
+                    const shape = width + 'x' + height;
+                    if (window.__kasetReportedShape === shape) return;
+                    window.__kasetReportedShape = shape;
+
+                    const bridge = window.webkit && window.webkit.messageHandlers
+                        ? window.webkit.messageHandlers.singletonPlayer
+                        : null;
+                    if (!bridge) return;
+                    bridge.postMessage({ type: 'VIDEO_DIMENSIONS', width: width, height: height });
+                }
+
+                function showCurrentVideo() {
+                    const video = currentVideo();
+                    if (!video) return false;
+
+                    const container = ensureContainer();
+
+                    // The surface has exactly one picture. Anything else in the container is a
+                    // node the page has stopped using, and a dead video left underneath can
+                    // still paint at its own size over the picture.
+                    const stale = container.querySelectorAll('video');
+                    for (let index = 0; index < stale.length; index++) {
+                        if (stale[index] !== video) stale[index].remove();
+                    }
+
+                    if (video.parentElement !== container) {
+                        container.appendChild(video);
+                    }
+                    if (video.controls) video.controls = false;
+                    window[shownVideoKey] = video;
+                    reportPictureShape(video);
+
+                    // Nothing of the page belongs in a surface that has a picture.
+                    removeBlackout();
+                    removeCover();
+                    return true;
+                }
+
+                // Healing is scheduled as a microtask: it runs as soon as the task that broke
+                // the picture ends and always *before* the browser paints, so a surface cannot
+                // show a frame of an empty box. The old one-second poll could show one for a
+                // whole second, and never healed a container that held a dead node at all.
+                //
+                // A microtask also costs one check per mutation batch rather than one per
+                // mutation: YouTube's player mutates its DOM constantly (progress, chapters,
+                // overlays) and healing has to stay cheap.
+                function scheduleHeal() {
+                    if (window[healFrameKey]) return;
+                    window[healFrameKey] = true;
+                    Promise.resolve().then(function() {
+                        window[healFrameKey] = false;
+                        if (!containerShowsCurrentVideo()) {
+                            showCurrentVideo();
                         }
-                    }, 1000);
+                    });
+                }
+
+                // Watches the page for the two things that break the picture:
+                // the video being taken back out of the container by a player re-render, and a
+                // replacement element appearing next to the one we hold.
+                //
+                // It runs in every presentation state: parking is soft standby that keeps the
+                // DOM (the parked host is always the invisible 1x1 layer, so restoring the page
+                // is never visible), which is what makes host handoffs instant.
+                //
+                // Healing never clicks the video tab. A click is a page mutation that can
+                // navigate; tab selection is a one-shot intent owned by `startTabAttempts`.
+                function ensureHealing() {
+                    if (window[observerKey]) return;
+
+                    const observer = new MutationObserver(function() {
+                        if (containerShowsCurrentVideo()) return;
+                        scheduleHeal();
+                    });
+                    observer.observe(document.documentElement, { childList: true, subtree: true });
+                    window[observerKey] = observer;
+
+                    // A video extracted before it had a frame becomes the picture as soon as it
+                    // decodes one — no DOM change is involved, so the observer would never see it.
+                    document.addEventListener('loadeddata', scheduleHeal, true);
+                    document.addEventListener('playing', scheduleHeal, true);
+
+                    // Safety net for a page that defeats both of the above (a document element
+                    // replaced under the observer, a player that swaps its video without a
+                    // mutation we witness). Nothing else can heal those, and a surface in that
+                    // state is already not the picture the user asked for.
+                    setInterval(function() {
+                        if (!containerShowsCurrentVideo()) {
+                            showCurrentVideo();
+                        }
+                    }, 2000);
+                }
+
+                // The page's own video may still be switched away from Video: retried briefly
+                // while the player builds, never after that (see `ensureVideoTabSelected`).
+                function startTabAttempts() {
+                    if (!window.__kasetMiniPlayerPrefersVideo) return;
+                    clearTabTimer();
+                    let attempts = 0;
+                    window[timerIdKey] = setInterval(function() {
+                        if (!window.__kasetMiniPlayerPresentationEnabled) {
+                            clearTabTimer();
+                            return;
+                        }
+                        attempts += 1;
+                        ensureVideoTabSelected();
+                        if (window.__kasetVideoTabClicked || attempts >= 24) {
+                            clearTabTimer();
+                        }
+                    }, 250);
                 }
 
                 function ensureStyle() {
@@ -734,9 +992,15 @@ final class SingletonPlayerWebView {
                         }
 
                         #${containerId} video {
+                            position: absolute !important;
+                            inset: 0 !important;
                             width: 100% !important;
                             height: 100% !important;
-                            object-fit: contain !important;
+                            max-width: none !important;
+                            max-height: none !important;
+                            margin: 0 !important;
+                            transform: none !important;
+                            object-fit: \(objectFit) !important;
                             background: #000 !important;
                             pointer-events: none !important;
                         }
@@ -799,26 +1063,15 @@ final class SingletonPlayerWebView {
                         || button.classList.contains('selected')
                         || button.classList.contains('is-selected');
 
-                    if (!isSelected) {
-                        button.click();
-                    }
-                }
+                    if (isSelected) return;
 
-                function extractVideoToContainer() {
-                    const video = document.querySelector('video');
-                    if (!video) return false;
-
-                    const hasFrame = video.readyState >= 2 || video.videoWidth > 0;
-                    if (!hasFrame) return false;
-
-                    const container = ensureContainer();
-
-                    if (video.parentElement !== container) {
-                        container.appendChild(video);
-                    }
-
-                    video.controls = false;
-                    return true;
+                    // One click per document. Re-applying the presentation (a learned ratio, a
+                    // host handoff, a finished page load) must never click again: the click
+                    // restarts the player's video, and on a control that is a toggle rather than
+                    // a tab a second click switches the picture away from the surface.
+                    if (window.__kasetVideoTabClicked) return;
+                    window.__kasetVideoTabClicked = true;
+                    button.click();
                 }
 
                 // Parking is soft standby, never a teardown: the parked host is always the
@@ -827,58 +1080,25 @@ final class SingletonPlayerWebView {
                 // asynchronously. That teardown/re-extract race is what left the sidebar
                 // black after leaving podcast fullscreen (re-extract missing a swapped
                 // element, style re-applied over an empty container) and flashed the
-                // page's own controls in between. The DOM stays as it is; the watchdog
-                // keeps healing it while parked.
+                // page's own controls in between. The DOM stays as it is, and healing keeps it.
                 if (!enabled) {
-                    if (window[timerIdKey]) {
-                        clearInterval(window[timerIdKey]);
-                        window[timerIdKey] = null;
-                    }
-                    ensureWatchdog();
-                    return;
-                }                ensureStyle();
-                ensureBlackout();
-                ensureVideoTabSelected();
-
-                // The common handoff (leaving podcast fullscreen for the sidebar): same
-                // page, same video, only the native container changed. The extraction
-                // survived parking, so there is nothing to rebuild — return instantly
-                // instead of flashing the page through another timer cycle.
-                if (containerHasLiveVideo()) {
+                    clearTabTimer();
                     removeBlackout();
-                    ensureWatchdog();
+                    removeCover();
+                    ensureHealing();
+                    scheduleHeal();
                     return;
                 }
 
-                let attempts = 0;
-                clearPresentationTimer();
-                ensureWatchdog();
+                ensureStyle();
+                ensureBlackout();
+                ensureHealing();
+                startTabAttempts();
 
-                window[timerIdKey] = setInterval(function() {
-                    if (!window.__kasetMiniPlayerPresentationEnabled) {
-                        clearInterval(window[timerIdKey]);
-                        window[timerIdKey] = null;
-                        return;
-                    }
-
-                    attempts += 1;
-                    ensureStyle();
-                    ensureVideoTabSelected();
-
-                    const extracted = extractVideoToContainer();
-                    if (extracted) {
-                        clearInterval(window[timerIdKey]);
-                        window[timerIdKey] = null;
-                        removeBlackout();
-                        return;
-                    }
-
-                    if (attempts >= 80) {
-                        clearInterval(window[timerIdKey]);
-                        window[timerIdKey] = null;
-                        removeBlackout();
-                    }
-                }, 150);
+                // The picture and the page's own chrome never share the surface: the blackout
+                // stays up (and the next document covers itself, see `presentationCoverScript`)
+                // until there is a video to draw in it — `showCurrentVideo` is what uncovers.
+                showCurrentVideo();
             })();
         """
     }
@@ -888,7 +1108,8 @@ final class SingletonPlayerWebView {
 
         let script = Self.miniPlayerPresentationScript(
             isExpanded: self.miniPlayerPresentationEnabled,
-            prefersVideo: self.miniPlayerPrefersVideo
+            prefersVideo: self.miniPlayerPrefersVideo,
+            fillsSurface: self.miniPlayerFillsSurface
         )
         webView.evaluateJavaScript(script) { [weak self] _, error in
             if let error {
@@ -1079,6 +1300,29 @@ final class SingletonPlayerWebView {
                     Task { @MainActor in
                         self.playerService.currentTimeMs = Int(time * 1000)
                     }
+                }
+                return
+            }
+
+            // The answer to `requestVideoDimensions`: the shape of the picture this surface is
+            // about to draw. Tagged with the video, so it survives reclassifying that same item.
+            if type == "VIDEO_DIMENSIONS" {
+                let width = (body["width"] as? Int) ?? Int((body["width"] as? Double) ?? 0)
+                let height = (body["height"] as? Int) ?? Int((body["height"] as? Double) ?? 0)
+                guard width > 0, height > 0 else { return }
+                // The request names no video: the surface asked for the picture it is drawing, so
+                // the id is the one that surface shows. Without it the observation would be
+                // untagged and the next reclassification would forget a shape that is still on
+                // screen — the surface would fall back to 16:9 and letterbox the picture.
+                let describedVideoId = observedVideoId
+                    ?? self.playerService.pendingPlayVideoId
+                    ?? self.playerService.currentTrack?.videoId
+                Task { @MainActor in
+                    self.playerService.updateMiniPlayerVideoDimensions(
+                        width: width,
+                        height: height,
+                        videoId: describedVideoId
+                    )
                 }
                 return
             }
