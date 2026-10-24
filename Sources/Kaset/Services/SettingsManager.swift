@@ -20,6 +20,8 @@ final class SettingsManager {
         static let scrobbleMinSeconds = "settings.scrobbleMinSeconds"
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
+        static let lyricsAnimationStyle = "settings.lyricsAnimationStyle"
+        static let lyricsWordSlideEnabled = "settings.lyricsWordSlideEnabled"
         /// Legacy single-choice preset, kept only to migrate into the per-provider model.
         static let lyricsProvider = "settings.lyricsProvider"
         static let lyricsProviderOrder = "settings.lyricsProviderOrder"
@@ -328,6 +330,34 @@ final class SettingsManager {
         }
     }
 
+    /// How word-by-word lyrics animate as they are sung.
+    var lyricsAnimationStyle: LyricsAnimationStyle {
+        didSet {
+            UserDefaults.standard.set(self.lyricsAnimationStyle.rawValue, forKey: Keys.lyricsAnimationStyle)
+        }
+    }
+
+    /// Whether a Better Lyrics word also slides towards its trailing edge as it widens.
+    ///
+    /// Off by default: the slide is the one part of the animation that moves text sideways, and across
+    /// a sheet of words being sung in turn it reads as movement around the text rather than as
+    /// emphasis. The amount is Better Lyrics' own and is not a setting.
+    var lyricsWordSlideEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.lyricsWordSlideEnabled, forKey: Keys.lyricsWordSlideEnabled)
+        }
+    }
+
+    /// The Better Lyrics timing the lyric rows draw with: `standard`, or `withWordSlide` when the
+    /// reader asked for the word's sideways slide.
+    ///
+    /// Resolved here rather than in each sheet so both surfaces — the panel and the player — cannot
+    /// disagree about what the switch means, and so "off" is a value a test can assert on instead of
+    /// a branch repeated in a view.
+    var richLyricsTiming: RichLyricsTiming {
+        self.lyricsWordSlideEnabled ? .withWordSlide : .standard
+    }
+
     /// Whether conservative ad blocking hooks are enabled.
     var safeAdBlockingEnabled: Bool {
         didSet {
@@ -387,6 +417,9 @@ final class SettingsManager {
         self.scrobblePercentThreshold = UserDefaults.standard.object(forKey: Keys.scrobblePercentThreshold) as? Double ?? 0.5
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
+        self.lyricsAnimationStyle = UserDefaults.standard.string(forKey: Keys.lyricsAnimationStyle)
+            .flatMap(LyricsAnimationStyle.init(rawValue:)) ?? .standard
+        self.lyricsWordSlideEnabled = UserDefaults.standard.object(forKey: Keys.lyricsWordSlideEnabled) as? Bool ?? false
         if let storedOrder = UserDefaults.standard.stringArray(forKey: Keys.lyricsProviderOrder) {
             let storedIDs = storedOrder.compactMap(LyricsProviderID.init(rawValue:))
             // Append providers added since the order was saved so new sources

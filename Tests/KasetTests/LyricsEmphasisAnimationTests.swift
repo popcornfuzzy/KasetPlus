@@ -7,7 +7,7 @@ import Testing
 /// and leave smoothly.
 ///
 /// Two defects lived here. The highlight used to be taken from the **scroll** lead — the panel fed
-/// `currentLineIndex(at: timeMs + scrollLookaheadMs)` into the rows' status — so a line began to
+/// `currentLineIndex(at: timeMs + 120)` into the rows' status — so a line began to
 /// dim, shrink and recede 120 ms before its last word had finished filling: it never reached its
 /// sung state before it started to leave, which is what "it doesn't animate smoothly into the sung
 /// state" was. And the row kept redrawing that frozen frame, inside a changing scale, until a
@@ -145,7 +145,7 @@ struct LyricsEmphasisAnimationTests {
         // moves on. One capture per window is enough here: nothing on this row moves while it is the
         // line being sung, and all this stretch has to establish is the width it holds.
         var time = playFromMs + 100
-        while time < flipTimeMs {
+        while time < flipTimeMs - 100 {
             driver.currentTimeMs = time
             self.pump(0.1)
             if let frame = Self.capture(hosting, at: time) {
@@ -153,6 +153,14 @@ struct LyricsEmphasisAnimationTests {
             }
             time += 100
         }
+
+        // The last sample before the baton, ten milliseconds out: the baton passes when the line
+        // below starts being sung, so this is the frame the departing line has to have finished on.
+        // Without it the frame before the change would be a whole poll (100 ms) early, and would ask
+        // the row how far it had filled in a window that is not the one it left in.
+        driver.currentTimeMs = flipTimeMs - 10
+        self.pump(0.1)
+        frames += self.record(hosting, at: flipTimeMs - 10, for: 0.05)
 
         // The change itself, and the departure it starts.
         driver.currentTimeMs = flipTimeMs
@@ -231,8 +239,8 @@ struct LyricsEmphasisAnimationTests {
     /// The wide line's word timings: a one-letter first word, and a last word that fills only in the
     /// line's last 180 ms (its ramp ends 40 ms before the line does, from the release tail). A last
     /// word that fills that late is what makes "was this line still being sung when it left?" a
-    /// question the pixels can answer: the highlight leaves at 10000 ms, and it used to leave at
-    /// 9880 ms, where this word is still 65% swept.
+    /// question the pixels can answer: the baton passes at the next line's first word, 10000 ms, and
+    /// it used to pass on the scroll lead 120 ms before that, where this word is still 65% swept.
     private static let wideLineWords = [
         TimedWord(timeInMs: 8000, word: "W"),
         TimedWord(timeInMs: 9850, word: " WWWWWWWWWWWWWWW"),
@@ -274,10 +282,11 @@ struct LyricsEmphasisAnimationTests {
             return
         }
 
-        // The last word of this line fills until 9960 ms and the highlight leaves at 10000 ms, so on
-        // the frame the line starts to leave it has nothing left to fill. Moving the highlight on
-        // 120 ms earlier — which is what the panel did — is a line that starts to dim and shrink with
-        // its last word still 65% swept, which is the bug this pins.
+        // The last word of this line fills until 9960 ms and the baton passes on the next line's
+        // first word (10000 ms less the attack lead), so on the frame the line starts to leave it has
+        // nothing left to fill. Taking the emphasis off on a scroll lead — which is what the sheet
+        // did — is a line that starts to dim and shrink with its last word still sweeping, which is
+        // the bug this pins.
         #expect(
             lastSungFrame.sungReach >= 0.93,
             "the departing line was only \(lastSungFrame.sungReach.formatted(.number.precision(.fractionLength(2)))) sung when it left"
@@ -320,6 +329,11 @@ private struct EmphasisHarness: View {
             lyrics: self.lyrics,
             currentTimeMs: self.driver.currentTimeMs,
             isPlaying: true,
+            // The trace reads the row's own departure out of its pixels, and its sampling floor was
+            // calibrated against the lighter renderer. Which word animation is drawn inside the row
+            // is a separate axis (`RichLyricsRenderTests`, `KaraokeLyricsPerformanceTests`), and the
+            // row leaves at the same rate under both, so this pins the one the trace can sample.
+            animationStyle: .appleMusic,
             onSeek: { _ in }
         )
     }

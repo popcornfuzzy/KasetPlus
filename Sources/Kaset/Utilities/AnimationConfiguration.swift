@@ -30,9 +30,14 @@ enum AppAnimation {
     /// Snappy spring for quick snaps
     static let snappy = Animation.spring(response: 0.25, dampingFraction: 0.8)
 
-    /// A lyric line settling into (or out of) being the line being sung. Crisp
-    /// enough not to fight the fill, soft enough to read as one continuous motion.
-    static let lyricLine = Animation.spring(response: 0.42, dampingFraction: 0.86)
+    /// The baton passing from one lyric line to the next: the row coming in rises to full size and
+    /// brightness as the row leaving goes back to its place as an already-sung line.
+    ///
+    /// Short on purpose. Better Lyrics' own line scale takes `0.166 s`, and the point of the value is
+    /// that the change is *one* moment: with a slower curve the sheet shows two rows part-way through
+    /// the move at once, which on a column read one line at a time reads as mush rather than as a
+    /// hand-off. Still a spring, so a row arrives rather than snapping.
+    static let lyricEmphasis = Animation.spring(response: 0.3, dampingFraction: 0.9)
 
     // MARK: - Stagger Delays
 

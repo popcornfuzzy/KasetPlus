@@ -72,3 +72,4 @@ What becomes easier or more difficult because of this change?
 | [0033](0033-playlist-header-action-row.md) | Playlist/Album Header Action Row (Primary Actions + One Overflow Menu) | Accepted |
 | [0034](0034-shell-owned-window-title.md) | Shell-Owned Window Title (No `navigationTitle` in the Shell) | Accepted |
 | [0035](0035-standard-window-chrome.md) | System-Owned Window Chrome (Opaque Window, Transparent Titlebar) | Accepted |
+| [0036](0036-lyrics-word-animation-styles.md) | Selectable Word-by-Word Lyrics Animations | Accepted |

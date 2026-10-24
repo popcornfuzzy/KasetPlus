@@ -266,9 +266,13 @@ struct SyncedLyricsPauseGapTests {
         #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_028) == 0)
 
         // And it moves onto the pause when the phrase has landed, staying there until the next
-        // line is due.
+        // line's own first word opens — one attack lead before that line's timestamp, which is
+        // when its fill starts moving.
         #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_029) == 1)
-        #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_752) == 1)
+        let nextContent = KaraokeFillModel.contentStartMs(for: filled.lines[2])
+        #expect(nextContent == 105_753 - KaraokeTiming.standard.attackLeadMs)
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: Int(nextContent) - 1) == 1)
+        #expect(KaraokeFillModel.highlightIndex(in: filled, at: Int(nextContent)) == 2)
         #expect(KaraokeFillModel.highlightIndex(in: filled, at: 105_753) == 2)
 
         // The dots agree about when the pause began — they rest through the phrase and start with

@@ -170,6 +170,23 @@ struct KaraokeCrest: Equatable, Sendable, KaraokeFillUnit {
     let fillEndMs: Double
 }
 
+// MARK: - KaraokeLineChange
+
+/// A moment at which the sheet's view of the lyrics changes: one line takes the baton, and the sheet
+/// starts travelling towards it a scroll lead earlier.
+///
+/// The whole line logic is a list of these (`KaraokeFillModel.lineChanges(in:timing:)`), built once
+/// per lyric sheet: which line is being sung, where the sheet is travelling and — from the same
+/// times — when it has to look at the clock next.
+struct KaraokeLineChange: Equatable, Sendable {
+    /// The line that takes the baton.
+    let lineIndex: Int
+    /// When it becomes the line being sung.
+    let batonMs: Double
+    /// When the sheet starts travelling to it.
+    let scrollStartMs: Double
+}
+
 // MARK: - KaraokeFillModel
 
 /// Pure timing model behind the karaoke wipe.
@@ -388,67 +405,162 @@ enum KaraokeFillModel {
         return max(declaredEnd, leadEnd, backgroundEnd)
     }
 
-    /// Index of the line being sung at a playback position.
+    /// Every moment the sheet's state changes, in playback order — the whole of the line logic, built
+    /// once per lyric sheet.
     ///
-    /// This is the line that is *being sung*, not the line the sheet is scrolling towards: a
-    /// line stops being the one being sung when its own content is settled
-    /// (`settleBoundaryMs`) — just after its last word lands, and exactly then for a line whose
-    /// duration the provider never gave. Only at that point does the line that is leaving begin
-    /// to dim, shrink and recede, so a line reaches its sung state before it starts to go.
+    /// The baton passes when a line's own content opens (`contentStartMs`), which is the moment its
+    /// first word starts filling: for a word-timed line that is the attack lead before its timestamp,
+    /// and for a line the provider timed as a whole it is the line's start. So a line is bright for
+    /// exactly the length of time it is being sung — it does not start to dim while its last word is
+    /// still filling, and the line coming in is not bright before anything on it is sung.
     ///
-    /// It is deliberately not computed with `KaraokeTiming.scrollLookaheadMs`. That lead exists
-    /// so the *scroll* has the line in place before its first word is sung; letting it move the
-    /// highlight too meant a line began leaving up to 120 ms before it had finished being sung,
-    /// which is what made the line that had just finished look like it never settled.
+    /// **One line at a time, deliberately.** The line coming in used to take the emphasis a hand-off
+    /// lead early, while the line above kept it until its content settled, so for half a second two
+    /// rows of a single column were both at full size and full brightness. On a sheet read one line at
+    /// a time that is not a hand-off, it is two lines at once: the eye cannot tell which one is being
+    /// sung, and the line leaving starts fading only after the next one has already arrived. The
+    /// scroll is what needs a lead (`KaraokeTiming.scrollLeadMs`), and it is the only thing that has
+    /// one.
     ///
-    /// The declared rule is the cheap one — the last line that has started and has not run past
-    /// its own duration. Only a line whose fill overran that duration keeps the highlight, and
-    /// deciding that costs one comparison against that one line's fill windows. Because the
-    /// declared rule has already stepped past the earlier line, its declared end is behind us,
-    /// so testing against its content end is testing against `settleBoundaryMs`.
+    /// A row with nothing to sing is the one case where the baton is not its own content. The dots —
+    /// and the short `♪` gap that is a pause too short to draw them — are silence, and silence is not
+    /// the line being sung: the baton waits for the whole of the row above, **lead and backing
+    /// alike**. A backing vocal is what makes that matter. Apple Music writes a phrase whose onsets
+    /// lie *after* its own paragraph's end — the `(High, the way that you're stuck in my head)` under
+    /// an `I'm sick, I'm sick` paragraph that has already run out — so the phrase is still sweeping
+    /// through the interlude the sheet inserted after that paragraph, and the dots sat under a line
+    /// that was plainly still being sung.
     ///
-    /// A row with nothing to sing never takes the highlight off a row that is still sounding.
-    /// The dots — and the short `♪` gap that is a pause too short to draw them — are silence,
-    /// and silence is not the line being sung: the highlight waits for the whole of the row
-    /// above, **lead and backing alike**. A backing vocal is what makes that matter. Apple Music
-    /// writes a phrase whose onsets lie *after* its own paragraph's end — the `(High, the way
-    /// that you're stuck in my head)` under an `I'm sick, I'm sick` paragraph that has already
-    /// run out — so the phrase is still sweeping through the interlude the sheet inserted after
-    /// that paragraph, and the dots sat under a line that was plainly still being sung. A row
-    /// that *is* being sung keeps the old rule: there the lead decides, because the line being
-    /// sung has changed and the next line's lead has already arrived.
+    /// Batons never move backwards: a line cannot take the baton before the line above it did, which
+    /// is what keeps the answer for any position — the *last* change that has happened — well
+    /// defined even when a provider overlaps two lines.
+    static func lineChanges(in lyrics: SyncedLyrics, timing: KaraokeTiming = .standard) -> [KaraokeLineChange] {
+        var changes: [KaraokeLineChange] = []
+        changes.reserveCapacity(lyrics.lines.count)
+        var lastBaton = -Double.infinity
+
+        for (index, line) in lyrics.lines.enumerated() {
+            let isSilent = SyncedLyrics.isSilent(line)
+            var baton = self.contentStartMs(for: line, timing: timing)
+            if isSilent, index > 0 {
+                baton = max(baton, self.settleBoundaryMs(for: lyrics.lines[index - 1], timing: timing))
+            }
+            baton = max(baton, lastBaton)
+            lastBaton = baton
+
+            changes.append(
+                KaraokeLineChange(
+                    lineIndex: index,
+                    batonMs: baton,
+                    scrollStartMs: isSilent ? baton : baton - timing.scrollLeadMs
+                )
+            )
+        }
+        return changes
+    }
+
+    /// The line being sung at a playback position: the last change whose baton has passed. `nil`
+    /// before the first line begins, and for a sheet with nothing in it.
+    static func highlightIndex(in changes: [KaraokeLineChange], at timeMs: Double) -> Int? {
+        changes.last { $0.batonMs <= timeMs }?.lineIndex
+    }
+
+    /// As `highlightIndex(in:changes:)`, for a caller holding the sheet rather than its changes.
+    ///
+    /// Builds the changes to answer, which is the expensive way round — the sheets build them once
+    /// and search those — so this is for tests and one-off asks.
     static func highlightIndex(
         in lyrics: SyncedLyrics,
         at timeMs: Int,
         timing: KaraokeTiming = .standard
     ) -> Int? {
-        guard let declared = lyrics.currentLineIndex(at: timeMs) else { return nil }
-        guard declared > 0 else { return declared }
-
-        let earlier = lyrics.lines[declared - 1]
-
-        if SyncedLyrics.isSilent(lyrics.lines[declared]) {
-            let soundingEnd = self.settleBoundaryMs(for: earlier, timing: timing)
-            return Double(timeMs) < soundingEnd ? declared - 1 : declared
-        }
-
-        let contentEnd = self.words(for: earlier, timing: timing).map(\.fillEndMs).max() ?? 0
-        return Double(timeMs) < contentEnd ? declared - 1 : declared
+        self.highlightIndex(in: self.lineChanges(in: lyrics, timing: timing), at: Double(timeMs))
     }
 
-    /// When the line *after* the one being sung takes the display clock: just before its own
-    /// first ramp opens.
+    /// The line the sheet is travelling to, at a playback position.
     ///
-    /// Derived from the line's own words, lead and backing alike, because either can be what
-    /// starts the row: a backing vocal that comes in before the lead still has to arrive on a
-    /// row already running the clock.
+    /// The last change whose travel has started: the line being sung, or the line after it once its
+    /// first word is a scroll lead away. Before anything has been travelled to, it is the first line,
+    /// so a sheet that has just opened is already heading somewhere.
+    static func scrollIndex(in changes: [KaraokeLineChange], at timeMs: Double) -> Int? {
+        guard let first = changes.first else { return nil }
+        return (changes.last { $0.scrollStartMs <= timeMs } ?? first).lineIndex
+    }
+
+    /// As `scrollIndex(in:changes:)`, for a caller holding the sheet rather than its changes.
+    static func scrollIndex(
+        in lyrics: SyncedLyrics,
+        at timeMs: Int,
+        timing: KaraokeTiming = .standard
+    ) -> Int? {
+        self.scrollIndex(in: self.lineChanges(in: lyrics, timing: timing), at: Double(timeMs))
+    }
+
+    /// The next moment the sheet's state changes, after a playback position: the next travel or the
+    /// next baton, whichever comes first.
+    ///
+    /// This is what lets a change land on time instead of on the next playback sample. The lyrics
+    /// poll reports at 10 Hz, and a line change is a moment inside one of those windows: read from
+    /// the samples alone, a fast line's first word is already part-filled when its row becomes the
+    /// current one. `nil` when nothing is left to happen.
+    static func nextChangeMs(in changes: [KaraokeLineChange], after timeMs: Double) -> Double? {
+        var next: Double?
+        for change in changes {
+            for moment in [change.scrollStartMs, change.batonMs] where moment > timeMs {
+                next = min(next ?? moment, moment)
+            }
+        }
+        return next
+    }
+
+    /// When a line begins: its own first content, lead or backing, at the position its fill opens
+    /// — or its timestamp for a row with nothing to sing.
+    ///
+    /// Derived from the line's words rather than from its timestamp because either can be what
+    /// starts the row: a backing vocal that comes in before the lead still has to be the moment the
+    /// line begins, and a line whose first word is sung early begins early too. A row with nothing
+    /// to sing has no content to open on, so its own timestamp is when it starts.
+    static func contentStartMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
+        SyncedLyrics.isSilent(line)
+            ? Double(line.timeInMs)
+            : self.firstRampMs(for: line, timing: timing)
+    }
+
+    /// When the first thing on a line would fill, or — for a row with nothing to sing — when a word
+    /// at its timestamp would have: the row takes the display clock before that.
+    ///
+    /// Read off the first timed onset rather than by deriving the line's words: every word's fill
+    /// opens the same attack lead before its own onset, so the earliest ramp is the earliest onset,
+    /// and deriving the words to ask would build a whole line of them per line for one number. The
+    /// sheet builds one of these for every line every time it renders (`lineChanges`).
+    private static func firstRampMs(for line: SyncedLyricLine, timing: KaraokeTiming) -> Double {
+        let onsets = [line.words, line.backgroundWords].compactMap { words -> Int? in
+            words?.first { !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?.timeInMs
+        }
+        guard let onset = onsets.min() else { return Double(line.timeInMs) - timing.attackLeadMs }
+        return Double(onset) - timing.attackLeadMs
+    }
+
+    /// When a row takes the display clock: just before its own first content opens.
     static func armBoundaryMs(for line: SyncedLyricLine, timing: KaraokeTiming = .standard) -> Double {
-        var firstRamps: [Double] = []
-        if let first = self.words(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
-        if let first = self.backgroundWords(for: line, timing: timing).first { firstRamps.append(first.fillStartMs) }
-        let firstRamp = firstRamps.min()
-            ?? (Double(line.timeInMs) - timing.attackLeadMs)
-        return firstRamp - timing.armLeadMs
+        self.firstRampMs(for: line, timing: timing) - timing.armLeadMs
+    }
+
+    /// The visual state of a lyric row.
+    ///
+    /// Exactly one row is current: the line `highlightIndex` names. Every other row is on one side
+    /// of it — dim, small and receded if it has been sung, just as it was when it was upcoming.
+    /// Nothing here knows about the scroll (`scrollIndex`), which is why the sheet can be moving
+    /// towards a line that is still drawn as upcoming: the row is in place before it is sung, and
+    /// the moment it is sung the baton passes onto a row that is already where it belongs.
+    static func status(
+        forLineAt index: Int,
+        highlightIndex: Int?
+    ) -> SyncedLyrics.LineStatus {
+        guard let highlightIndex else { return .upcoming }
+        if index < highlightIndex { return .previous }
+        if index == highlightIndex { return .current }
+        return .upcoming
     }
 
     /// Whether a lyric row should run on the display clock.

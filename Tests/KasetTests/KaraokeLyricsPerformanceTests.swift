@@ -37,6 +37,10 @@ struct KaraokeLyricsPerformanceTests {
         var startMs: Double = 1000
         /// How often this row redraws in the app.
         let framesPerSecond: Double
+        /// Which word animation the row is drawn with.
+        var style: LyricsAnimationStyle = .appleMusic
+        /// Whether the row is the other singer's, drawn against the trailing edge.
+        var isTrailingAligned: Bool = false
     }
 
     /// The decoration strength the lyrics panel and the sidebar's sheets carry.
@@ -59,18 +63,46 @@ struct KaraokeLyricsPerformanceTests {
             text: "Sing word1 word2 word3 word4 word5 word6 word7",
             words: nil
         )
+        // A duet line as Apple's word-synced TTML writes one: timed per syllable, so it carries
+        // many more units than a line timed per word, and the row against the trailing edge.
+        let duetTimings = (0 ..< 24).map { index in
+            TimedWord(timeInMs: index * 140, word: index == 0 ? "I" : " la")
+        }
+        let duetLine = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 3600,
+            text: "I la la la la la la la la la la la la la la la la la la la la la la la",
+            words: duetTimings,
+            isOppositeTurn: true
+        )
+        let duetTimed = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 3600,
+            text: wordTimed.text,
+            words: timings,
+            isOppositeTurn: true
+        )
+
         let live = 1 / KaraokeFrameBudget.live
         let armed = 1 / KaraokeFrameBudget.armed
 
         let scenarios = [
             Scenario(name: "panel, current line, word-by-word   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live),
+            Scenario(name: "panel, current line, better lyrics   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics),
             Scenario(name: "panel, current line, line-by-line    ", line: lineSynced, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live),
             Scenario(name: "fullscreen, current line, word-by-word", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live),
+            Scenario(name: "fullscreen, current line, better lyrics", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics),
+            Scenario(name: "panel, current line, duet (sung)        ", line: duetTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
+            Scenario(name: "panel, current line, duet syllables     ", line: duetLine, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
+            Scenario(name: "fullscreen, duet (sung)             ", line: duetTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
+            Scenario(name: "fullscreen, duet syllables          ", line: duetLine, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
             Scenario(name: "fullscreen, current line, line-by-line ", line: lineSynced, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live),
             // The line after the current one also redraws, on the same clock, so it is part
             // of the bill. Nothing on it moves until it becomes the current line.
             Scenario(name: "panel, next line (armed, untouched)  ", line: wordTimed, fontSize: 16, width: 248, spanMs: 0, emphasis: Self.panelEmphasis, startMs: -800, framesPerSecond: armed),
+            Scenario(name: "panel, next line (armed, better lyrics)", line: wordTimed, fontSize: 16, width: 248, spanMs: 0, emphasis: Self.panelEmphasis, startMs: -800, framesPerSecond: armed, style: .betterLyrics),
             Scenario(name: "fullscreen, next line (armed)        ", line: wordTimed, fontSize: 36, width: 600, spanMs: 0, startMs: -800, framesPerSecond: armed),
+            Scenario(name: "fullscreen, next line (armed, better lyrics)", line: wordTimed, fontSize: 36, width: 600, spanMs: 0, startMs: -800, framesPerSecond: armed, style: .betterLyrics),
         ]
 
         var report: [String] = []
@@ -113,6 +145,25 @@ struct KaraokeLyricsPerformanceTests {
             "attribution — panel word-by-word, lift drawn (emphasis 1): \(Self.format(self.liveFrames(wordScenario, emphasis: 1))) ms/frame"
         )
 
+        // What a syllable-dense line is paying for. A duet is written per syllable, so it carries
+        // three times the units of a word-timed line; these split that extra cost into the units
+        // themselves (drawn in the plain sweep style), the Better Lyrics decorations (drawn with the
+        // decorations off), and the bloom alone — which is what showed that the per-letter wave, not
+        // the halo, was the decoration a syllable-timed line was paying for.
+        if let duetScenario = scenarios.first(where: { $0.name.contains("duet syllables") }) {
+            report.append(
+                "attribution — duet syllables, decorations off: \(Self.format(self.liveFrames(duetScenario, emphasis: 0))) ms/frame"
+            )
+            report.append(
+                "attribution — duet syllables, plain sweep: \(Self.format(self.liveFrames(duetScenario, style: .appleMusic))) ms/frame"
+            )
+            var noGlow = RichLyricsTiming.standard
+            noGlow.glowOpacity = 0
+            report.append(
+                "attribution — duet syllables, no bloom: \(Self.format(self.liveFrames(duetScenario, timing: noGlow))) ms/frame"
+            )
+        }
+
         // The pause row's dots. What is being drawn when the highlight is on a pause row is three
         // dots and a bounce; what was being *computed* was the question of when the silence began,
         // which is measured from the line above the row (`KaraokeFillModel.settleBoundaryMs`) — asked
@@ -146,20 +197,74 @@ struct KaraokeLyricsPerformanceTests {
         }
     }
 
+    /// What the sheet pays to know when its lines change.
+    ///
+    /// The schedule is built when the sheet is constructed — once per re-render of the sheet, which
+    /// happens on every playback sample — and only searched while playback runs. Building it is only
+    /// the right shape if a build is far cheaper than a frame, so it is measured against one.
+    @Test("The line schedule costs far less than a frame")
+    func lineScheduleCost() throws {
+        // A duet sheet as Apple Music writes it: 60 paragraphs, each timed per syllable, alternating
+        // singers.
+        let lines = (0 ..< 60).map { index -> SyncedLyricLine in
+            let start = index * 2_000
+            let words = (0 ..< 24).map { unit in
+                TimedWord(timeInMs: start + unit * 70, word: unit == 0 ? "I" : " la")
+            }
+            return SyncedLyricLine(
+                timeInMs: start,
+                duration: 1_800,
+                text: Array(repeating: "la", count: 23).joined(separator: " ") + " la",
+                words: words,
+                isOppositeTurn: index % 2 == 1
+            )
+        }
+        let lyrics = SyncedLyrics(lines: lines, source: "KaraokePerf")
+
+        for _ in 0 ..< 3 { _ = KaraokeFillModel.lineChanges(in: lyrics) }
+        let runs = 20
+        var changes: [KaraokeLineChange] = []
+        let started = DispatchTime.now()
+        for _ in 0 ..< runs { changes = KaraokeFillModel.lineChanges(in: lyrics) }
+        let perBuildMs = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000 / Double(runs)
+
+        // Searching it, which is what every playback sample and every wake-up does.
+        let searchStarted = DispatchTime.now()
+        for step in 0 ..< 600 {
+            let position = Double(step) * 200
+            _ = KaraokeFillModel.highlightIndex(in: changes, at: position)
+            _ = KaraokeFillModel.scrollIndex(in: changes, at: position)
+            _ = KaraokeFillModel.nextChangeMs(in: changes, after: position)
+        }
+        let perSearchUs = Double(DispatchTime.now().uptimeNanoseconds - searchStarted.uptimeNanoseconds) / 1_000 / 1_800
+
+        let report = "line schedule: \(Self.format(perBuildMs, places: 3)) ms per build of \(changes.count) lines, \(Self.format(perSearchUs, places: 2)) µs per search"
+        if ProcessInfo.processInfo.environment["KARAOKE_PERF_REPORT"] == "1" {
+            Issue.record(Comment(rawValue: report))
+        }
+        // Building it runs once per re-render of the sheet, so the budget is a fraction of a frame;
+        // searching it runs on every playback sample and every wake-up.
+        #expect(perBuildMs < 2, Comment(rawValue: report))
+        #expect(perSearchUs < 60, Comment(rawValue: report))
+    }
+
     /// The cost of one display frame of the wipe, at one playback position after another.
     /// The layout is built once, the way the row builds it from its cache.
     private func liveFrames(
         _ scenario: Scenario,
         rebuildLayout: Bool = false,
-        emphasis: Double? = nil
+        emphasis: Double? = nil,
+        style: LyricsAnimationStyle? = nil,
+        timing: RichLyricsTiming = .standard
     ) -> Double {
         let frames = 60
         let emphasis = emphasis ?? scenario.emphasis
+        let style = style ?? scenario.style
         let layout = KaraokeLineLayout(line: scenario.line, fontSize: scenario.fontSize)
 
         // Warm up so first-frame setup (font caches, layout) is not measured.
         for index in 0 ..< 5 {
-            self.render(scenario, layout: layout, at: scenario.startMs + Double(index) * 16, emphasis: emphasis)
+            self.render(scenario, layout: layout, at: scenario.startMs + Double(index) * 16, emphasis: emphasis, style: style, timing: timing)
         }
 
         let started = DispatchTime.now()
@@ -168,7 +273,7 @@ struct KaraokeLyricsPerformanceTests {
             let frameLayout = rebuildLayout
                 ? KaraokeLineLayout(line: scenario.line, fontSize: scenario.fontSize)
                 : layout
-            self.render(scenario, layout: frameLayout, at: ms, emphasis: emphasis)
+            self.render(scenario, layout: frameLayout, at: ms, emphasis: emphasis, style: style, timing: timing)
         }
         let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
         return elapsedMs / Double(frames)
@@ -178,12 +283,17 @@ struct KaraokeLyricsPerformanceTests {
         _ scenario: Scenario,
         layout: KaraokeLineLayout,
         at displayTimeMs: Double,
-        emphasis: Double
+        emphasis: Double,
+        style: LyricsAnimationStyle,
+        timing: RichLyricsTiming = .standard
     ) {
         let view = KaraokeLyricsLineView(
             layout: layout,
             displayTimeMs: displayTimeMs,
-            emphasis: emphasis
+            emphasis: emphasis,
+            style: style,
+            richTiming: timing,
+            isTrailingAligned: scenario.isTrailingAligned
         )
         .frame(width: scenario.width, height: scenario.fontSize * 4, alignment: .topLeading)
 

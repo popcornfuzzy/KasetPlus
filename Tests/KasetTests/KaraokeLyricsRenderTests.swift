@@ -1135,6 +1135,211 @@ struct KaraokeLyricsRenderTests {
         return nil
     }
 
+    // MARK: - Better Lyrics style
+
+    /// Renders the first word of a line on its own in the Better Lyrics style, the way `renderWord`
+    /// does for the classic one.
+    private static func renderRichWord(
+        line: SyncedLyricLine,
+        at displayTimeMs: Double,
+        fontSize: CGFloat,
+        emphasis: Double = 1,
+        isRightToLeft: Bool = false,
+        dimOpacity: Double = 0.32,
+        width: CGFloat = 800,
+        timing: RichLyricsTiming = .standard
+    ) throws -> RenderedImage {
+        let layout = KaraokeLineLayout(line: line, fontSize: fontSize)
+        let view = RichLyricsWordView(
+            word: layout.words[0],
+            characters: try #require(layout.characters.first),
+            characterWidths: try #require(layout.characterWidths.first),
+            isRightToLeft: isRightToLeft,
+            displayTimeMs: displayTimeMs,
+            color: .black,
+            dimOpacity: dimOpacity,
+            fontSize: fontSize,
+            emphasis: emphasis,
+            waves: try #require(layout.letterWaves.first),
+            timing: timing
+        )
+        .font(.system(size: fontSize, weight: .bold))
+        .frame(width: width, height: 220, alignment: .topLeading)
+        // Room above the word for a letter to crest into, so a test sees a lifted glyph rather than
+        // a clipped one.
+        .padding(.top, 40)
+
+        return try Self.draw(view)
+    }
+
+    /// One word sung over a second, which is long enough for a letter's whole float to fit inside it.
+    private static func richWordLine(_ text: String) -> SyncedLyricLine {
+        SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1000,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+    }
+
+    @Test("A Better Lyrics letter crests above the word around it")
+    func richLetterWaveLifts() throws {
+        let line = Self.richWordLine("mmmm")
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let word = layout.words[0]
+        let characters = try #require(layout.characters.first)
+        #expect(characters.count == 4)
+
+        let index = 2
+        let waves = RichLyricsAnimation.letterWaves(for: word, letterCount: characters.count)
+        let crest = waves[index].startMs
+            + waves[index].durationMs * RichLyricsTiming.standard.letterWaveCrestOffset
+        let crestTime = word.fillStartMs + crest
+
+        // The same frame with the decorations off is the word at rest: same text, same fill, nothing
+        // floating — which is what the wave has to be measured against.
+        let waving = try Self.renderRichWord(line: line, at: crestTime, fontSize: 40)
+        let resting = try Self.renderRichWord(line: line, at: crestTime, fontSize: 40, emphasis: 0)
+
+        let columns = Self.cell(index, of: layout)
+        let wavingTop = try #require(Self.topInkRow(of: waving, columns: columns))
+        let restingTop = try #require(Self.topInkRow(of: resting, columns: columns))
+        #expect(
+            restingTop - wavingTop >= 1,
+            "the cresting letter's top ink was at row \(wavingTop) against \(restingTop) at rest"
+        )
+    }
+
+    @Test("A Better Lyrics word pops wider as it is sung")
+    func richWordPops() throws {
+        let line = Self.richWordLine("Sing")
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let word = layout.words[0]
+        let peak = word.fillStartMs + RichLyricsTiming.standard.wobbleDurationMs * RichLyricsTiming.standard.wobblePeakOffset
+
+        let atRest = try Self.renderRichWord(line: line, at: word.fillStartMs - 1, fontSize: 40)
+        let atPeak = try Self.renderRichWord(line: line, at: peak, fontSize: 40)
+
+        let restInk = try #require(Self.inkColumnRange(of: atRest))
+        let peakInk = try #require(Self.inkColumnRange(of: atPeak))
+        #expect(
+            peakInk.count > restInk.count,
+            "the popped word was \(peakInk.count) px wide against \(restInk.count) px at rest"
+        )
+    }
+
+    @Test("A Better Lyrics word draws its letters where the word's own text does")
+    func richLettersSitWhereTheWordDoes() throws {
+        let line = Self.richWordLine("Vava")
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let time = layout.words[0].fillEndMs
+
+        let rich = try Self.renderRichWord(line: line, at: time, fontSize: 40)
+        let classic = try Self.renderWord(line: line, at: time, fontSize: 40)
+        let richInk = try #require(Self.inkColumnRange(of: rich))
+        let classicInk = try #require(Self.inkColumnRange(of: classic))
+
+        #expect(
+            abs(richInk.count - classicInk.count) <= 2,
+            "the per-letter word spanned \(richInk.count) px against the text layer's \(classicInk.count)"
+        )
+        #expect(abs(richInk.lowerBound - classicInk.lowerBound) <= 2, "the word started at a different column")
+    }
+
+    @Test("A right-to-left Better Lyrics word fills from its trailing edge")
+    func richRightToLeftFillsFromItsTrailingEdge() throws {
+        let text = "אבג"
+        let line = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 1000,
+            text: text,
+            words: [TimedWord(timeInMs: 0, word: text)]
+        )
+
+        func halves(_ image: RenderedImage) -> (leading: Int, trailing: Int) {
+            let columns = Self.columnAlphas(of: image)
+            let ink = columns.indices.filter { columns[$0] > 20 }
+            guard let first = ink.first, let last = ink.last, last > first else { return (0, 0) }
+            let middle = (first + last) / 2
+            func mean(_ range: ClosedRange<Int>) -> Int {
+                let values = range.map { Int(columns[$0]) }
+                return values.reduce(0, +) / max(1, values.count)
+            }
+            return (mean(first ... middle), mean((middle + 1) ... last))
+        }
+
+        // Half way through the word: the half the word is read from is the half that has been sung.
+        let rightToLeft = halves(try Self.renderRichWord(line: line, at: 500, fontSize: 60, isRightToLeft: true))
+        let leftToRight = halves(try Self.renderRichWord(line: line, at: 500, fontSize: 60, isRightToLeft: false))
+
+        #expect(rightToLeft.trailing > rightToLeft.leading + 40, "a right-to-left word filled towards its leading edge")
+        #expect(leftToRight.leading > leftToRight.trailing + 40, "a left-to-right word filled towards its trailing edge")
+    }
+
+    @Test("Word Slide moves the word sideways, and the default does not")
+    func wordSlideMovesTheWord() throws {
+        let line = Self.richWordLine("Sing")
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let word = layout.words[0]
+        let peak = word.fillStartMs
+            + RichLyricsTiming.standard.wobbleDurationMs * RichLyricsTiming.standard.wobblePeakOffset
+
+        let plain = try Self.renderRichWord(line: line, at: peak, fontSize: 40)
+        let sliding = try Self.renderRichWord(line: line, at: peak, fontSize: 40, timing: .withWordSlide)
+
+        let plainInk = try #require(Self.inkColumnRange(of: plain))
+        let slidingInk = try #require(Self.inkColumnRange(of: sliding))
+        #expect(
+            slidingInk.upperBound > plainInk.upperBound + 1,
+            "the sliding word ended at \(slidingInk.upperBound) against \(plainInk.upperBound) without the slide"
+        )
+
+        // A slide is the ink *travelling*, and a travelled word moves as a whole: its trailing edge
+        // ends further out while its leading edge sits where it was. The default pop instead widens
+        // the word about its own centre, which moves neither edge by more than the pixel a centred
+        // 2.5% scale costs — so "off" is a word that grows in place, never one that drifts.
+        let restInk = try #require(Self.inkColumnRange(of: try Self.renderRichWord(
+            line: line,
+            at: word.fillStartMs - 1,
+            fontSize: 40
+        )))
+        #expect(
+            abs(plainInk.lowerBound - restInk.lowerBound) <= 1 && abs(plainInk.upperBound - restInk.upperBound) <= 1,
+            "the default pop moved the word from \(restInk) to \(plainInk)"
+        )
+        #expect(
+            slidingInk.upperBound > plainInk.upperBound + 1,
+            "the slide left the word ending at \(slidingInk.upperBound) against \(plainInk.upperBound)"
+        )
+    }
+
+    @Test("The Better Lyrics highlight is a crisper edge than the classic wipe")
+    func richEdgeIsCrisper() throws {
+        let line = Self.richWordLine("Sing")
+        let layout = KaraokeLineLayout(line: line, fontSize: 40)
+        let word = layout.words[0]
+        let timing = RichLyricsTiming.standard
+        // The moment the highlight's lit edge is halfway across the word.
+        let progress = (0.5 - timing.swipeLitFrom) / (timing.swipeLitTo - timing.swipeLitFrom)
+        let swipe = RichLyricsAnimation.swipe(for: word, timing: timing)
+        let time = swipe.startMs + swipe.durationMs * progress
+
+        /// Columns that are neither the dim base nor the fully sung text: the width of the edge.
+        func transitionColumns(_ image: RenderedImage) -> Int {
+            Self.columnAlphas(of: image).count { $0 > 110 && $0 < 220 }
+        }
+
+        let rich = try Self.renderRichWord(line: line, at: time, fontSize: 40)
+        let classic = try Self.renderWord(line: line, at: time, fontSize: 40)
+        let richWidth = transitionColumns(rich)
+        let classicWidth = transitionColumns(classic)
+
+        #expect(
+            richWidth < classicWidth,
+            "the Better Lyrics edge spanned \(richWidth) columns against the classic wipe's \(classicWidth)"
+        )
+    }
+
     private struct RenderedImage {
         let width: Int
         let height: Int
@@ -1147,13 +1352,15 @@ struct KaraokeLyricsRenderTests {
         fontSize: CGFloat,
         width: CGFloat,
         height: CGFloat,
-        emphasis: Double = 1
+        emphasis: Double = 1,
+        style: LyricsAnimationStyle = .appleMusic
     ) throws -> RenderedImage {
         let view = KaraokeLyricsLineView(
             layout: KaraokeLineLayout(line: line, fontSize: fontSize),
             displayTimeMs: displayTimeMs,
             color: .black,
-            emphasis: emphasis
+            emphasis: emphasis,
+            style: style
         )
         .frame(width: width, height: height, alignment: .topLeading)
 

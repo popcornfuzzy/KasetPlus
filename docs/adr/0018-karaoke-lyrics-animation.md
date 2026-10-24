@@ -235,7 +235,7 @@ Running the next line live is what makes a line change continuous: by the time a
 current one its fill and swell have already been running since their own start, so it can never first
 be seen part-way through its first word (which is what made the first word appear to jump to full
 swell the moment the line changed). The line-level emphasis — opacity, scale, drift, and the fullscreen
-recede blur — still animates across the change on `AppAnimation.lyricLine`.
+recede blur — still animates across the change on `AppAnimation.lyricEmphasis`.
 
 ### When the highlight moves
 
@@ -250,14 +250,15 @@ exactly how the bug was reported.
 started whose content has not settled. That is the cheap declared rule — the last line that has started
 and has not run past its own duration — plus one guard, for a line whose last word is still filling past
 its declared end. The guard costs one comparison against one line's fill windows, not a derivation over
-the sheet. `scrollLookaheadMs` now leads the *scroll* only: the sheet is put in place before the line's
-first word, and the highlight arrives when the line it is on is sung.
+the sheet. The lead that used to be shared with the scroll is spent the other way round now — on the line
+*arriving*, not on the line leaving (see the last amendment).
 
-The two are deliberately different instants, and the difference is a few tens of milliseconds either way:
-the incoming line's first word starts filling `attackLeadMs` before the outgoing line's declared end, so a
-highlight that moved only when the outgoing content settled would brighten the incoming line just after
-its fill had started. Erring that way is a line that is briefly dim while the first of it is being sung;
-erring the other way — how it was — is the line that is leaving, which is the one the eye is following.
+That left one case wrong, and it is the one a fast song shows: the hand-off was still a single instant,
+and it was the *release* of the line above. On a line whose first word comes a moment after the last word
+of the one before it, that instant is the moment the first word is already filling — so the new line was
+sung by a row that was still dim, small, blurred and out of position, and all of it moved while the words
+filled. The baton now passes on the next line's **own first content** instead, and the scroll is what
+leads (see the last amendment).
 
 ### A line that leaves
 
@@ -444,12 +445,10 @@ finished until its content lands (which a held backing word can put a few second
 
 ### Line transitions, emphasis and Reduce Motion
 
-Line emphasis moves from `.easeInOut(0.4)` to `AppAnimation.lyricLine`, a crisp spring, with a small
+Line emphasis moves from `.easeInOut(0.4)` to a crisp spring (`AppAnimation.lyricEmphasis`), with a small
 status-keyed drift so a line settles as it becomes current; fullscreen also blurs the lines around the
-one being sung. The emphasis changes when the line being sung changes — that is, when the previous
-line's content is settled — while the *scroll* follows playback 120 ms ahead of a line's own start, so
-the line is in place when its first word is sung. The two leads are deliberately different; using the
-scroll's for the emphasis is what put the departure ahead of the singing.
+one being sung. The emphasis leaves when the line below takes the baton, and the *scroll* has already
+arrived by then — see the last amendment for why that is two different times.
 
 Reduce Motion (via the SwiftUI `accessibilityReduceMotion` environment, the reactive counterpart of
 the `NSWorkspace` check used elsewhere) keeps the fill — it is the information — and drops the
@@ -561,6 +560,81 @@ faster than the eye reads as motion and the amplitude varied crest to crest — 
 flicker. `KaraokeLyricsRenderTests.theLiftIsSlowEnoughToRead` holds both halves of this by measuring the
 real view's drawn lift at display rate, the crest rule and the wave it replaced side by side.
 
+## Amendment: a line arrives before it is sung, and a syllable-timed line stops redrawing itself
+
+**Arrival.** Better Lyrics scrolls a line into place while it is still half a second away
+(`--blyrics-scroll-timing-offset`, `--blyrics-lyric-ending-threshold`, both `0.5 s`), which is why a fast
+line there is never sung by a row that is still on its way. That much of it is right — but the lead
+belongs to the *scroll*, not to the emphasis (`KaraokeTiming.scrollLeadMs`). An earlier pass of this work
+spent it on both, so two rows of the column were bright at once for 500 ms and the line that had just
+been sung only started to fade after the next one had already arrived; the sheet read as mush. The
+emphasis now has no lead at all: it passes on the line's own first content (see the amendment below),
+and the row it lands on is already in place because the scroll has been travelling for it since a
+`scrollLeadMs` earlier.
+
+**What a syllable-timed line pays for.** A duet is written per syllable, so it carries about three times
+the units of a word-timed line, and the harness (`KaraokeLyricsPerformanceTests`) priced the difference at
+5.5 ms/frame against 3.2 ms for the same words with the Better Lyrics style: ~3.5 ms of it is the units
+themselves (the same line in the plain sweep style), ~1.8 ms the wave, and ~0.2 ms the bloom. Two changes
+came out of that measurement, both of them things no display can show:
+
+- **Letters a quarter point apart share one layer.** A syllable's letters are their own layers because
+their floats differ — but a unit sung in 140 ms keeps floating for 900 ms, so most of a syllable-timed
+line is per-letter for most of its time on screen. Two letters within `visibleLiftPoints` (the same
+quarter point the Apple Music style uses to decide its crest is too small to cut out) are drawn as one
+text layer at the mean of their floats (`RichLyricsAnimation.sharedFloat`). The error is an eighth of a
+point.
+- **A word that has finished everything it does is handed one position.** Once a word's swipe, pop, bloom
+and floats are all over, every frame after that draws the same picture, so `renderTimeMs` passes that
+constant instead of the clock (`RichLyricsAnimation.settledTimeMs`). A word that has not been reached is
+deliberately still drawn from the clock: freezing it measured *dearer*, because the bookkeeping of a
+per-word constant costs more than the one dim layer it saves.
+
+Together the duet frame is ~4.9 ms against 5.5 ms before, and an ordinary word-timed line ~2.7 ms against
+3.2 ms. What is left is the unit count: a syllable-timed line is three times the text layers, and the
+harness says so.
+
+## Amendment: one line at a time, decided on its own moment
+
+The amendment above left the sheet with two ways of asking "which line is this?" — a highlight index that
+stepped when the line above was settled, and a scroll index running a lead ahead of it — and both were
+derived by walking the words of two lines *per playback sample*. Two indices meant two answers, and two
+answers meant the sheet could show two current rows, which is exactly what it did: the arriving row took
+the emphasis a lead early while the departing row kept it. Both are gone.
+
+**One schedule holds the line logic.** `KaraokeFillModel.lineChanges(in:timing:)` builds the whole of it
+once per lyric sheet: for each line, when it takes the baton and when the sheet starts travelling to it.
+Everything afterwards is a search over that list — the last change whose baton has passed is the line being
+sung, the last whose travel has started is where the sheet is going — so a playback sample derives nothing
+at all. The builder reads each line's earliest timed onset rather than its words (every word's fill opens
+the same attack lead before its own onset), which is what keeps a build of a sixty-line duet sheet at a
+tenth of a frame (`KaraokeLyricsPerformanceTests`); deriving the words to ask the same question cost eight
+times that.
+
+**The baton is a moment, so the sheet wakes at it.** The lyrics poll reports at 10 Hz and a line begins
+*between* two samples — on a fast line that is the first word already part-filled on a row that has not
+been made current yet, which is the complaint this started from. `KaraokeChangeWakeUp` sleeps until the
+next moment in the schedule (a travel or a baton, whichever comes first), applies it there, and arms the
+next one. One wake-up exists at a time, it is replaced rather than added to, and it always recomputes the
+state from the clock — so a seek, a pause or a fresh sample that re-arms it can leave nothing behind, and
+one that does outlive its reason can only apply the state the sheet is already in.
+
+**The emphasis is one moment too.** `AppAnimation.lyricEmphasis` is a 0.3 s spring where the old value was
+0.42 s. Better Lyrics' own line scale takes 0.166 s, and a slow curve is what makes two rows look half-way
+between states at the same time. The departure is otherwise unchanged: the row keeps its identity, keeps
+its frozen raster, and leaves from a frame it had finished being sung on
+(`LyricsEmphasisAnimationTests`).
+
+**The word slide cannot happen by accident.** The slide is off unless the reader turns on Word Slide, and
+the setting now resolves to a timing value in one place (`SettingsManager.richLyricsTiming`) instead of a
+branch in each of the two sheets. The other half was a real regression from this work: collapsing a word's
+letters onto one layer kept the *mean* of their scales, and scaling one layer widens the whole word about
+its centre — every glyph in it moves sideways, which is precisely the movement the reader switched off and
+which a per-letter layer never had (a letter swells about its own cell). A shared layer now only rises; a
+long word's letter swell stays a letter effect, drawn per letter.
+`KaraokeLyricsRenderTests.wordSlideMovesTheWord` measures both halves: with the slide the word's trailing
+edge ends further out, without it neither edge moves by more than the pixel a centred 2.5 % scale costs.
+
 ## Consequences
 
 ### Positive
@@ -578,6 +652,9 @@ real view's drawn lift at display rate, the crest rule and the wave it replaced 
 - A line that has finished is sung to the end of its own content *before* it starts to leave, and it
   leaves on a frozen raster in a subtree that keeps its identity — the two halves of the hand-off are
   covered by `KaraokeRowHandoffTests` and the panel-level `LyricsEmphasisAnimationTests`.
+- Exactly one line is the line being sung at any moment, and it is the one that is being sung *now*:
+  the baton passes on that line's first word, not half a second before it. The row it lands on is
+  already in position and already filling, and the row it leaves is the row that has just finished.
 - Only the rows the highlight needs redraw, and a settled row is paused rather than merely cheap.
 
 ### Negative
