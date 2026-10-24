@@ -267,16 +267,26 @@ struct KaraokeLyricsPerformanceTests {
             self.render(scenario, layout: layout, at: scenario.startMs + Double(index) * 16, emphasis: emphasis, style: style, timing: timing)
         }
 
-        let started = DispatchTime.now()
-        for index in 0 ..< frames {
-            let ms = scenario.startMs + scenario.spanMs * Double(index) / Double(frames)
-            let frameLayout = rebuildLayout
-                ? KaraokeLineLayout(line: scenario.line, fontSize: scenario.fontSize)
-                : layout
-            self.render(scenario, layout: frameLayout, at: ms, emphasis: emphasis, style: style, timing: timing)
+        // The cheapest of a few rounds, not the first one.
+        //
+        // A frame's cost is one-sided noise: a busy machine adds time to a measurement and never removes
+        // it, and this harness shares its process with every other test in the suite, which Swift Testing
+        // runs in parallel. A single round therefore sometimes priced the contention rather than the row,
+        // and the budget failed on tests that had not changed. The cheapest round is the frame's cost.
+        var best = Double.infinity
+        for _ in 0 ..< 3 {
+            let started = DispatchTime.now()
+            for index in 0 ..< frames {
+                let ms = scenario.startMs + scenario.spanMs * Double(index) / Double(frames)
+                let frameLayout = rebuildLayout
+                    ? KaraokeLineLayout(line: scenario.line, fontSize: scenario.fontSize)
+                    : layout
+                self.render(scenario, layout: frameLayout, at: ms, emphasis: emphasis, style: style, timing: timing)
+            }
+            let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
+            best = min(best, elapsedMs / Double(frames))
         }
-        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
-        return elapsedMs / Double(frames)
+        return best
     }
 
     private func render(
