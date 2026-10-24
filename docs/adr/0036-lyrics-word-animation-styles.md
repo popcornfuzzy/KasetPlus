@@ -93,8 +93,11 @@ measured layout; only the envelopes and the layers differ.
   second, off-by-default switch for the one part of the port that was turned off.
 - The new style costs more per frame than the old one on the word being sung, and no more on a
   settled or upcoming line. `KaraokeLyricsPerformanceTests` prices both: in the panel the classic
-  word-by-word line is ~1.6 ms/frame against ~3.8 ms/frame for Better Lyrics, and both are inside
-  the suite's 6 ms structure budget. A row still redraws at the same rates (`KaraokeFrameBudget`).
+  word-by-word line is ~1.6 ms/frame against ~2.7 ms/frame for Better Lyrics. The suite holds that
+  difference as a ratio — the decorations may add up to 2.2× the same line in the plain sweep,
+  measured 1.7× on a laptop and 1.2× on a CI runner — because the absolute time is a property of the
+  machine that rasterizes it, not of the row. A row still redraws at the same rates
+  (`KaraokeFrameBudget`).
 - Both styles keep every existing guarantee: backing vocals, duets, pause dots, RTL fills,
   Reduce Motion, and the settled frame of a finished line being the frame it was already showing.
 - A third style would be another `LyricsAnimationStyle` case and another envelope model; the

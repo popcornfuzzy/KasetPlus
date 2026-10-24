@@ -10,16 +10,29 @@ import Testing
 /// Each iteration builds and renders the line at a new display position, which is what a
 /// `TimelineView` frame does: body evaluation, layout, masking, halo blur and text draw.
 /// Absolute numbers are pessimistic — rasterizing into a bitmap is CPU work the app does on
-/// the GPU — so the budget below is deliberately loose and the *report* is the useful part:
-/// it attributes the cost to the layout, the halo and the fill machinery, and states the
-/// total as a share of one CPU core at each row's own redraw rate.
+/// the GPU — so the *report* is the useful part: it attributes the cost to the layout, the halo
+/// and the fill machinery, and states the total as a share of one CPU core at each row's own
+/// redraw rate.
+///
+/// Because of that, structure is asserted as **ratios** measured in the same run, not as an
+/// absolute time: one GitHub runner priced every scenario about 1.6× higher than a laptop, all of
+/// them together, which says the machine is slower and nothing about the row.
 @MainActor
 @Suite(.tags(.model, .slow))
 struct KaraokeLyricsPerformanceTests {
-    /// Ceiling for one frame of one line. Loose on purpose: this guards the structure
-    /// (a mask and a halo per word, a layout measured per frame, a row redrawing faster
-    /// than it needs to) rather than the machine it runs on.
-    private static let budgetMsPerFrame = 6.0
+    /// Ceiling for one frame of one line, and a coarse one: it catches a row that has become
+    /// catastrophically expensive, not one that has drifted. The slowest machine this suite has run on
+    /// (a GitHub runner) priced a syllable-timed duet frame at 8.17 ms against 5.17 ms on a laptop, with
+    /// every other scenario scaled the same way; structure is the ratios below.
+    private static let catastrophicMsPerFrame = 12.0
+
+    /// What the Better Lyrics decorations may add to the same line drawn with the plain sweep.
+    /// Measured 1.75× on a laptop and 1.18× on the runner.
+    private static let decoratedOverSweep = 2.2
+
+    /// What timing a duet line per syllable may add over timing it per word: three times the units, and
+    /// the per-letter wave across them. Measured 1.63× on a laptop and 1.86× on the runner.
+    private static let syllableTimingOverWordTiming = 2.5
 
     private struct Scenario {
         let name: String
@@ -41,6 +54,9 @@ struct KaraokeLyricsPerformanceTests {
         var style: LyricsAnimationStyle = .appleMusic
         /// Whether the row is the other singer's, drawn against the trailing edge.
         var isTrailingAligned: Bool = false
+
+        /// Name the structural checks below find this measurement by.
+        var key: String = ""
     }
 
     /// The decoration strength the lyrics panel and the sidebar's sheets carry.
@@ -87,15 +103,15 @@ struct KaraokeLyricsPerformanceTests {
         let armed = 1 / KaraokeFrameBudget.armed
 
         let scenarios = [
-            Scenario(name: "panel, current line, word-by-word   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live),
-            Scenario(name: "panel, current line, better lyrics   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics),
+            Scenario(name: "panel, current line, word-by-word   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, key: "panelWordTimed"),
+            Scenario(name: "panel, current line, better lyrics   ", line: wordTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, key: "panelBetterLyrics"),
             Scenario(name: "panel, current line, line-by-line    ", line: lineSynced, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live),
-            Scenario(name: "fullscreen, current line, word-by-word", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live),
-            Scenario(name: "fullscreen, current line, better lyrics", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics),
-            Scenario(name: "panel, current line, duet (sung)        ", line: duetTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
-            Scenario(name: "panel, current line, duet syllables     ", line: duetLine, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
-            Scenario(name: "fullscreen, duet (sung)             ", line: duetTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
-            Scenario(name: "fullscreen, duet syllables          ", line: duetLine, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true),
+            Scenario(name: "fullscreen, current line, word-by-word", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, key: "fullscreenWordTimed"),
+            Scenario(name: "fullscreen, current line, better lyrics", line: wordTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, key: "fullscreenBetterLyrics"),
+            Scenario(name: "panel, current line, duet (sung)        ", line: duetTimed, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true, key: "panelDuetWordTimed"),
+            Scenario(name: "panel, current line, duet syllables     ", line: duetLine, fontSize: 16, width: 248, spanMs: 1200, emphasis: Self.panelEmphasis, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true, key: "panelDuetSyllables"),
+            Scenario(name: "fullscreen, duet (sung)             ", line: duetTimed, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true, key: "fullscreenDuetWordTimed"),
+            Scenario(name: "fullscreen, duet syllables          ", line: duetLine, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live, style: .betterLyrics, isTrailingAligned: true, key: "fullscreenDuetSyllables"),
             Scenario(name: "fullscreen, current line, line-by-line ", line: lineSynced, fontSize: 36, width: 600, spanMs: 1200, framesPerSecond: live),
             // The line after the current one also redraws, on the same clock, so it is part
             // of the bill. Nothing on it moves until it becomes the current line.
@@ -107,11 +123,13 @@ struct KaraokeLyricsPerformanceTests {
 
         var report: [String] = []
         var regressions: [String] = []
+        var costs: [String: Double] = [:]
         var panelShare = 0.0
         var fullscreenShare = 0.0
 
         for scenario in scenarios {
             let perFrame = self.liveFrames(scenario)
+            if !scenario.key.isEmpty { costs[scenario.key] = perFrame }
             let perSecond = perFrame * scenario.framesPerSecond
             if scenario.name.hasPrefix("panel") {
                 panelShare += perSecond
@@ -123,26 +141,73 @@ struct KaraokeLyricsPerformanceTests {
             report.append(
                 "\(scenario.name): \(Self.format(perFrame)) ms/frame at \(Int(scenario.framesPerSecond)) fps = \(Self.format(perSecond / 10))% of a core"
             )
-            if perFrame > Self.budgetMsPerFrame {
+            if perFrame > Self.catastrophicMsPerFrame {
                 regressions.append(
-                    "\(scenario.name): \(Self.format(perFrame)) ms/frame exceeds the \(Self.format(Self.budgetMsPerFrame)) ms budget"
+                    "\(scenario.name): \(Self.format(perFrame)) ms/frame exceeds the \(Self.format(Self.catastrophicMsPerFrame)) ms ceiling"
+                )
+            }
+        }
+
+        // Structure, priced against the machine the run is on: the same machine draws both sides of each
+        // ratio, so the ratio is the row's own cost and not the CPU's.
+        func ratio(_ numerator: String, _ denominator: String) -> Double? {
+            guard let numeratorMs = costs[numerator], let denominatorMs = costs[denominator], denominatorMs > 0 else {
+                return nil
+            }
+            return numeratorMs / denominatorMs
+        }
+
+        let structuralChecks: [(name: String, measured: Double?, limit: Double)] = [
+            (
+                "panel, Better Lyrics decorations against the plain sweep",
+                ratio("panelBetterLyrics", "panelWordTimed"),
+                Self.decoratedOverSweep
+            ),
+            (
+                "fullscreen, Better Lyrics decorations against the plain sweep",
+                ratio("fullscreenBetterLyrics", "fullscreenWordTimed"),
+                Self.decoratedOverSweep
+            ),
+            (
+                "panel, duet timed per syllable against timed per word",
+                ratio("panelDuetSyllables", "panelDuetWordTimed"),
+                Self.syllableTimingOverWordTiming
+            ),
+            (
+                "fullscreen, duet timed per syllable against timed per word",
+                ratio("fullscreenDuetSyllables", "fullscreenDuetWordTimed"),
+                Self.syllableTimingOverWordTiming
+            ),
+        ]
+
+        for check in structuralChecks {
+            guard let measured = check.measured else { continue }
+            report.append(
+                "structural — \(check.name): \(Self.format(measured))× (limit \(Self.format(check.limit))×)"
+            )
+            if measured > check.limit {
+                regressions.append(
+                    "\(check.name): \(Self.format(measured))× exceeds the \(Self.format(check.limit))× limit"
                 )
             }
         }
 
         // Attribution on the expensive path: what the layout hoist and the halo are worth.
         let wordScenario = scenarios[0]
+        let rebuilt = self.liveFrames(wordScenario, rebuildLayout: true)
+        let undecorated = self.liveFrames(wordScenario, emphasis: 0)
+        let lifted = self.liveFrames(wordScenario, emphasis: 1)
         report.append(
-            "attribution — panel word-by-word, layout rebuilt per frame: \(Self.format(self.liveFrames(wordScenario, rebuildLayout: true))) ms/frame"
+            "attribution — panel word-by-word, layout rebuilt per frame: \(Self.format(rebuilt)) ms/frame"
         )
         report.append(
-            "attribution — panel word-by-word, no halo/feather/swell: \(Self.format(self.liveFrames(wordScenario, emphasis: 0))) ms/frame"
+            "attribution — panel word-by-word, no halo/feather/swell: \(Self.format(undecorated)) ms/frame"
         )
         // And what the lift is worth on the same line: at the panel's own emphasis it is under a
         // quarter point of travel, so it is not drawn at all — this prices the same line at the
         // strength that does draw it.
         report.append(
-            "attribution — panel word-by-word, lift drawn (emphasis 1): \(Self.format(self.liveFrames(wordScenario, emphasis: 1))) ms/frame"
+            "attribution — panel word-by-word, lift drawn (emphasis 1): \(Self.format(lifted)) ms/frame"
         )
 
         // What a syllable-dense line is paying for. A duet is written per syllable, so it carries
@@ -151,16 +216,19 @@ struct KaraokeLyricsPerformanceTests {
         // decorations off), and the bloom alone — which is what showed that the per-letter wave, not
         // the halo, was the decoration a syllable-timed line was paying for.
         if let duetScenario = scenarios.first(where: { $0.name.contains("duet syllables") }) {
-            report.append(
-                "attribution — duet syllables, decorations off: \(Self.format(self.liveFrames(duetScenario, emphasis: 0))) ms/frame"
-            )
-            report.append(
-                "attribution — duet syllables, plain sweep: \(Self.format(self.liveFrames(duetScenario, style: .appleMusic))) ms/frame"
-            )
+            let duetPlain = self.liveFrames(duetScenario, emphasis: 0)
+            let duetSweep = self.liveFrames(duetScenario, style: .appleMusic)
             var noGlow = RichLyricsTiming.standard
             noGlow.glowOpacity = 0
+            let duetNoBloom = self.liveFrames(duetScenario, timing: noGlow)
             report.append(
-                "attribution — duet syllables, no bloom: \(Self.format(self.liveFrames(duetScenario, timing: noGlow))) ms/frame"
+                "attribution — duet syllables, decorations off: \(Self.format(duetPlain)) ms/frame"
+            )
+            report.append(
+                "attribution — duet syllables, plain sweep: \(Self.format(duetSweep)) ms/frame"
+            )
+            report.append(
+                "attribution — duet syllables, no bloom: \(Self.format(duetNoBloom)) ms/frame"
             )
         }
 

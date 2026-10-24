@@ -382,7 +382,12 @@ test was tried for it, passed with the seeding removed, and was deleted rather t
 
 ### Cost — what a frame is allowed to do
 
-This is the most per-frame work in the app, so the frame budget is deliberately narrow:
+This is the most per-frame work in the app, so the frame budget is deliberately narrow. The numbers
+below are per *frame of one line* on the machine that measured them: the harness rasterizes into a bitmap
+on the CPU, so the same row measures ~1.6× dearer on a CI runner than on a laptop, all of it together.
+That is why the harness now asserts structure as ratios measured in the same run (the decorations against
+the same line in the plain sweep, syllable timing against word timing) and keeps only a coarse absolute
+ceiling for the catastrophic case:
 
 **Measurement happens once per line, never per frame.** `KaraokeLineLayout` carries the measured word
 widths and the font metrics, and `KaraokeLayoutCache` memoizes it per line. A frame is arithmetic on
@@ -666,8 +671,9 @@ edge ends further out, without it neither edge moves by more than the pixel a ce
   ~20% for one carrying a backing vocal (measured: 4.7 ms/frame for a row of thirteen lead words plus
   ten backing words at the fullscreen size). It remains the most expensive per-frame work in the app,
   and the frame budgets, the measured-layout cache, the row arming rule, the covered-sheet rule and
-  the hit-testing prune are what keep it from growing; the harness test fails if a frame's cost
-  regresses past its (loose) budget.
+  the hit-testing prune are what keep it from growing; the harness test fails if the decorations or the
+  syllable timing start costing more relative to the same line drawn plainly, or if a frame passes its
+  coarse absolute ceiling on the machine that runs it.
 - **The two animating surfaces cannot be priced together, because they can no longer run together**:
   presenting the fullscreen player covers every other lyric sheet, and a covered sheet draws nothing.
   The harness prints both numbers so the rule is visible if it ever stops holding.
