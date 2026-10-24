@@ -426,6 +426,11 @@ struct NowPlayingSidebarView: View {
     private var lyricsCard: some View {
         NowPlayingSidebarCard(onTap: { self.expand(to: .lyrics) }) {
             VStack(alignment: .leading, spacing: 4) {
+                // The animation sits on the stack itself, not on the caption alone: the caption's
+                // removal has to take its height with it, so the preview below closes the gap
+                // instead of jumping up while the text fades. (A `Group` is transparent — an
+                // animation attached to it travels down to the caption and leaves with it, so the
+                // removal ran unanimated.)
                 self.sectionHeader(
                     title: String(localized: "Lyrics"),
                     systemImage: "quote.bubble",
@@ -434,16 +439,18 @@ struct NowPlayingSidebarView: View {
                     action: { self.expand(to: .lyrics) }
                 )
 
-                Group {
-                    if self.syncedLyricsService.searchingForBetterLyrics, self.hasSyncedLyricsOnScreen {
-                        LyricsSearchingCaption(horizontalPadding: 0, verticalPadding: 2)
-                    }
+                if self.showsLyricsSearchingCaption {
+                    LyricsSearchingCaption(horizontalPadding: 0, verticalPadding: 2)
                 }
-                .animation(.smooth(duration: 0.4), value: self.syncedLyricsService.searchingForBetterLyrics)
 
+                // A better sheet usually arrives in the same update that removes the caption. It is
+                // exempted from the animation above so its rows swap without animating; only the
+                // card's layout moves with the caption.
                 self.lyricsPreview
+                    .animation(nil, value: self.syncedLyricsService.currentLyrics)
                     .frame(height: NowPlayingSidebarLayout.lyricsPreviewHeight)
             }
+            .animation(.smooth(duration: 0.4), value: self.showsLyricsSearchingCaption)
         }
     }
 
@@ -787,6 +794,15 @@ struct NowPlayingSidebarView: View {
     private var hasSyncedLyricsOnScreen: Bool {
         if case .synced = self.lyricsState { return true }
         return false
+    }
+
+    /// Whether the lyric card shows the "still searching for lyrics" caption.
+    ///
+    /// A search can outlive the sheet it was started for, so the caption follows the pair of states
+    /// rather than the search flag alone. The caption's animation is keyed on this same pair: a sheet
+    /// change that hides the caption then eases out like the search finishing does.
+    private var showsLyricsSearchingCaption: Bool {
+        self.syncedLyricsService.searchingForBetterLyrics && self.hasSyncedLyricsOnScreen
     }
 
     private var trackArtistText: String {
