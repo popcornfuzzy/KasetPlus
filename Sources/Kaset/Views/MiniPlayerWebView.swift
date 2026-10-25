@@ -394,6 +394,16 @@ final class SingletonPlayerWebView {
         )
         configuration.userContentController.addUserScript(script)
 
+        // The in-page playback bridge: what lets a track change stay inside the open document instead
+        // of costing a page load. Idempotent, feature-detected and silent when the page's player API
+        // is not there; see `SingletonPlayerWebView+PagePlayback`.
+        let pagePlaybackBridge = WKUserScript(
+            source: Self.pagePlaybackBridgeScript,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(pagePlaybackBridge)
+
         // The preload gate, ahead of everything: a page Kaset loads only to have ready must not be
         // able to make a sound before the user asks for it. See `preloadGateScript`.
         let preloadGateScript = WKUserScript(
@@ -1143,6 +1153,7 @@ final class SingletonPlayerWebView {
     var onPageLoadRequestForTests: ((String, VideoLoadStrategy) -> Void)?
 
     /// Load a video, stopping any currently playing audio first.
+    ///
     /// Note: Full page navigation destroys the video element; same-id restarts use ``restartInPlaceFromBeginning()`` when possible.
     func loadVideo(videoId: String, strategy: VideoLoadStrategy = .standard) {
         self.onPageLoadRequestForTests?(videoId, strategy)
@@ -1193,9 +1204,59 @@ final class SingletonPlayerWebView {
             self.logger.info("Loading video: \(videoId) (was: \(previousVideoId ?? "none"))")
         }
 
+        // A preloaded page is held silent on purpose. Playback Kaset is driving must not be: the page
+        // would load the track and swallow its own play calls, leaving a track that looks started and
+        // makes no sound. The hold is lifted before the page's state is overwritten below.
+        if self.page == .preloaded {
+            self.releasePreloadHold()
+        }
+
         // Update currentVideoId immediately to prevent duplicate loads
         self.currentVideoId = videoId
         // A watch page is a playback page: from here the page's observations are the app's own.
+        self.page = .playback
+
+        // Fast path: the page swaps the track inside the open document, which keeps the player, the
+        // DRM session and the player bar where they are. A resync strategy is deliberately excluded —
+        // that path exists to reload the document.
+        if strategy == .standard, self.canSwapTrackInPage {
+            let playerService = self.coordinator?.playerService
+            self.logger.info("Asking the page's player for \(videoId)")
+            playerService?.noteInPagePlayAttempt(videoId: videoId)
+            self.playInPage(videoId: videoId) { [weak self] status in
+                guard let self, self.currentVideoId == videoId else { return }
+                playerService?.updatePagePlaybackCapability(status)
+
+                guard WebPagePlaybackStatus.succeeded(status) else {
+                    self.logger.info("The page declined \(videoId) (\(status)); loading its watch page")
+                    self.loadWatchPage(videoId: videoId)
+                    return
+                }
+
+                // The page answering only means it accepted the command; check that it took it.
+                playerService?.beginPageSettleCheck(videoId: videoId)
+            }
+            return
+        }
+
+        self.loadWatchPage(videoId: videoId)
+    }
+
+    /// Whether the open document can change track through its own player.
+    ///
+    /// Only a page that is being played from, that has finished loading, and whose player API has not
+    /// been found unusable. Everything else is a page load, which is what Kaset always did.
+    private var canSwapTrackInPage: Bool {
+        guard self.webView != nil, self.page == .playback, self.isPageReady else { return false }
+        return self.coordinator?.playerService.pagePlaybackCapability.canSwapTrackInPage ?? false
+    }
+
+    /// Loads a track's watch page: the long way, and the fallback for everything the page's own
+    /// player cannot do.
+    func loadWatchPage(videoId: String) {
+        guard let webView, let urlToLoad = Self.watchURL(videoId: videoId) else { return }
+
+        self.currentVideoId = videoId
         self.page = .playback
 
         // Get current volume from PlayerService via coordinator
@@ -1204,7 +1265,6 @@ final class SingletonPlayerWebView {
 
         // Stop current playback first, then load new video. A playback load carries no preload hold:
         // this page is meant to play.
-        guard let urlToLoad = Self.watchURL(videoId: videoId) else { return }
         webView.evaluateJavaScript("document.querySelector('video')?.pause()") { [weak self] _, _ in
             guard let self, let webView = self.webView else { return }
 
@@ -1265,8 +1325,14 @@ final class SingletonPlayerWebView {
             }
 
             if type == "TRACK_ENDED" {
+                let progress = (body["progress"] as? Double) ?? (body["progress"] as? Int).map(Double.init)
+                let duration = (body["duration"] as? Double) ?? (body["duration"] as? Int).map(Double.init)
                 Task { @MainActor in
-                    await self.playerService.handleTrackEnded(observedVideoId: observedVideoId)
+                    await self.playerService.handleTrackEnded(
+                        observedVideoId: observedVideoId,
+                        progress: progress,
+                        duration: duration
+                    )
                 }
                 return
             }
@@ -1334,6 +1400,7 @@ final class SingletonPlayerWebView {
             let duration = body["duration"] as? Int ?? 0
             let title = body["title"] as? String ?? ""
             let artist = body["artist"] as? String ?? ""
+            let playerBarVideoId = body["barVideoId"] as? String
             let thumbnailUrl = body["thumbnailUrl"] as? String ?? ""
             let trackChanged = body["trackChanged"] as? Bool ?? false
             let likeStatusString = body["likeStatus"] as? String ?? "INDIFFERENT"
@@ -1406,7 +1473,8 @@ final class SingletonPlayerWebView {
                         title: title,
                         artist: artist,
                         thumbnailUrl: thumbnailUrl,
-                        videoId: observedVideoId
+                        videoId: observedVideoId,
+                        playerBarVideoId: playerBarVideoId
                     )
                 }
             }
@@ -1420,6 +1488,9 @@ final class SingletonPlayerWebView {
             // The document is up; anything still to wait for is the player starting, which has no
             // fraction to report.
             self.playerService.finishWebViewPageLoad()
+
+            // A new document has its own player: nothing learned from the previous one describes it.
+            self.playerService.resetPagePlaybackBridge()
 
             SingletonPlayerWebView.shared.reapplyMiniPlayerPresentationIfNeeded()
 

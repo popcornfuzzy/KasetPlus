@@ -73,3 +73,4 @@ What becomes easier or more difficult because of this change?
 | [0034](0034-shell-owned-window-title.md) | Shell-Owned Window Title (No `navigationTitle` in the Shell) | Accepted |
 | [0035](0035-standard-window-chrome.md) | System-Owned Window Chrome (Opaque Window, Transparent Titlebar) | Accepted |
 | [0036](0036-lyrics-word-animation-styles.md) | Selectable Word-by-Word Lyrics Animations | Accepted |
+| [0037](0037-in-page-track-changes.md) | In-Page Track Changes Instead of Watch-Page Navigations | Accepted |

@@ -24,6 +24,8 @@ Our solution: A **singleton WebView** that loads YouTube Music watch pages and p
 | `PlayerBarLoadingWash` | `PlayerBarLoadingWash.swift` | The wash in the bar's capsule while it waits |
 | `PlayerService` | `PlayerService.swift` | Playback state and control |
 | `PlayerService+WebQueueSync` | `PlayerService+WebQueueSync.swift` | Keeps native queue state authoritative when WebView events drift |
+| `SingletonPlayerWebView+PagePlayback` | `SingletonPlayerWebView+PagePlayback.swift` | Starts a track inside the open document instead of navigating |
+| `PlayerService+PagePlayback` | `PlayerService+PagePlayback.swift` | Proves the page really started that track, and falls back when it did not |
 | `AppDelegate` | `AppDelegate.swift` | Window lifecycle for background audio |
 
 ### Singleton Pattern
@@ -177,10 +179,11 @@ queue after Kaset has already loaded the next track.
 
 When user plays a different track:
 
-1. `pendingPlayVideoId` changes
+1. `pendingPlayVideoId` changes, and `progress` resets to 0 (the old position belonged to the old song)
 2. SwiftUI calls `updateNSView` (not `makeNSView`)
 3. `SingletonPlayerWebView.loadVideo(videoId:)` called
-4. Current audio paused, target volume prepared, new URL loaded
+4. The page's own player is asked to start the track in the open document; only if it cannot is the
+   watch page loaded (current audio paused, target volume prepared, new URL loaded)
 
 ```swift
 func loadVideo(videoId: String) {
@@ -189,13 +192,74 @@ func loadVideo(videoId: String) {
     // Update ID immediately to prevent duplicate loads
     currentVideoId = videoId
 
-    // Pause current, set the target volume, then load new
-    webView.evaluateJavaScript("document.querySelector('video')?.pause()") { _, _ in
-        webView.evaluateJavaScript("window.__kasetTargetVolume = currentVolume")
-        self.webView?.load(URLRequest(url: watchURL))
-    }
+    // First ask the page's own player to start it (see “Changing track inside the page” below).
+    // Falls back to `loadWatchPage(videoId:)` — pause, set the target volume, then load —
+    // when the page cannot start the track itself.
 }
 ```
+
+### Changing track inside the page
+
+The page already has a player in it, and it can start another track without reloading the document
+(see [ADR-0037](adr/0037-in-page-track-changes.md)). Kaset asks it to start one track — never to hold
+Kaset's queue:
+
+| What Kaset asks for | How the page answers | Status |
+|---------------------|----------------------|--------|
+| The track that is already playing | `playVideo()` if it was paused | `already-playing` |
+| A row the page's own queue holds | `playVideoAt(index)` | `played-at` |
+| Anything else | `loadVideoById` | `loaded-video` |
+| A page with no player API | nothing — Kaset loads the watch page | `no-player` |
+
+Only the last case (and a player that throws) costs a document load, which is what every track change
+used to cost. The page's queue, store and player bar are deliberately left alone: they describe the
+page's own queue, and rewriting them is what made the bar show a song that was no longer playing.
+
+A swap does not re-render the page instantly, so the player bar can still be naming the previous track
+for a moment. The observer reports both the track the player holds (`videoId`) and the track the bar
+itself names (`barVideoId`); metadata from a bar naming another track is ignored, so the queue row stays
+on screen until the page catches up instead of the app recording the previous song's title, artist and
+artwork for the new one.
+
+Because a page's answer is a command accepted, not a track started, `PlayerService+PagePlayback`
+checks about a second later which track the page's player actually holds. If it is not Kaset's track,
+the page is asked once more; if it still is not, the watch page is loaded (`WebQueueSettleRules`). A
+page that never starts the track at all is loaded by a 3 s watchdog.
+
+### The page's own end-of-track advance
+
+YouTube Music finishes its own advance after reporting `ended`, so a row Kaset starts in that gap can be
+moved past a moment later — the song after the one that just ended, skipped. A start that follows a
+track ending therefore opens a short window (`PlayerService.trackStartGrace`, 2.5 s): a report of another
+track inside it, or a second `ended` for the row that just started, is the page's leftover advance and
+not a queue move.
+
+Inside the window Kaset puts its row back rather than following the page — the page is the player, so
+returning only the bar would leave the audio somewhere else:
+
+```swift
+self.reassertCurrentRowInPage()   // playInPage(row) + keepQueueMetadata, then re-check
+```
+
+A start the user asked for — play, Next, a queue row — does not open the window, so a deliberate skip
+right after a start is still followed. A track ending without the media having reached its end
+(`progress` short of `duration`) is ignored: that is a load that kept the old position, not a finished
+song.
+
+### The row's text is corrected by the page
+
+A row that came from a card is not a description of the track: a Home card's second line is the card's
+whole subtitle — its content type, the separators, the artist, the year — and reading every run as an
+artist produced a byline like `Song, Artist`. `ParsingHelpers.extractArtists(from:)` now takes the runs
+that carry an artist link (or, when none does, the runs that are not separators or metadata), so the
+row is right before it is ever played.
+
+When a start Kaset asked for is confirmed — the player holds the requested video and the player bar
+names that same video — a *complete* observation (title and byline) replaces the row's text through
+`heldTrack(_:describedAs:by:thumbnailUrl:)`. The row keeps everything else it knows (album, duration,
+artwork, like state, feedback tokens); only the two strings the bar renders change. That is what makes
+the now-playing bar correct itself a moment after a session starts from a card. Half a bar (still
+rendering, an empty byline) changes nothing, and a bar that names another track is not believed at all.
 
 When the WebView reports a new `videoId`, Kaset treats that as authoritative
 even if the DOM title/artist are still stale. This avoids a race where YouTube

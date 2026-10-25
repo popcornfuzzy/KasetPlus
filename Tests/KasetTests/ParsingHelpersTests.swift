@@ -127,23 +127,59 @@ struct ParsingHelpersTests {
         #expect(artists[1].name == "Artist 2")
     }
 
-    @Test("Extract artists filters out separator characters")
+    @Test("Extract artists filters out separator characters and the card's label")
     func extractArtistsFiltersSeparators() {
         let data: [String: Any] = [
             "subtitle": [
                 "runs": [
-                    ["text": "Artist"],
-                    ["text": " • "],
                     ["text": "Song"],
+                    ["text": " • "],
+                    ["text": "Artist"],
                 ],
             ],
         ]
 
         let artists = ParsingHelpers.extractArtists(from: data)
 
-        #expect(artists.count == 2)
+        #expect(artists.count == 1)
         #expect(artists[0].name == "Artist")
-        #expect(artists[1].name == "Song")
+    }
+
+    @Test("A card's subtitle gives only the linked artist, not the card's label")
+    func extractArtistsSkipsTheContentTypeLabel() {
+        let data: [String: Any] = [
+            "subtitle": [
+                "runs": [
+                    ["text": "Song"],
+                    ["text": " • "],
+                    ["text": "The Artist", "navigationEndpoint": ["browseEndpoint": ["browseId": "UC123"]]],
+                    ["text": " • "],
+                    ["text": "2024"],
+                ],
+            ],
+        ]
+
+        let artists = ParsingHelpers.extractArtists(from: data)
+
+        #expect(artists.map(\.name) == ["The Artist"])
+        #expect(artists.first?.id == "UC123")
+    }
+
+    @Test("An artist with no link is kept when the card links nobody")
+    func extractArtistsFallsBackToPlainText() {
+        let data: [String: Any] = [
+            "subtitle": [
+                "runs": [
+                    ["text": "Song"],
+                    ["text": " • "],
+                    ["text": "Bedroom Producer"],
+                ],
+            ],
+        ]
+
+        let artists = ParsingHelpers.extractArtists(from: data)
+
+        #expect(artists.map(\.name) == ["Bedroom Producer"])
     }
 
     @Test("Extract artists from flex columns accepts library artist browse IDs")
