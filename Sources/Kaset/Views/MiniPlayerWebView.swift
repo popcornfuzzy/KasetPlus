@@ -1401,6 +1401,7 @@ final class SingletonPlayerWebView {
             let title = body["title"] as? String ?? ""
             let artist = body["artist"] as? String ?? ""
             let playerBarVideoId = body["barVideoId"] as? String
+            let metadataFromPlayer = body["metadataFromPlayer"] as? Bool ?? false
             let thumbnailUrl = body["thumbnailUrl"] as? String ?? ""
             let trackChanged = body["trackChanged"] as? Bool ?? false
             let likeStatusString = body["likeStatus"] as? String ?? "INDIFFERENT"
@@ -1474,7 +1475,8 @@ final class SingletonPlayerWebView {
                         artist: artist,
                         thumbnailUrl: thumbnailUrl,
                         videoId: observedVideoId,
-                        playerBarVideoId: playerBarVideoId
+                        playerBarVideoId: playerBarVideoId,
+                        metadataFromPlayer: metadataFromPlayer
                     )
                 }
             }

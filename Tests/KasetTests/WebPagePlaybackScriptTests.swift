@@ -187,6 +187,83 @@ struct WebPagePlaybackScriptTests {
         #expect(ends.first?["videoId"] as? String == "a")
     }
 
+    @Test("The observer takes the player's own words and the media's own length")
+    func observerPrefersThePlayerApiAndTheMediaElement() throws {
+        let context = try #require(JSContext())
+        self.evaluate(
+            """
+            var postedMessages = [];
+            var videoListeners = {};
+            var setTimeout = function() { return 1; };
+            var setInterval = function() { return 1; };
+            var clearInterval = function() {};
+            function URL(href, base) {
+                this.searchParams = { get: function(name) { return 'a'; } };
+            }
+            function MutationObserver(callback) { this.callback = callback; }
+            MutationObserver.prototype.observe = function() {};
+            var bar = {
+                querySelector: function() { return { href: 'https://music.youtube.com/watch?v=a' }; },
+                getAttribute: function() { return null; }
+            };
+            var video = {
+                paused: false,
+                currentTime: 12.6,
+                duration: 210.4,
+                addEventListener: function(name, handler) { videoListeners[name] = handler; }
+            };
+            var document = {
+                readyState: 'complete',
+                body: {},
+                documentElement: {},
+                querySelector: function(selector) {
+                    if (selector === 'ytmusic-player-bar') { return bar; }
+                    if (selector === 'ytmusic-player') {
+                        return {
+                            playerApi: {
+                                getVideoData: function() {
+                                    return { video_id: 'b', title: 'New Song', author: 'New Artist' };
+                                }
+                            }
+                        };
+                    }
+                    if (selector === '.ytmusic-player-bar.title') { return { textContent: 'Old Song' }; }
+                    if (selector === '.ytmusic-player-bar.byline') { return { textContent: 'Old Artist' }; }
+                    if (selector === 'video') { return video; }
+                    return null;
+                },
+                querySelectorAll: function() { return []; },
+                getElementById: function() { return null; },
+                addEventListener: function() {}
+            };
+            var window = {
+                location: { href: 'https://music.youtube.com/watch?v=b' },
+                webkit: {
+                    messageHandlers: {
+                        singletonPlayer: {
+                            postMessage: function(message) { postedMessages.push(message); }
+                        }
+                    }
+                }
+            };
+            """,
+            in: context
+        )
+
+        self.evaluate(SingletonPlayerWebView.observerScript, in: context)
+
+        let states = self.messages("STATE_UPDATE", in: context)
+        let state = try #require(states.last)
+        // The bar is still on the previous track; the player API is already on this one.
+        #expect(state["barVideoId"] as? String == "a")
+        #expect(state["title"] as? String == "New Song")
+        #expect(state["artist"] as? String == "New Artist")
+        #expect(state["metadataFromPlayer"] as? Bool == true)
+        // The progress bar's DOM values lag a swap; the media element's do not.
+        #expect(state["duration"] as? Int == 210)
+        #expect(state["progress"] as? Int == 13)
+    }
+
     // MARK: - Harness
 
     private func messages(_ type: String, in context: JSContext) -> [[String: Any]] {

@@ -386,12 +386,19 @@ extension SingletonPlayerWebView {
                     let thumbnailUrl = '';
 
                     // Prefer player API metadata when the DOM appears to be lagging behind the actual video.
+                    //
+                    // The player API describes the video it holds, so its text is the freshest thing the
+                    // page has after an in-page swap — unlike the bar's DOM, which can still be showing
+                    // the previous song. `metadataFromPlayer` says which source won, so Swift can tell
+                    // "a stale bar" (keep what it has) from "the player's own words" (believe them).
+                    let metadataFromPlayer = false;
                     if (playerTitle && title && playerTitle !== title) {
                         title = playerTitle;
                         if (playerArtist) artist = playerArtist;
+                        metadataFromPlayer = true;
                     } else {
-                        if (!title && playerTitle) title = playerTitle;
-                        if (!artist && playerArtist) artist = playerArtist;
+                        if (!title && playerTitle) { title = playerTitle; metadataFromPlayer = true; }
+                        if (!artist && playerArtist) { artist = playerArtist; metadataFromPlayer = true; }
                     }
 
                     // Get the thumbnail URL from the image element
@@ -441,11 +448,24 @@ extension SingletonPlayerWebView {
                         }
                     }
 
+                    // The media element is the authority on the track that is loaded and on how long it
+                    // is; the progress bar's DOM attributes lag an in-page swap and would hand Kaset the
+                    // previous track's length (which the lyrics search uses to tell versions apart).
+                    const mediaDuration = video && isFinite(video.duration) && video.duration > 0
+                        ? Math.round(video.duration)
+                        : 0;
+                    const mediaProgress = video && isFinite(video.currentTime)
+                        ? Math.round(video.currentTime)
+                        : 0;
+                    const barProgress = progressBar ? parseInt(progressBar.getAttribute('value') || '0') : 0;
+                    const barDuration = progressBar ? parseInt(progressBar.getAttribute('aria-valuemax') || '0') : 0;
+
                     bridge.postMessage({
                         type: 'STATE_UPDATE',
                         isPlaying: isPlaying,
-                        progress: progressBar ? parseInt(progressBar.getAttribute('value') || '0') : 0,
-                        duration: progressBar ? parseInt(progressBar.getAttribute('aria-valuemax') || '0') : 0,
+                        progress: mediaDuration > 0 ? mediaProgress : barProgress,
+                        duration: mediaDuration > 0 ? mediaDuration : barDuration,
+                        metadataFromPlayer: metadataFromPlayer,
                         title: title,
                         artist: artist,
                         videoId: videoId,

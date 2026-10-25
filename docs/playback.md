@@ -265,6 +265,29 @@ When the WebView reports a new `videoId`, Kaset treats that as authoritative
 even if the DOM title/artist are still stale. This avoids a race where YouTube
 switches tracks before the player bar text catches up.
 
+### Which text is believed
+
+The observer reports whether the title and byline it sent came from the page's **player API**
+(`metadataFromPlayer`) or from the player bar's DOM. The player API describes the video the player
+actually holds, so after an in-page swap it is the freshest text on the page — while the bar can still
+be rendering the outgoing song. A bar that names another track is therefore not evidence against
+player-API text (`updateTrackMetadata(..., metadataFromPlayer:)`), and a start Kaset asked for can adopt
+and publish it at once instead of waiting for the bar to catch up.
+
+This matters beyond the now-playing bar: `PlayerService.observedWebMetadata` is the observation the
+lyrics pipeline gates on ("only search once metadata is updated") and searches with. When the gate could
+not be satisfied, the loader fell back to the *row's* text after ~10 s — and for a row built from a card
+that text is the card's, which is how a provider could match, and cache, another song's lyrics under the
+right video id.
+
+The search is also keyed by the words it used, not only by video id
+(`SyncedLyricsService.searchedTexts`): a result found with a card's or an earlier track's text is stale
+by definition, so a refined title re-runs the search instead of serving the wrong lyrics forever.
+
+`STATE_UPDATE`'s `progress` and `duration` come from the media element when it has them, because the
+progress bar's DOM attributes lag a swap and would otherwise hand the lyrics search the previous
+track's length — which is what the duration score uses to choose between versions of the same title.
+
 ## Background Audio
 
 ### Window Close Behavior

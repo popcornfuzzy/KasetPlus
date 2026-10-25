@@ -245,6 +245,41 @@ struct WebPagePlaybackRulesTests {
         #expect(service.currentTrack?.videoId == "v2")
     }
 
+    @Test("The player's own words are believed while the bar still names the previous track")
+    func playerApiTextOutranksALaggingBar() async {
+        let service = PlayerService()
+        let cardRow = Song(
+            id: "v1",
+            title: "Song",
+            artists: [Artist(id: "card", name: "Song, Artist")],
+            album: nil,
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "v1"
+        )
+        await service.playQueue([cardRow, self.song("v2")], startingAt: 0)
+        // Until the page says anything, the lyrics loader's gate is closed: nothing would search with
+        // the card's words.
+        #expect(service.hasObservedWebMetadata(for: "v1") == false)
+
+        // The player reports the new track; the bar's link still points at the outgoing one.
+        service.updateTrackMetadata(
+            title: "Real Title",
+            artist: "Real Artist",
+            thumbnailUrl: "",
+            videoId: "v1",
+            playerBarVideoId: "outgoing",
+            metadataFromPlayer: true
+        )
+
+        #expect(service.currentTrack?.title == "Real Title")
+        #expect(service.currentTrack?.artistsDisplay == "Real Artist")
+        // What the lyrics search waits for, and what it searches with: not the card's words.
+        #expect(service.hasObservedWebMetadata(for: "v1"))
+        #expect(service.observedWebMetadata?.artist == "Real Artist")
+        #expect(service.lyricsSearchMetadata(for: "v1")?.artist == "Real Artist")
+    }
+
     @Test("A row built from a card takes the page's title and byline")
     func cardRowTakesThePagesText() async {
         let service = PlayerService()

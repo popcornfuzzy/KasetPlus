@@ -1022,7 +1022,12 @@ extension PlayerService {
     }
 
     /// Updates track metadata and enforces Kaset's queue when YouTube tries to diverge.
-    func updateTrackMetadata(title: String, artist: String, thumbnailUrl: String, videoId observedVideoId: String?) {
+    func updateTrackMetadata(
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        videoId observedVideoId: String?
+    ) {
         self.updateTrackMetadata(
             title: title,
             artist: artist,
@@ -1037,12 +1042,17 @@ extension PlayerService {
     /// - Parameter playerBarVideoId: the track the player bar itself is describing, when the page says.
     ///   It lags an in-page track swap, so a bar naming another track is not a description of the
     ///   track that is playing.
+    /// - Parameter metadataFromPlayer: whether the title and byline came from the page's *player API*
+    ///   rather than its bar. The player's own words describe the video it holds, so a bar that still
+    ///   names the previous track is no reason to doubt them — and the lyrics search waits on exactly
+    ///   this observation.
     func updateTrackMetadata(
         title: String,
         artist: String,
         thumbnailUrl: String,
         videoId observedVideoId: String?,
-        playerBarVideoId: String?
+        playerBarVideoId: String?,
+        metadataFromPlayer: Bool = false
     ) {
         self.logger.debug("Track metadata updated: \(title) - \(artist)")
 
@@ -1058,6 +1068,7 @@ extension PlayerService {
         // therefore not taken, but the track the player holds still is: reconciliation has to run on it,
         // or the app would keep showing the previous row while the page plays the next one.
         let barDescribesAnotherTrack: Bool = {
+            guard !metadataFromPlayer else { return false }
             guard let playerBarVideoId, !playerBarVideoId.isEmpty,
                   let observed = self.normalizedObservedVideoId(observedVideoId)
             else { return false }

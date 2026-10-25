@@ -876,10 +876,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.pendingPlayVideoId = videoId
         self.applyPendingStartGrace()
 
-        // The position belongs to the track that just ended. Keeping it would leave the player bar at
-        // the old song's position and, worse, make the *next* observation look like the end of a song
-        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time.
+        // The position and the length belong to the track that just ended. Keeping them would leave the
+        // player bar at the old song's position, make the *next* observation look like the end of a song
+        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time — and hand the
+        // lyrics search another track's length, which is what its version matching uses.
         self.progress = 0
+        self.duration = 0
 
         self.applyPlaybackKindForPlayback(videoId: videoId, isPodcast: false)
         SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
@@ -968,10 +970,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.pendingPlayVideoId = song.videoId
         self.applyPendingStartGrace()
 
-        // The position belongs to the track that just ended. Keeping it would leave the player bar at
-        // the old song's position and, worse, make the *next* observation look like the end of a song
-        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time.
+        // The position and the length belong to the track that just ended. Keeping them would leave the
+        // player bar at the old song's position, make the *next* observation look like the end of a song
+        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time — and hand the
+        // lyrics search another track's length, which is what its version matching uses.
         self.progress = 0
+        self.duration = 0
 
         self.applyPlaybackKindForPlayback(
             videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
