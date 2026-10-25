@@ -161,12 +161,20 @@ hand-rolled:
   each pane's own content still lays out below the toolbar. That is the whole reason the titlebar reads as
   part of the sidebar rather than as a band above it.
 - **The app states only what is its decision:** whether the Now Playing sidebar is open (app state, from
-  which the pane's collapse is derived) and the width it opens at the first time. A collapse the reader
-  performs — the toolbar toggle, a drag, a double-click on the divider — is observed on the item's
-  `isCollapsed` and fed back into app state, and the app's own writes are flagged so they are not read
-  back as a reader's action. **With the setting on, the column is open at launch**, so the choice of
-  design is also the choice of what the window opens with: `PlayerService.init` states it before the
-  window is created from it.
+  which the pane's collapse is derived) and the width it opens at the first time. **The toolbar button is
+  the only way a user collapses the column.** A divider drag stops at the pane's minimum and a double click
+  on the divider does nothing, because the column's item states `canCollapse = false` — AppKit collapses a
+  collapsible item on either gesture, and at the column's floor (where a narrow column is still useful) a
+  drag read as the column breaking and had to be undone with the toggle. That flag also disables AppKit's
+  `toggleInspector(_:)`, which is where the open/close **animation** comes from, so the button runs the
+  toggle with the flag turned on for the length of its own call
+  (`WindowShellController.toggleNowPlayingColumn`) and put straight back; no drag can begin inside a
+  button's action. The same toggle animates a change the app asks for from outside a layout pass (the
+  transport's lyrics/queue buttons, ⌘L, the Settings switch). A collapse the reader performs is observed on
+  the item's `isCollapsed` and fed back through `onInspectorCollapsedChange`, and the app's own writes are
+  flagged so they are not read back as a reader's action. **With the setting on, the column is open at
+  launch**, so the choice of design is also the choice of what the window opens with: `PlayerService.init`
+  states it before the window is created from it.
 - **The window's minimum is the panes' again, and the page is no longer the pane that gives way.** This
   revision first stated the opposite: the panes' minimums add up to more than the window's own 900pt
   floor, so the *page* was allowed to shrink (down to a stated `squeezedContentWidth` of 320) and the
@@ -188,6 +196,17 @@ hand-rolled:
   at every width swept, and identical while the player bar was hovered. The cost is a larger minimum than
   this ADR originally chose — 967 with the column closed, 1267 with it open — and the page's 765 is the
   term that sets it; making the player bar able to compress is what would bring it back down.
+- **Revision — the page gives way while a divider is dragged, and only then.** Stating the page's floor as
+  the split item's `minimumThickness` left the side panes no range at the window's own opening width: at
+  1280 the Now Playing column's cap was 313 at best and 293 with the navigation sidebar at its usual 220 —
+  under the column's own 300pt minimum — so its divider could not move outward and a drag inward collapsed
+  it. The column had to be toggled back open, and it never felt resizable. The shell now states two page floors: `minContentWidth` (765) is what the **window's** minimum
+  is computed from, so a window never opens with a page narrower than it, and `contentSqueezeWidth` (500)
+  is what the split item enforces, so a drag trades page width for the side pane's own stated range. The
+  column has its whole 300–560 range at the window's own 1267 minimum, a window resize still never squeezes
+  the page below its stated width, and the page is only the pane that gives way when the reader asks for a
+  wider sidebar. Verified by driving the shell's real split view in an offscreen window
+  (`WindowShellDividerTests`), which is the only way the shell's own behaviour can be checked.
 - **The navigation sidebar brings its own surface.** `NavigationSplitView` used to supply a sidebar
   material for the sidebar's SwiftUI to sit in. With the split view gone, the pane supplies it again
   (`SidebarMaterialPane`: an `NSVisualEffectView` with the `.sidebar` material and the sidebar's SwiftUI

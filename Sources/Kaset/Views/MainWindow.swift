@@ -30,6 +30,9 @@ struct MainWindow: View {
         /// minimum below what the content requires is a page that crops, and AppKit's answer to a split view
         /// requirement larger than its width is to break a constraint.
         static let pageMinWidth: CGFloat = 765
+        /// The narrowest the page gives way to while a divider is dragged: the sidebars keep their own
+        /// stated ranges, and the window's minimum still holds the page at `pageMinWidth`.
+        static let pageSqueezeWidth: CGFloat = 500
         static let navigationSidebarMinWidth: CGFloat = 200
         static let navigationSidebarIdealWidth: CGFloat = 220
         static let navigationSidebarMaxWidth: CGFloat = 300
@@ -520,9 +523,10 @@ struct MainWindow: View {
             showsInspector: self.playerService.isNowPlayingSidebarVisible,
             seedInspectorWidth: self.seedInspectorWidth,
             onInspectorCollapsedChange: { collapsed in
-                // The reader moved the pane themselves — the toolbar's toggle, a drag, or a double click
-                // on the divider — so the app's page state follows the pane rather than the other way
-                // round. (`isApplyingState` in the shell keeps the app's own writes out of this.)
+                // The reader pressed the toolbar's toggle, so the app's page state follows the pane rather
+                // than the other way round. (`isApplyingState` in the shell keeps the app's own writes out
+                // of this.) A divider drag never gets here: the column's item does not accept a user
+                // collapse, so a drag stops at the column's minimum.
                 withAnimation(AppAnimation.standard) {
                     if collapsed {
                         self.playerService.closeNowPlayingSidebar()
@@ -640,6 +644,7 @@ struct MainWindow: View {
             minSidebarWidth: Layout.navigationSidebarMinWidth,
             maxSidebarWidth: Layout.navigationSidebarMaxWidth,
             minContentWidth: Layout.pageMinWidth,
+            contentSqueezeWidth: Layout.pageSqueezeWidth,
             minWindowWidth: Layout.detailMinWidth,
             minInspectorWidth: Layout.nowPlayingSidebarMinWidth,
             maxInspectorWidth: Layout.nowPlayingSidebarMaxWidth

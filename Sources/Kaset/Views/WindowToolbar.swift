@@ -462,7 +462,9 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     ///
     /// Wired by the shell to its own `NSSplitViewController.toggleInspector(_:)`, so the item's action is
     /// the app's rather than a selector sent down the responder chain, where nothing is guaranteed to be
-    /// in the chain to receive it — which is why the button used to do nothing at all when pressed.
+    /// in the chain to receive it — which is why the button used to do nothing at all when pressed. The
+    /// shell runs it through `toggleNowPlayingColumn()`, which is where the column's animation comes from;
+    /// this button is also the only gesture that collapses the column (a divider drag stops at its minimum).
     var onToggleNowPlaying: (() -> Void)?
 
     // MARK: - Item list

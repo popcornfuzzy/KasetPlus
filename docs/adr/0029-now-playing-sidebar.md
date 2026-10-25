@@ -78,10 +78,11 @@ artwork bullet below already stated. The transport's lyrics/queue buttons and �
 so the column, the toggle and the shortcuts can never disagree.
 
 The app's collapse state and AppKit's pane follow each other in both directions: a page change
-re-derives the pane's collapse, and a collapse the reader performs — the toolbar toggle, a drag, a
-double-click on the divider — is observed on the item and fed back through
-`onInspectorCollapsedChange`, with the app's own writes flagged so they are not read back as a
-reader's action.
+re-derives the pane's collapse, and a collapse that happens to the item is observed and fed back through
+`onInspectorCollapsedChange`, with the app's own writes flagged so they are not read back as a reader's
+action. The toolbar toggle is the **only** way a reader collapses the column — its item states
+`canCollapse = false`, so a divider drag stops at the column's minimum instead of collapsing it (see
+[ADR-0030](0030-appkit-window-shell.md)).
 
 **The width the reader drags is AppKit's to remember**, under `NSSplitView.autosaveName`.
 `SettingsManager.nowPlayingSidebarWidth` is now only the width the column *opens at the first time*,
