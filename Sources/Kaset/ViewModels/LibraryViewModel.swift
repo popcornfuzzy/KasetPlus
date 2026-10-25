@@ -500,6 +500,35 @@ final class LibraryViewModel {
         await self.load()
     }
 
+    /// Drops this window's library snapshot and loads the active account's library again.
+    ///
+    /// Used when the account changes. Every list and ID set here belongs to the account that was
+    /// active when it was fetched, and `refresh()` deliberately keeps them: it preserves a snapshot
+    /// through a weak response and carries optimistic artist mutations forward. Across a switch that
+    /// preservation is the bug — it is the previous channel's library, not a stale copy of this one —
+    /// so the switch path states plainly that there is nothing worth keeping.
+    func refreshForAccountSwitch() async {
+        self.markLibraryStateChanged()
+        self.needsReloadAfterCurrentLoad = false
+        self.needsReloadOnActivation = false
+
+        self.loadingState = .idle
+        self.playlists = []
+        self.artists = []
+        self.podcastShows = []
+        self.libraryPlaylistIds = []
+        self.libraryArtistIds = []
+        self.libraryPodcastIds = []
+        self.selectedPlaylistDetail = nil
+        self.playlistDetailLoadingState = .idle
+        self.pendingAddedArtists.removeAll()
+        self.pendingAddedArtistMatchCounts.removeAll()
+        self.pendingRemovedArtistIds.removeAll()
+        self.pendingRemovedArtistMatchCounts.removeAll()
+
+        await self.load()
+    }
+
     /// Forces a network-backed refresh by clearing response caches first.
     func refreshFromNetwork() async {
         APICache.shared.invalidate(matching: "browse:")

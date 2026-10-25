@@ -1023,6 +1023,12 @@ struct MainWindow: View {
     ///
     /// This method is called when the user switches between their primary account
     /// and brand accounts, ensuring all views display content for the new account.
+    ///
+    /// The library is reloaded through `refreshForAccountSwitch()` rather than `refresh()`:
+    /// its snapshot is the previous account's library, and a refresh is written to keep what
+    /// it can (see `LibraryViewModel.applyLibraryContent`). Pages that hold their own
+    /// account-scoped list — a playlist, the Liked Music page — reload from the account
+    /// change themselves (see `PlaylistDetailViewModel.loadIfAccountChanged`).
     private func refreshAllContent() async {
         // Parallel refresh of all content views
         await withTaskGroup(of: Void.self) { group in
@@ -1033,7 +1039,7 @@ struct MainWindow: View {
             group.addTask { await self.newReleasesViewModel?.refresh() }
             group.addTask { await self.podcastsViewModel?.refresh() }
             group.addTask { await self.historyViewModel?.load() }
-            group.addTask { await self.libraryViewModel?.refresh() }
+            group.addTask { await self.libraryViewModel?.refreshForAccountSwitch() }
         }
     }
 }

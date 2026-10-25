@@ -421,6 +421,39 @@ struct LibraryViewModelTests {
         #expect(self.viewModel.artists.first?.id == "UC-channel-1")
     }
 
+    /// An account switch is not a stale copy of this library, it is a different one: the refresh path
+    /// keeps artists through a landing-fallback response (see `refreshPreservesArtistsDuringLandingFallback`),
+    /// which across a switch leaves the previous channel's artists in the sidebar and the Library page.
+    @Test("Account switch drops the previous account's library, even through a landing fallback")
+    func accountSwitchDropsPreviousLibrary() async {
+        self.mockClient.libraryContentResponses = [
+            PlaylistParser.LibraryContent(
+                playlists: [TestFixtures.makePlaylist(id: "VL-channel-a", title: "Channel A playlist")],
+                artists: [TestFixtures.makeArtist(id: "UC-channel-a", name: "Channel A artist")],
+                podcastShows: []
+            ),
+        ]
+        await self.viewModel.load()
+        #expect(self.viewModel.isInLibrary(playlistId: "VL-channel-a"))
+
+        self.mockClient.libraryContentResponses = [
+            PlaylistParser.LibraryContent(
+                playlists: [],
+                artists: [TestFixtures.makeArtist(id: "UC-channel-b-preview", name: "Channel B preview")],
+                podcastShows: [],
+                artistsSource: .landingFallback
+            ),
+        ]
+
+        await self.viewModel.refreshForAccountSwitch()
+
+        #expect(self.viewModel.isInLibrary(playlistId: "VL-channel-a") == false)
+        #expect(self.viewModel.playlists.isEmpty)
+        // The new account's artists are what is left, preview or not.
+        #expect(self.viewModel.artists.map(\.id) == ["UC-channel-b-preview"])
+        #expect(self.viewModel.libraryArtistIds == Set(["UC-channel-b-preview"]))
+    }
+
     @Test("load deduplicates equivalent library artist IDs")
     func loadDeduplicatesEquivalentArtistIds() async {
         self.mockClient.libraryContentResponses = [

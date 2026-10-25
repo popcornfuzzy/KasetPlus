@@ -42,6 +42,35 @@ struct PlaylistDetailViewModelTests {
         #expect(self.viewModel.hasMore == false)
     }
 
+    // MARK: - Account Switch Tests
+
+    /// A playlist page holds the account's own list — and the Liked Music page *is* the account's
+    /// liked songs — so switching channels has to load the page again instead of leaving the
+    /// previous channel's rows, and their like state, on screen.
+    @Test("Switching accounts drops the loaded list and loads the new account's")
+    func accountSwitchReloads() async {
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 2
+        )
+        await self.viewModel.loadIfAccountChanged("primary")
+        #expect(self.mockClient.getPlaylistIds.count == 1)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 2)
+
+        self.mockClient.playlistDetails["VL-test-playlist"] = TestFixtures.makePlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            trackCount: 5
+        )
+        await self.viewModel.loadIfAccountChanged("brand-channel")
+
+        #expect(self.mockClient.getPlaylistIds.count == 2)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 5)
+
+        // The same account again is a no-op, which is what lets the page key its load on the ID.
+        await self.viewModel.loadIfAccountChanged("brand-channel")
+        #expect(self.mockClient.getPlaylistIds.count == 2)
+    }
+
     // MARK: - Load Tests
 
     @Test("Load success sets playlist detail")

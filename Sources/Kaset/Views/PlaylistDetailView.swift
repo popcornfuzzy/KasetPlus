@@ -16,6 +16,7 @@ struct PlaylistDetailView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
+    @Environment(AccountService.self) private var accountService
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @Environment(\.dismiss) private var dismiss
 
@@ -220,7 +221,11 @@ struct PlaylistDetailView: View {
                 PlayerBar()
             }
         }
-        .task {
+        // Keyed by the active account: the tracks here are that account's list (Liked Music is the
+        // account's liked songs, a playlist is the account's copy), so switching channels has to
+        // reload the page instead of leaving the previous channel's rows — and their like state —
+        // on screen. See `PlaylistDetailViewModel.loadIfAccountChanged`.
+        .task(id: self.accountService.currentAccount?.id) {
             // The header's library control states membership, which is read off the window's library
             // snapshot — and a window that has never shown the Library has none, so the control read "Add
             // to Library" on pages the account already owned. The two loads go together: the page never
@@ -229,8 +234,8 @@ struct PlaylistDetailView: View {
                 if let libraryViewModel = self.libraryViewModel {
                     group.addTask { await libraryViewModel.loadIfNeeded() }
                 }
-                if self.viewModel.loadingState == .idle {
-                    group.addTask { await self.viewModel.load() }
+                group.addTask {
+                    await self.viewModel.loadIfAccountChanged(self.accountService.currentAccount?.id)
                 }
             }
         }
@@ -1835,4 +1840,5 @@ private struct PlaylistToolbarControls: View {
         onNavigateToArtist: { _ in }
     )
     .environment(PlayerService())
+    .environment(AccountService(ytMusicClient: client, authService: authService))
 }

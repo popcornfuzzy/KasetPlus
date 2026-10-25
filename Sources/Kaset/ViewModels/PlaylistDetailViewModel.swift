@@ -35,6 +35,11 @@ final class PlaylistDetailViewModel {
     /// Generation counter so a cancelled prefill can't clear the handle of a newer one.
     private var prefillGeneration = 0
 
+    /// Bumped whenever the list on screen is replaced or abandoned, so a request issued for the
+    /// list that is gone cannot write over the one that replaced it. An account switch is the case
+    /// this exists for: the previous account's page is still in flight.
+    private var loadGeneration = 0
+
     /// Whether loading a playlist prefetches the following page in the background. Tests turn
     /// this off to keep page accounting deterministic.
     var prefetchesFollowingPage = true
@@ -90,10 +95,56 @@ final class PlaylistDetailViewModel {
         return result.isEmpty ? nil : result
     }
 
+    /// The account whose list this page holds, once one has been loaded.
+    private var loadedAccountID: String?
+
+    /// Whether a list has been requested for this page at all, so the first request is told apart
+    /// from a repeat for the same account even while the ID is still `nil`.
+    private var hasLoadedForAccount = false
+
+    /// Loads the page for the account that is active now, reloading after an account switch.
+    ///
+    /// The list is the account's own — the Liked Music page *is* the account's liked songs — so a
+    /// page loaded under one channel must not stay on screen after the app switches to another.
+    /// The account ID comes from `AccountService`, which is what the window observes; a repeat call
+    /// for the account already loaded is a no-op, which is what lets the page key its load on it.
+    func loadIfAccountChanged(_ accountID: String?) async {
+        if self.hasLoadedForAccount, self.loadedAccountID == accountID { return }
+
+        let isAccountSwitch = self.hasLoadedForAccount
+        self.loadedAccountID = accountID
+        self.hasLoadedForAccount = true
+        if isAccountSwitch {
+            self.discardLoadedContentForAccountSwitch()
+        }
+        await self.load()
+    }
+
+    /// Drops everything the previous account's page held, so the switch shows the new account's list
+    /// loading instead of briefly describing the old one.
+    private func discardLoadedContentForAccountSwitch() {
+        self.prefillGeneration += 1
+        self.prefillTask?.cancel()
+        self.prefillTask = nil
+        self.inFlightPageLoad?.cancel()
+        self.inFlightPageLoad = nil
+        self.loadAllTracksTask?.cancel()
+        self.loadAllTracksTask = nil
+        self.isLoadingAllTracks = false
+
+        self.loadGeneration &+= 1
+        self.playlistDetail = nil
+        self.loadedVideoIds = []
+        self.hasMore = false
+        self.sortOrderError = nil
+        self.loadingState = .idle
+    }
+
     /// Loads the playlist details including tracks.
     func load() async {
         guard self.loadingState != .loading else { return }
 
+        let generation = self.loadGeneration
         self.loadingState = .loading
         let playlistTitle = self.playlist.title
         let playlistId = self.playlist.id
@@ -101,6 +152,10 @@ final class PlaylistDetailViewModel {
 
         do {
             let result = try await self.fetchPlaylistDetail()
+            guard generation == self.loadGeneration else {
+                self.logger.debug("Discarding playlist content requested for a list that was replaced")
+                return
+            }
             self.playlistDetail = result.detail
             self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
@@ -113,9 +168,11 @@ final class PlaylistDetailViewModel {
             self.prefillNextPage()
         } catch is CancellationError {
             // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
+            guard generation == self.loadGeneration else { return }
             self.logger.debug("Playlist detail load cancelled")
             self.loadingState = .idle
         } catch {
+            guard generation == self.loadGeneration else { return }
             self.logger.error("Failed to load playlist: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))
         }
@@ -401,7 +458,12 @@ final class PlaylistDetailViewModel {
     }
 
     func refresh() async {
+        // A refresh cannot replace a list that is still arriving: there would be nothing to swap,
+        // and discarding the in-flight request would leave the page loading with no response left.
+        guard self.loadingState != .loading, self.loadingState != .loadingMore else { return }
+
         // A refresh replaces the track list, so any in-flight prefill, full scan, or page fetch is stale.
+        self.loadGeneration &+= 1
         self.prefillGeneration += 1
         self.prefillTask?.cancel()
         self.prefillTask = nil
@@ -413,7 +475,6 @@ final class PlaylistDetailViewModel {
 
         // Manual refresh should fetch fresh data instead of reusing browse cache.
         APICache.shared.invalidate(matching: "browse:")
-        guard self.loadingState != .loading, self.loadingState != .loadingMore else { return }
 
         guard self.playlistDetail != nil, self.loadingState == .loaded else {
             self.playlistDetail = nil
@@ -426,8 +487,10 @@ final class PlaylistDetailViewModel {
         let playlistId = self.playlist.id
         self.logger.info("Refreshing playlist in background: \(playlistTitle), ID: \(playlistId)")
 
+        let generation = self.loadGeneration
         do {
             let result = try await self.fetchPlaylistDetail()
+            guard generation == self.loadGeneration else { return }
             self.playlistDetail = result.detail
             self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore

@@ -18,6 +18,11 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     // MARK: - Response Stubs
 
     var homeResponse: HomeResponse = .init(sections: [])
+    /// Per-call home responses, consumed in order, so a test can answer the request made before an
+    /// account switch and the one made after it with different feeds.
+    var homeResponses: [HomeResponse] = []
+    /// Per-call latency for `getHome()`, consumed in order (mirrors `libraryContentResponseDelays`).
+    var homeResponseDelays: [Duration] = []
     var homeContinuationSections: [[HomeSection]] = []
     var exploreResponse: HomeResponse = .init(sections: [])
     var exploreContinuationSections: [[HomeSection]] = []
@@ -236,8 +241,15 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.getHomeCalled = true
         self.getHomeCallCount += 1
         self._homeContinuationIndex = 0
+        // Claim the response when the request starts, so a per-call response belongs to the call that
+        // asked for it rather than to whichever call finishes first.
+        let response = self.homeResponses.isEmpty ? nil : self.homeResponses.removeFirst()
+        if !self.homeResponseDelays.isEmpty {
+            let delay = self.homeResponseDelays.removeFirst()
+            try? await Task.sleep(for: delay)
+        }
         if let error = shouldThrowError { throw error }
-        return self.homeResponse
+        return response ?? self.homeResponse
     }
 
     func getHomeContinuation() async throws -> [HomeSection]? {
@@ -953,6 +965,8 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     func reset() {
         self.getHomeCalled = false
         self.getHomeCallCount = 0
+        self.homeResponses = []
+        self.homeResponseDelays = []
         self.getHomeContinuationCalled = false
         self.getHomeContinuationCallCount = 0
         self._homeContinuationIndex = 0

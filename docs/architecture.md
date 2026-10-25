@@ -523,6 +523,17 @@ App Launch
 └─────────────────┘
 ```
 
+## Account Switching
+
+A brand account (channel) is selected by `context.user.onBehalfOfUser` on every request (`YTMusicClient.brandIdProvider`), and `APICache` keys include the brand ID, so a response cached for one channel is never served to another. `AccountService.switchAccount(to:)` is the only writer of `currentAccount`.
+
+What a switch must do, and who does it:
+
+- **Requests already in flight belong to the channel that asked.** Their responses are discarded rather than applied: `HomeViewModel` and `PlaylistDetailViewModel` carry a load generation that a refresh bumps, and `YTMusicClient.resetSessionStateForAccountSwitch()` drops every continuation token (home/explore/charts/moods/new releases/podcasts, search, liked songs, playlist pages). A continuation requested under one channel would otherwise append the other channel's sections.
+- **The window reloads the feeds** (`MainWindow.refreshAllContent`, driven by `currentAccount?.id`). The library goes through `LibraryViewModel.refreshForAccountSwitch()` rather than `refresh()`: the refresh path deliberately preserves a snapshot (a landing-fallback artist list, optimistic artist edits), which across a switch would keep the previous channel's state on screen.
+- **A page that holds its own account-owned list reloads itself**: `PlaylistDetailView` keys its `.task` on the account ID and calls `PlaylistDetailViewModel.loadIfAccountChanged`, which drops the loaded tracks first. The Liked Music page is the same view, and its rows' like state comes from that list.
+- **Like and playlist-membership state is per account** in `SongLikeStatusManager` and `PlaylistMembershipManager` (keyed by account ID), and the active scope is set by `AccountService`. A surface that shows a song's like state reads it through those caches; the `Song.likeStatus` it was handed is only a fallback from the data that produced it.
+
 ## API Request Flow
 
 ```

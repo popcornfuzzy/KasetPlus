@@ -22,6 +22,11 @@ final class HomeViewModel {
     /// nonisolated(unsafe) required for deinit access; Swift 6.2 warning is expected.
     nonisolated(unsafe) private var backgroundLoadTask: Task<Void, Never>?
 
+    /// Bumped by every refresh. A response requested before the bump belongs to the feed the
+    /// reader has already left behind — after an account switch, the previous channel's — and
+    /// must not be able to land on screen once the new request has started.
+    private var loadGeneration: UInt64 = 0
+
     /// Number of background continuations loaded.
     private var continuationsLoaded = 0
 
@@ -40,11 +45,16 @@ final class HomeViewModel {
     func load() async {
         guard self.loadingState != .loading else { return }
 
+        let generation = self.loadGeneration
         self.loadingState = .loading
         self.logger.info("Loading home content")
 
         do {
             let response = try await client.getHome()
+            guard generation == self.loadGeneration else {
+                self.logger.debug("Discarding home content requested before the latest refresh")
+                return
+            }
             self.sections = response.sections
             self.hasMoreSections = self.client.hasMoreHomeSections
             self.loadingState = .loaded
@@ -57,19 +67,21 @@ final class HomeViewModel {
             self.logger.debug("Home sections: [\(sectionSummary)]")
 
             // Start background loading of additional sections
-            self.startBackgroundLoading()
+            self.startBackgroundLoading(generation: generation)
         } catch is CancellationError {
             // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
+            guard generation == self.loadGeneration else { return }
             self.logger.debug("Home load cancelled")
             self.loadingState = .idle
         } catch {
+            guard generation == self.loadGeneration else { return }
             self.logger.error("Failed to load home: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))
         }
     }
 
     /// Loads more sections in the background progressively.
-    private func startBackgroundLoading() {
+    private func startBackgroundLoading(generation: UInt64) {
         self.backgroundLoadTask?.cancel()
         self.backgroundLoadTask = Task { [weak self] in
             guard let self else { return }
@@ -79,17 +91,19 @@ final class HomeViewModel {
 
             guard !Task.isCancelled else { return }
 
-            await self.loadMoreSections()
+            await self.loadMoreSections(generation: generation)
         }
     }
 
     /// Loads additional sections from continuations progressively.
-    private func loadMoreSections() async {
+    private func loadMoreSections(generation: UInt64) async {
         while self.hasMoreSections, self.continuationsLoaded < Self.maxContinuations {
-            guard self.loadingState == .loaded else { break }
+            guard self.loadingState == .loaded, generation == self.loadGeneration else { break }
 
             do {
                 if let additionalSections = try await client.getHomeContinuation() {
+                    // A continuation requested under one account continues that account's feed.
+                    guard generation == self.loadGeneration else { break }
                     self.sections.append(contentsOf: additionalSections)
                     self.continuationsLoaded += 1
                     self.hasMoreSections = self.client.hasMoreHomeSections
@@ -114,10 +128,17 @@ final class HomeViewModel {
 
     /// Refreshes home content.
     func refresh() async {
+        // The feed on screen belongs to the account that was active when it was requested. A
+        // refresh is the app saying "this is a different reader now": the earlier request's
+        // response is discarded when it arrives instead of replacing the new one, which is how
+        // an account switch used to leave the other channel's home up.
+        self.loadGeneration &+= 1
         self.backgroundLoadTask?.cancel()
         self.sections = []
         self.hasMoreSections = true
         self.continuationsLoaded = 0
+        // Let the load below start even though the discarded one is still in flight.
+        self.loadingState = .idle
         await self.load()
     }
 }

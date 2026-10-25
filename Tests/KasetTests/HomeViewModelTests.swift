@@ -63,6 +63,32 @@ struct HomeViewModelTests {
         #expect(self.mockClient.getHomeCallCount == 2)
     }
 
+    /// Home is refreshed when the active account changes, and the request for the feed on screen is
+    /// still in flight at that moment. Its response used to land afterwards — the previous channel's
+    /// home, on the new channel's screen — so a refresh now discards everything requested before it.
+    @Test("Refresh discards a load that was already in flight")
+    func refreshDiscardsInFlightLoad() async {
+        self.mockClient.homeResponses = [
+            HomeResponse(sections: [TestFixtures.makeHomeSection(title: "Previous channel")]),
+            HomeResponse(sections: [TestFixtures.makeHomeSection(title: "Current channel")]),
+        ]
+        self.mockClient.homeResponseDelays = [.milliseconds(200), .zero]
+
+        let staleLoad = Task { await self.viewModel.load() }
+        // Wait for the first request to be in flight — the mock counts it before its delay — then
+        // refresh the way an account switch does, so the refresh is the second request.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while self.mockClient.getHomeCallCount == 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        await self.viewModel.refresh()
+        await staleLoad.value
+
+        #expect(self.viewModel.sections.map(\.title) == ["Current channel"])
+        #expect(self.viewModel.loadingState == .loaded)
+        #expect(self.mockClient.getHomeCallCount == 2)
+    }
+
     @Test("Refresh clears sections and reloads")
     func refreshClearsSectionsAndReloads() async {
         self.mockClient.homeResponse = TestFixtures.makeHomeResponse(sectionCount: 2)
