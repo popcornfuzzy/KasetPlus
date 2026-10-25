@@ -13,10 +13,10 @@ struct KuGoKeyword: Sendable, Equatable {
 
 /// Fetches lyrics from KuGou's lyrics library.
 ///
-/// Flow: search the KuGou song API for a matching track (with duration
-/// tolerance), look up that song's lyrics by hash, download the base64-encoded
-/// LRC payload, decode it, and strip metadata lines. KuGou delivers
-/// line-synced LRC, so this provider is line-tier.
+/// Flow: search the KuGou song API for a track that names the requested song
+/// (title and artist, nearest length first), look up that song's lyrics by hash,
+/// download the base64-encoded LRC payload, decode it, and strip metadata
+/// lines. KuGou delivers line-synced LRC, so this provider is line-tier.
 final class KuGoProvider: LyricsProvider {
     let name = "KuGo"
     let capability: LyricsCapability = .line
@@ -27,9 +27,6 @@ final class KuGoProvider: LyricsProvider {
 
     private static let pageSize = 8
     private static let headCutLimit = 30
-    /// Seconds of difference tolerated between the playing track and a search
-    /// result when matching by duration.
-    static let durationTolerance = 8
 
     private let session: URLSession
 
@@ -75,16 +72,19 @@ final class KuGoProvider: LyricsProvider {
         return Self.processContent(content, source: self.name)
     }
 
-    /// Finds the first candidate whose song matches the requested duration,
-    /// falling back to a keyword lyrics search when no hash lookup succeeds.
+    /// Finds lyrics for the first search hit that is actually the requested
+    /// track, falling back to a keyword lyrics search when no hash lookup
+    /// succeeds.
     private func lyricsCandidate(keyword: KuGoKeyword, duration: Int?) async throws -> KuGoLyricsCandidate? {
-        for song in try await self.searchSongs(keyword: keyword) where Self.isSongAcceptable(song, duration: duration) {
+        let songs = try await self.searchSongs(keyword: keyword)
+        for song in Self.lookupOrder(songs, keyword: keyword, duration: duration) {
             guard let hash = song.hash, !hash.isEmpty else { continue }
             if let candidate = try await self.searchLyricsByHash(hash).first {
                 return candidate
             }
         }
-        return try await self.searchLyricsByKeyword(keyword: keyword, duration: duration).first
+        let candidates = try await self.searchLyricsByKeyword(keyword: keyword, duration: duration)
+        return Self.bestKeywordCandidate(candidates, keyword: keyword)
     }
 
     // MARK: - Requests
@@ -204,12 +204,105 @@ final class KuGoProvider: LyricsProvider {
 
     // MARK: - Candidate matching
 
-    /// Whether a song's duration is close enough to the playing track's.
-    /// A nil duration (or -1, the legacy sentinel) means "don't care".
-    static func isSongAcceptable(_ song: KuGoSongInfo, duration: Int?) -> Bool {
-        guard let duration, duration != -1 else { return true }
-        guard let songDuration = song.duration else { return false }
-        return abs(songDuration - duration) <= Self.durationTolerance
+    /// The search hits that name the requested track, nearest length first.
+    ///
+    /// Length is a ranking hint here, never the admission test. KuGou's song
+    /// search answers with other artists' songs that only share the title, so
+    /// admitting a hit because its length is a few seconds close — while the
+    /// track that was actually asked for has no lyrics — is how a different
+    /// song's lyrics end up on screen.
+    static func lookupOrder(
+        _ songs: [KuGoSongInfo],
+        keyword: KuGoKeyword,
+        duration: Int?
+    ) -> [KuGoSongInfo] {
+        let matched = songs.filter { Self.isSameTrack(song: $0, keyword: keyword) }
+        guard let duration, duration != -1 else { return matched }
+
+        func distance(_ song: KuGoSongInfo) -> Int {
+            song.duration.map { abs($0 - duration) } ?? .max
+        }
+
+        return matched.enumerated()
+            .sorted { lhs, rhs in
+                let left = distance(lhs.element)
+                let right = distance(rhs.element)
+                return left == right ? lhs.offset < rhs.offset : left < right
+            }
+            .map(\.element)
+    }
+
+    /// The keyword-search hit that names the requested track. KuGou lists its
+    /// own best guess first, and that guess is not checked against the song
+    /// that was asked for — so the order alone decides nothing.
+    static func bestKeywordCandidate(
+        _ candidates: [KuGoLyricsCandidate],
+        keyword: KuGoKeyword
+    ) -> KuGoLyricsCandidate? {
+        candidates.first { candidate in
+            // This endpoint has served the two names the other way round
+            // (`song: The Weeknd`, `singer: Blinding Lights`), so either order
+            // names the track.
+            Self.isSameTrack(title: candidate.song, artist: candidate.singer, keyword: keyword)
+                || Self.isSameTrack(title: candidate.singer, artist: candidate.song, keyword: keyword)
+        }
+    }
+
+    /// Whether KuGou's name for a song is the track that was asked for.
+    static func isSameTrack(song: KuGoSongInfo, keyword: KuGoKeyword) -> Bool {
+        Self.isSameTrack(title: song.songname, artist: song.singername, keyword: keyword)
+    }
+
+    /// Whether a title/artist pair from KuGou names the requested track. A name
+    /// KuGou didn't send can't be verified, so it is not a match.
+    static func isSameTrack(title: String?, artist: String?, keyword: KuGoKeyword) -> Bool {
+        guard let title, let artist else { return false }
+        return Self.titlesAgree(title, keyword.title) && Self.artistsAgree(artist, keyword.artist)
+    }
+
+    /// Titles agree once bracketed annotations, case, accents and punctuation
+    /// are gone: `Savior` and `Savior (Sped Up)` carry the same lyrics, while
+    /// `Savior Complex` is another song. Nothing looser than equality belongs
+    /// here — a shared prefix is not the same title.
+    static func titlesAgree(_ candidate: String, _ requested: String) -> Bool {
+        let candidateKey = Self.comparisonKey(candidate)
+        let requestedKey = Self.comparisonKey(requested)
+        guard !candidateKey.isEmpty, !requestedKey.isEmpty else { return false }
+        return candidateKey == requestedKey
+    }
+
+    /// Artists agree when their credits share a name: KuGou adds a featured
+    /// artist YouTube doesn't name, or credits only the lead of a duet.
+    static func artistsAgree(_ candidate: String, _ requested: String) -> Bool {
+        let candidateNames = Self.artistNames(candidate)
+        let requestedNames = Self.artistNames(requested)
+        guard !candidateNames.isEmpty, !requestedNames.isEmpty else { return false }
+        return !candidateNames.isDisjoint(with: requestedNames)
+    }
+
+    /// Comparison form of a KuGou title or artist: bracketed annotations
+    /// dropped, case and accents folded, punctuation and spacing collapsed to a
+    /// single space between words.
+    private static func comparisonKey(_ text: String) -> String {
+        var key = Self.normalizeTitle(text)
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "’", with: "")
+            .folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        key = key.replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+        return key.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The individual names in an artist credit, in comparison form.
+    private static func artistNames(_ artist: String) -> Set<String> {
+        let credit = artist
+            .replacingOccurrences(of: "、", with: ",")
+            .replacingOccurrences(of: "・", with: ",")
+        return Set(
+            LyricsArtistNormalizer.artistComponents(credit)
+                .map(Self.comparisonKey)
+                .filter { !$0.isEmpty }
+        )
     }
 
     // MARK: - Content processing
@@ -340,16 +433,22 @@ final class KuGoProvider: LyricsProvider {
 
 struct KuGoSongInfo: Decodable, Sendable, Equatable {
     let hash: String?
-    let duration: Int?
+    let duration: Int? // seconds
+    let songname: String?
+    let singername: String?
 }
 
 struct KuGoLyricsCandidate: Decodable, Sendable, Equatable {
     let id: Int64?
     let accesskey: String?
+    let song: String?
+    let singer: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case accesskey
+        case song
+        case singer
     }
 
     init(from decoder: any Decoder) throws {
@@ -366,6 +465,8 @@ struct KuGoLyricsCandidate: Decodable, Sendable, Equatable {
             self.id = nil
         }
         self.accesskey = try? container.decode(String.self, forKey: .accesskey)
+        self.song = try? container.decode(String.self, forKey: .song)
+        self.singer = try? container.decode(String.self, forKey: .singer)
     }
 }
 
