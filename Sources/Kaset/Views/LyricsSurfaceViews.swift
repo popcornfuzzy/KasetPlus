@@ -48,9 +48,11 @@ struct LyricsStateView: View {
     var body: some View {
         VStack(spacing: self.compact ? 8 : 12) {
             if self.isLoading {
-                ProgressView()
-                    .controlSize(self.compact ? .small : .regular)
-                    .frame(width: self.compact ? 16 : 20, height: self.compact ? 16 : 20)
+                // Pure SwiftUI spinner: the AppKit-backed `ProgressView` (`NSProgressIndicator`)
+                // crashes when its `setFont:` invalidates intrinsic content size from inside
+                // a layout pass re-entered by a mid-layout height change (crash 20:23 17.10).
+                // This draws no AppKit view, so it cannot re-enter constraint resolution.
+                SidebarSpinner(side: self.compact ? 16 : 20)
             } else if let icon {
                 Image(systemName: icon)
                     .font(.system(size: self.compact ? 26 : 40))
@@ -71,6 +73,28 @@ struct LyricsStateView: View {
         }
         .padding(.horizontal, self.compact ? 12 : 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - SidebarSpinner
+
+/// Indeterminate spinner drawn with pure SwiftUI shapes (no `NSProgressIndicator`).
+struct SidebarSpinner: View {
+    var side: CGFloat = 20
+    @State private var spinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.72)
+            .stroke(.tertiary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            .frame(width: self.side, height: self.side)
+            .rotationEffect(.degrees(self.spinning ? 360 : 0))
+            .animation(
+                .linear(duration: 0.9).repeatForever(autoreverses: false),
+                value: self.spinning
+            )
+            .onAppear { self.spinning = true }
+            .accessibilityLabel(String(localized: "Loading"))
     }
 }
 

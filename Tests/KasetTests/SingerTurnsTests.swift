@@ -399,6 +399,7 @@ struct SingerTurnsTests {
             layout: KaraokeLineLayout(line: line, fontSize: 16),
             // Past the line's end: everything on it is sung, so the ink is the whole row.
             displayTimeMs: Double(line.timeInMs + line.duration + 1_000),
+            style: .appleMusic,
             isTrailingAligned: trailingAligned
         )
         return self.host(root)
@@ -445,6 +446,7 @@ struct SingerTurnsTests {
             layoutCache: KaraokeLayoutCache(),
             minimumFrameInterval: nil,
             emphasis: 0,
+            style: .appleMusic,
             onTap: {}
         )
         return self.host(root)

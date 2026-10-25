@@ -78,6 +78,55 @@ struct SettingsManagerTests {
         #expect(manager.preferAudioVersionsEnabled == true)
     }
 
+    @Test("Word animation defaults to Better Lyrics and is stored by its raw value")
+    func lyricsAnimationStyleDefaultsAndPersists() {
+        let manager = SettingsManager.shared
+        #expect(manager.lyricsAnimationStyle == .betterLyrics)
+        #expect(LyricsAnimationStyle.standard == .betterLyrics)
+
+        let previous = manager.lyricsAnimationStyle
+        defer { manager.lyricsAnimationStyle = previous }
+
+        manager.lyricsAnimationStyle = .appleMusic
+        // The key is the one `SettingsManager.Keys.lyricsAnimationStyle` persists under.
+        #expect(UserDefaults.standard.string(forKey: "settings.lyricsAnimationStyle") == "appleMusic")
+
+        manager.lyricsAnimationStyle = .betterLyrics
+        #expect(UserDefaults.standard.string(forKey: "settings.lyricsAnimationStyle") == "betterLyrics")
+        #expect(manager.lyricsAnimationStyle == .betterLyrics)
+    }
+
+    @Test("Word slide is off by default and is stored when switched on")
+    func wordSlideDefaultsAndPersists() {
+        let manager = SettingsManager.shared
+        #expect(manager.lyricsWordSlideEnabled == false)
+
+        let previous = manager.lyricsWordSlideEnabled
+        defer { manager.lyricsWordSlideEnabled = previous }
+
+        manager.lyricsWordSlideEnabled = true
+        #expect(UserDefaults.standard.object(forKey: "settings.lyricsWordSlideEnabled") as? Bool == true)
+
+        manager.lyricsWordSlideEnabled = false
+        #expect(UserDefaults.standard.object(forKey: "settings.lyricsWordSlideEnabled") as? Bool == false)
+    }
+
+    @Test("The word slide setting is the only thing that decides the rows' timing")
+    func wordSlideDecidesTheRichTiming() {
+        let manager = SettingsManager.shared
+        let previous = manager.lyricsWordSlideEnabled
+        defer { manager.lyricsWordSlideEnabled = previous }
+
+        // Off is the animation without the sideways travel — not a smaller one.
+        manager.lyricsWordSlideEnabled = false
+        #expect(manager.richLyricsTiming == RichLyricsTiming.standard)
+        #expect(manager.richLyricsTiming.wobbleTravelEm == 0)
+
+        manager.lyricsWordSlideEnabled = true
+        #expect(manager.richLyricsTiming == RichLyricsTiming.withWordSlide)
+        #expect(manager.richLyricsTiming.wobbleTravelEm == 0.05)
+    }
+
     @Test("Default nowPlayingSidebarEnabled is true")
     func defaultNowPlayingSidebarEnabled() {
         // The Now Playing sidebar is the default right-sidebar design; the classic lyrics/queue

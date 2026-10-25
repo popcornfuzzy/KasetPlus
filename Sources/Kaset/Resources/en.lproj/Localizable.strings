@@ -13,7 +13,11 @@
 /* Now Playing sidebar: songs still to play */
 "%lld left" = "%lld left";
 
+"A crisp highlight that sweeps each word, a small pop, and a wave through its letters that swells on a word held a long time." = "A crisp highlight that sweeps each word, a small pop, and a wave through its letters that swells on a word held a long time.";
+
 "A native YouTube Music experience for macOS" = "A native YouTube Music experience for macOS";
+
+"A soft sweep with a glow, and one slow rise per word." = "A soft sweep with a glow, and one slow rise per word.";
 
 "AI responses follow your system language settings." = "AI responses follow your system language settings.";
 
@@ -122,6 +126,8 @@
 
 "Analyzing..." = "Analyzing...";
 
+"Animation" = "Animation";
+
 "Apple Intelligence" = "Apple Intelligence";
 
 "Apple Intelligence & Siri Settings" = "Apple Intelligence & Siri Settings";
@@ -133,6 +139,10 @@
 "Apple Intelligence is not available" = "Apple Intelligence is not available";
 
 "Apple Intelligence is ready to use" = "Apple Intelligence is ready to use";
+
+"Apple Music" = "Apple Music";
+
+"Applies where a provider times lyrics word by word; line-synced lyrics fade in." = "Applies where a provider times lyrics word by word; line-synced lyrics fade in.";
 
 "Apply Changes" = "Apply Changes";
 
@@ -151,6 +161,8 @@
 "Available" = "Available";
 
 "Background Playback" = "Background Playback";
+
+"Better Lyrics" = "Better Lyrics";
 
 "Built with SwiftUI for a true macOS experience" = "Built with SwiftUI for a true macOS experience";
 
@@ -366,6 +378,12 @@
 "Switch between community lyric versions" = "Switch between community lyric versions";
 
 "Lyric versions" = "Lyric versions";
+
+"Word Animation" = "Word Animation";
+
+"Word Slide" = "Word Slide";
+
+"Word Slide adds Better Lyrics' sideways drift to each word, at its original amount. It is off by default because that movement reads as jitter through a line." = "Word Slide adds Better Lyrics' sideways drift to each word, at its original amount. It is off by default because that movement reads as jitter through a line.";
 
 "Word-synced" = "Word-synced";
 

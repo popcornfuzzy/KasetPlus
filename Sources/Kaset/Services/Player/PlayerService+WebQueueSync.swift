@@ -93,7 +93,69 @@ extension PlayerService {
             return entry.videoId
         }
 
+        // Sidebar-video variant learned earlier (see `foldUnknownObservationIfSidebarSwitch`):
+        // fold it for this exact item only, so track ends and late updates on the
+        // variant page keep working against the song entry.
+        if let learned = self.observedVideoVariantVideoId,
+           let scope = self.observedVideoVariantForVideoId,
+           observedVideoId == learned,
+           scope == (self.pendingPlayVideoId ?? self.currentTrack?.videoId)
+        {
+            return scope
+        }
+
         return observedVideoId
+    }
+
+    /// Folds an unknown WebView observation onto the item that is playing while its video
+    /// is showing.
+    ///
+    /// A sidebar-video switch can leave the page on an id Kaset does not track (an unpaired
+    /// video variant, or a transient player id for a podcast) while the title still names the
+    /// current item. Returning the item id keeps the drift handlers below from reloading the
+    /// page out from under the showing video — that reload is what flashed the page and left
+    /// a black surface. The title is the discriminant: a stale update or autoplay elsewhere
+    /// carries another title. Ids that belong to the queue are never folded, so a genuine move
+    /// is still caught.
+    ///
+    /// A song's variant is remembered for the rest of that song (the page stays on it, and
+    /// late updates must keep folding). Podcasts have no variants, so theirs is not.
+    func foldUnknownObservationIfSidebarSwitch(
+        observedVideoId: String,
+        title: String,
+        artist: String
+    ) -> String? {
+        guard self.isSidebarVideoShowing,
+              let itemId = self.pendingPlayVideoId ?? self.currentTrack?.videoId,
+              observedVideoId != itemId,
+              !self.queue.contains(where: { $0.videoId == observedVideoId })
+        else { return nil }
+
+        // A learned variant is the one unknown id that keeps folding; anything else is drift.
+        if self.observedVideoVariantForVideoId == itemId {
+            return self.observedVideoVariantVideoId == observedVideoId ? itemId : nil
+        }
+        guard self.observedMetadataMatchesCurrentItem(title: title, artist: artist) else { return nil }
+        guard !self.isCurrentTrackPodcast else { return itemId }
+
+        self.observedVideoVariantVideoId = observedVideoId
+        self.observedVideoVariantForVideoId = itemId
+        self.logger.info(
+            "Learned video-variant \(observedVideoId) for item \(itemId) from sidebar-video switch"
+        )
+        return itemId
+    }
+
+    /// Whether an observation names the item that is playing: same title and artist, or a
+    /// track still showing the "Loading..." placeholder (nothing to compare yet).
+    private func observedMetadataMatchesCurrentItem(title: String, artist: String) -> Bool {
+        let itemId = self.pendingPlayVideoId ?? self.currentTrack?.videoId
+        let items = [self.queue.first(where: { $0.videoId == itemId }), self.currentTrack].compactMap { $0 }
+        let isPlaceholder = items.contains {
+            $0.title.isEmpty || $0.title == "Loading..." || $0.artists.isEmpty
+        }
+        return isPlaceholder
+            || items.contains { self.metadataMatchesSong(title: title, artist: artist, song: $0) }
     }
 
     // MARK: - Artist Identity Matching
@@ -816,7 +878,18 @@ extension PlayerService {
 
         // The PiP miniplayer can put the page on the video variant; fold that observation back
         // onto the song entry so the queue stays authoritative and the album art is kept.
-        let observedVideoId = self.canonicalPlaybackVideoId(for: observedVideoId)
+        let rawObservedVideoId = self.normalizedObservedVideoId(observedVideoId)
+        var observedVideoId = self.canonicalPlaybackVideoId(for: observedVideoId)
+        // Still unknown: it may be the sidebar-video switch to an id Kaset does not track.
+        // Folding it here (with the title available as the discriminant) keeps the divergence
+        // handlers below from reloading the page out from under the showing video.
+        if observedVideoId == rawObservedVideoId, let raw = rawObservedVideoId {
+            observedVideoId = self.foldUnknownObservationIfSidebarSwitch(
+                observedVideoId: raw,
+                title: title,
+                artist: artist
+            ) ?? observedVideoId
+        }
 
         let displayArtist = Self.commaSeparatedArtistDisplay(artist)
         let artistObj = Artist(id: "unknown", name: displayArtist)

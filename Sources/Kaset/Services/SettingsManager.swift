@@ -20,6 +20,8 @@ final class SettingsManager {
         static let scrobbleMinSeconds = "settings.scrobbleMinSeconds"
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
+        static let lyricsAnimationStyle = "settings.lyricsAnimationStyle"
+        static let lyricsWordSlideEnabled = "settings.lyricsWordSlideEnabled"
         /// Legacy single-choice preset, kept only to migrate into the per-provider model.
         static let lyricsProvider = "settings.lyricsProvider"
         static let lyricsProviderOrder = "settings.lyricsProviderOrder"
@@ -28,8 +30,6 @@ final class SettingsManager {
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
         static let nowPlayingSidebarEnabled = "settings.nowPlayingSidebarEnabled"
         static let nowPlayingSidebarWidth = "settings.nowPlayingSidebarWidth"
-        static let miniPlayerWindowMode = "settings.miniPlayerWindowMode"
-        static let miniPlayerPanelWidth = "settings.miniPlayerPanelWidth"
         static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
     }
 
@@ -330,6 +330,34 @@ final class SettingsManager {
         }
     }
 
+    /// How word-by-word lyrics animate as they are sung.
+    var lyricsAnimationStyle: LyricsAnimationStyle {
+        didSet {
+            UserDefaults.standard.set(self.lyricsAnimationStyle.rawValue, forKey: Keys.lyricsAnimationStyle)
+        }
+    }
+
+    /// Whether a Better Lyrics word also slides towards its trailing edge as it widens.
+    ///
+    /// Off by default: the slide is the one part of the animation that moves text sideways, and across
+    /// a sheet of words being sung in turn it reads as movement around the text rather than as
+    /// emphasis. The amount is Better Lyrics' own and is not a setting.
+    var lyricsWordSlideEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.lyricsWordSlideEnabled, forKey: Keys.lyricsWordSlideEnabled)
+        }
+    }
+
+    /// The Better Lyrics timing the lyric rows draw with: `standard`, or `withWordSlide` when the
+    /// reader asked for the word's sideways slide.
+    ///
+    /// Resolved here rather than in each sheet so both surfaces — the panel and the player — cannot
+    /// disagree about what the switch means, and so "off" is a value a test can assert on instead of
+    /// a branch repeated in a view.
+    var richLyricsTiming: RichLyricsTiming {
+        self.lyricsWordSlideEnabled ? .withWordSlide : .standard
+    }
+
     /// Whether conservative ad blocking hooks are enabled.
     var safeAdBlockingEnabled: Bool {
         didSet {
@@ -361,27 +389,8 @@ final class SettingsManager {
         }
     }
 
-    /// Whether the player bar's mini player button detaches the player into its own window.
-    ///
-    /// Off by default: the floating in-window mini player stays what the button has always done.
-    /// Turning it on is what makes the button open a real companion window that keeps the player
-    /// surface (and therefore playback) alive when the main window is closed.
-    var miniPlayerWindowModeEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(self.miniPlayerWindowModeEnabled, forKey: Keys.miniPlayerWindowMode)
-        }
-    }
-
-    /// Width of the detached mini player panel, so a reader who resizes it gets the same size back
-    /// next launch. Stored unclamped; `MiniPlayerPanelLayout` clamps it on read.
-    var miniPlayerPanelWidth: Double {
-        didSet {
-            UserDefaults.standard.set(self.miniPlayerPanelWidth, forKey: Keys.miniPlayerPanelWidth)
-        }
-    }
-
     /// Whether music videos are played as their song-only versions (album art) with the video
-    /// kept for the PiP miniplayer.
+    /// kept for the sidebar video.
     var preferAudioVersionsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(self.preferAudioVersionsEnabled, forKey: Keys.preferAudioVersionsEnabled)
@@ -408,6 +417,9 @@ final class SettingsManager {
         self.scrobblePercentThreshold = UserDefaults.standard.object(forKey: Keys.scrobblePercentThreshold) as? Double ?? 0.5
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
+        self.lyricsAnimationStyle = UserDefaults.standard.string(forKey: Keys.lyricsAnimationStyle)
+            .flatMap(LyricsAnimationStyle.init(rawValue:)) ?? .standard
+        self.lyricsWordSlideEnabled = UserDefaults.standard.object(forKey: Keys.lyricsWordSlideEnabled) as? Bool ?? false
         if let storedOrder = UserDefaults.standard.stringArray(forKey: Keys.lyricsProviderOrder) {
             let storedIDs = storedOrder.compactMap(LyricsProviderID.init(rawValue:))
             // Append providers added since the order was saved so new sources
@@ -433,10 +445,6 @@ final class SettingsManager {
         self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? true
 
         self.nowPlayingSidebarWidth = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarWidth) as? Double ?? 380
-        // Default off: the floating in-window mini player remains what the PiP button does.
-        self.miniPlayerWindowModeEnabled = UserDefaults.standard.object(forKey: Keys.miniPlayerWindowMode) as? Bool ?? false
-        self.miniPlayerPanelWidth = UserDefaults.standard.object(forKey: Keys.miniPlayerPanelWidth) as? Double
-            ?? Double(MiniPlayerPanelLayout.defaultWidth)
         self.preferAudioVersionsEnabled = UserDefaults.standard.object(forKey: Keys.preferAudioVersionsEnabled) as? Bool ?? true
 
         if let rawValue = UserDefaults.standard.string(forKey: Keys.mediaControlStyle),

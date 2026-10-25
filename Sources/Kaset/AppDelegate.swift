@@ -28,17 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Using strong reference to prevent deallocation when window is hidden.
     private var mainWindow: NSWindow?
 
-    /// The detached mini player's window, created the first time it is opened.
-    ///
-    /// Owned here because it is a *window*, and because it is what moves the shared player surface
-    /// between the two windows: the panel is created with the app's services, handed the surface when
-    /// it opens, and takes the surface back out of it when it closes.
-    private var miniPlayerPanelController: MiniPlayerPanelController?
 
-    /// Builds the mini player panel's content with the app's environment. `KasetApp` sets this in
-    /// `init`, because the services are the app's and this delegate cannot reach them otherwise.
-    @MainActor
-    var miniPlayerPanelContentProvider: (() -> NSViewController)?
 
     func applicationDidFinishLaunching(_: Notification) {
         // Set up notification center delegate to show notifications in foreground
@@ -165,6 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // An ordinary opaque macOS window, with the content running under a transparent titlebar.
+        //
+        // That combination is what macOS 26 builds its chrome from: the system draws the toolbar's
+        // floating items and its scroll-edge effect over the panes, instead of a solid bar above them.
+        // It is also what lets the sidebar and the inspector be full height, so the sidebar's material
+        // and the Now Playing column's artwork reach the window's top edge — the layout Settings uses.
+        // The window itself stays opaque: a transparent window was tried and made AppKit's glass and
+        // materials composite against nothing, which is what produced the stray rectangle.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -172,21 +170,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Kaset"
-        // The window shell's chrome (`WindowShellController.applyWindowChrome`): the panes are the window,
-        // so their backdrops run to the top edge under a titlebar that is not drawn.
+        // Title inline with the toolbar, over the content: one row of floating items, traffic lights at
+        // its leading edge — the layout Finder, Music and the rest of the system use.
+        window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        // The window is not a surface of its own: it is a clear sheet the panes draw on.
-        //
-        // That is what makes the navigation sidebar's material a real macOS sidebar —
-        // `NSVisualEffectView` with `blendingMode = .behindWindow` blurs what is *behind the window*, so
-        // the column samples the desktop the way Finder's and Mail's do. While the window draws its own
-        // opaque background, the same effect view has nothing but that background to composite against
-        // and the sidebar reads as a flat grey sheet laid over the window — the exact "grey layer" this
-        // removes. The page and the Now Playing column paint their own opaque surfaces (see
-        // `MainWindow.contentPane` and `NowPlayingSidebarBackground`), so only the sidebar is translucent.
-        window.isOpaque = false
-        window.backgroundColor = .clear
         window.contentMinSize = NSSize(width: 900, height: 600)
         // The delegate hides the window on close instead of closing it; a programmatically created
         // window is released on close by default, which would leave the shell's controller without a view.
@@ -207,70 +195,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The name the main window's frame is persisted under. Also what `AppDelegate` and `KasetApp`
     /// identify it by when they need to find it.
     static let mainWindowAutosaveName = "KasetMainWindow"
-
-    // MARK: - Mini Player Panel
-
-    /// Opens the detached mini player, moving the shared player surface into it.
-    ///
-    /// The order matters: the surface is handed to the panel *before* the panel is shown, so the
-    /// WebView is already being hosted by the panel's view when it appears. Showing first would let a
-    /// frame of the main window's layer draw the surface it no longer owns.
-    func showMiniPlayerPanel() {
-        guard let playerService else {
-            DiagnosticsLogger.player.error("Mini player panel requested before PlayerService was wired")
-            return
-        }
-
-        let controller = self.miniPlayerPanelController ?? self.makeMiniPlayerPanelController()
-        guard let controller else {
-            DiagnosticsLogger.player.error("Mini player panel: no controller, the panel was not shown")
-            return
-        }
-
-        playerService.setPlayerSurfaceHost(.miniPlayerPanel)
-        controller.show()
-        let message = "Mini player panel requested: visible=\(controller.isPanelVisible) "
-            + "surfaceHost=\(playerService.playerSurfaceHost.rawValue) "
-            + "pending=\(playerService.pendingPlayVideoId ?? "nil")"
-        DiagnosticsLogger.player.info("\(message, privacy: .public)")
-    }
-
-    /// Closes the detached mini player, returning the shared player surface to the main window.
-    func closeMiniPlayerPanel() {
-        guard let controller = self.miniPlayerPanelController else { return }
-        controller.dismiss()
-        // The close may have been declined (a panel that was never open); the surface returns either
-        // way, because the app's state — not the window's — is what decides who hosts it.
-        self.playerService?.setPlayerSurfaceHost(.mainWindow)
-        let message = "Mini player panel closed: visible=\(controller.isPanelVisible)"
-        DiagnosticsLogger.player.info("\(message, privacy: .public)")
-    }
-
-    /// Whether the detached mini player is currently on screen.
-    var isMiniPlayerPanelVisible: Bool {
-        self.miniPlayerPanelController?.isPanelVisible ?? false
-    }
-
-    private func makeMiniPlayerPanelController() -> MiniPlayerPanelController? {
-        guard let playerService, let contentProvider = self.miniPlayerPanelContentProvider else {
-            DiagnosticsLogger.player.error("No panel content was handed to AppDelegate; the mini player panel was not created")
-            return nil
-        }
-
-        let controller = MiniPlayerPanelController(
-            playerService: playerService,
-            settings: SettingsManager.shared,
-            contentViewController: contentProvider()
-        )
-        // A close the reader performs takes the surface back. This is the only path by which the
-        // surface returns from the panel without the app asking for it, and it is why the panel can
-        // be closed with its own close button without stranding the video.
-        controller.onClose = { [weak self] in
-            self?.playerService?.setPlayerSurfaceHost(.mainWindow)
-        }
-        self.miniPlayerPanelController = controller
-        return controller
-    }
 
     // MARK: - URL Handling
 

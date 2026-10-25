@@ -27,12 +27,13 @@ struct SongActionsHelperTests {
         SongActionsHelper.artistLibraryReconciliationRetryDelays = [.milliseconds(1), .milliseconds(1)]
     }
 
-    /// Waits for the artist library reconciliation to settle (see `ArtistDetailViewModelTests`): the work runs
-    /// in its own task, so waiting for it is what makes these assertions about the reconciliation rather than
-    /// about how fast the machine happened to be.
+    /// Waits for this suite's artist library reconciliation to settle (see `ArtistDetailViewModelTests`): the
+    /// work runs in its own task, so waiting for it is what makes these assertions about the reconciliation
+    /// rather than about how fast the machine happened to be. It asks about this suite's library, because
+    /// another suite's reconciliation finishing is not evidence that this one has run.
     private func awaitArtistReconciliation() async {
         await waitUntil("the artist library reconciliation to settle", timeout: .seconds(5)) {
-            !SongActionsHelper.isReconcilingArtistLibrary
+            !SongActionsHelper.isReconcilingArtistLibrary(for: self.libraryViewModel)
         }
     }
 
@@ -331,6 +332,40 @@ struct SongActionsHelperTests {
 
         try await subscribeTask.value
         await self.awaitArtistReconciliation()
+    }
+
+    /// Two libraries reconciling the same artist are two independent pieces of work.
+    ///
+    /// The registry used to be keyed by artist alone: the second library's reconciliation cancelled the
+    /// first library's refresh, and the cancelled task then unregistered its replacement as it ended. Both
+    /// make the work disappear while a library is still waiting for it, which is why a suite could be told
+    /// the reconciliation had settled before its own refresh had run.
+    @Test("Two libraries reconciling the same artist do not cancel each other")
+    func artistReconciliationIsPerLibrary() async throws {
+        let artist = TestFixtures.makeArtist(id: "MPLAUC-channel-123", name: "Test Artist")
+        let otherClient = MockYTMusicClient()
+        let otherLibrary = LibraryViewModel(client: otherClient)
+
+        try await SongActionsHelper.subscribeToArtist(
+            artist,
+            channelId: "UC-channel-123",
+            client: self.mockClient,
+            libraryViewModel: self.libraryViewModel
+        )
+        try await SongActionsHelper.subscribeToArtist(
+            artist,
+            channelId: "UC-channel-123",
+            client: otherClient,
+            libraryViewModel: otherLibrary
+        )
+
+        await self.awaitArtistReconciliation()
+        await waitUntil("the second library's reconciliation to settle", timeout: .seconds(5)) {
+            !SongActionsHelper.isReconcilingArtistLibrary(for: otherLibrary)
+        }
+
+        #expect(self.mockClient.getLibraryContentCalled == true)
+        #expect(otherClient.getLibraryContentCalled == true)
     }
 
     @Test("subscribeToArtist does not duplicate artist when library browse ID differs from subscription channel ID")

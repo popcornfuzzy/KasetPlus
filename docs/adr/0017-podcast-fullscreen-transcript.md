@@ -119,6 +119,10 @@ each must be at least ten seconds after the previous one, and none may start pas
 length. A failing description simply leaves the transcript ungrouped — chapters are additive, never
 required.
 
+The list itself (`PodcastTranscriptView`) is shared with the Now Playing sidebar's transcript card and
+parameterised by `PodcastTranscriptStyle`: white over the darkened video with pinned chapter headings
+here, reading size on the column's own background there.
+
 ### Sleep timer
 
 A local, view-scoped sleep timer (5–60 minutes) pauses playback when it expires. It is deliberately

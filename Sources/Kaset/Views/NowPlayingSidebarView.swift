@@ -20,6 +20,7 @@ struct NowPlayingSidebarView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
     @Environment(CanvasService.self) private var canvasService
+    @Environment(PodcastTranscriptService.self) private var transcriptService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Width of the column this view is drawn in, supplied by the window.
@@ -55,6 +56,9 @@ struct NowPlayingSidebarView: View {
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
+    /// Whether the podcast episode's transcript is open. Collapsed is the default and shows no
+    /// transcript text at all — a paragraph is long, and the overview is the column's quiet part.
+    @State private var isTranscriptOpen = false
 
     /// What the lyric surfaces can show for the current track.
     private enum LyricsState {
@@ -108,7 +112,13 @@ struct NowPlayingSidebarView: View {
                 .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.container)
             .onChange(of: self.playerService.currentTrack?.videoId) { _, newVideoId in
                 self.loadTask?.cancel()
+                // A new episode starts collapsed: the transcript that was open belongs to the one
+                // that just ended.
+                self.isTranscriptOpen = false
                 self.startLyricsLoad(for: newVideoId)
+            }
+            .onChange(of: self.isTranscriptOpen) { _, _ in
+                self.updatePlaybackPoll()
             }
             .onChange(of: self.playerService.observedWebMetadata) { _, _ in
                 self.retryLyricsLoadIfMetadataImproved()
@@ -129,6 +139,9 @@ struct NowPlayingSidebarView: View {
             }
             .task(id: self.canvasTaskID) {
                 await self.loadCanvasWhenReady()
+            }
+            .task(id: self.transcriptTaskID) {
+                await self.loadTranscriptIfNeeded()
             }
             .task {
                 self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
@@ -171,31 +184,34 @@ struct NowPlayingSidebarView: View {
 
     private var overview: some View {
         VStack(spacing: 0) {
-            NowPlayingSidebarArtwork(
-                track: self.playerService.currentTrack,
-                canvasURL: self.canvasURL,
-                height: self.artworkHeight,
-                reduceMotion: self.reduceMotion
-            )
+            self.mediaSection
             // Up by the toolbar band, so the cover is flush with the window's top edge and runs behind
             // the toolbar instead of starting below a blank strip. The negative padding, not an offset:
             // it moves the artwork's frame *and* takes the same amount off its layout height, so the rows
             // under it still begin at the artwork's visible bottom edge.
             .padding(.top, -self.topInset)
 
-            self.trackTitles
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
-                .padding(.top, 2)
-                .padding(.bottom, 14)
+            // The rows below scroll: a long title wrapping to two lines (or a short window)
+            // would otherwise push the Up Next card off the column's bottom edge with no way to
+            // reach it. The media keeps its own height; only what is under it scrolls.
+            ScrollView {
+                VStack(spacing: 0) {
+                    self.trackTitles
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                        .padding(.top, 2)
+                        .padding(.bottom, 14)
 
-            self.lyricsSection
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                    self.lyricsSection
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
 
-            self.upNextSection
-                .padding(.horizontal, NowPlayingSidebarLayout.padding)
-                .padding(.top, 10)
-
-            Spacer(minLength: 0)
+                    self.upNextSection
+                        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+                        .padding(.top, 10)
+                        .padding(.bottom, 12)
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -206,45 +222,215 @@ struct NowPlayingSidebarView: View {
             Text(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
                 .font(.system(size: 17, weight: .bold))
                 .lineLimit(2)
+                .truncationMode(.tail)
                 .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.trackTitle)
+                // The full title stays one hover away when it truncates.
+                .help(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
 
             Text(self.trackArtistText)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The artwork is a square until a short window makes it give up height to the rows below it.
+    /// The media at the top of the column: the video when the reader asked for it and one is
+    /// available, the artwork otherwise.
+    ///
+    /// The toggle only exists while a video is available — a track without one is artwork, full
+    /// stop — so there is no dead control. It floats over the media's bottom-trailing corner:
+    /// the top-trailing corner sits in the toolbar band the media runs behind, where the
+    /// window's own trailing toolbar items can overlap it out of sight.
+    private var mediaSection: some View {
+        ZStack(alignment: .bottomLeading) {
+            // The video surface stays mounted while the sidebar has a video, even when the
+            // artwork is the one on screen: it is the *host* that must not change. A WebView
+            // that is parked at 1×1 and hosted again draws the first frames of the picture at
+            // the size the page had before the resize — the small, centred picture surrounded
+            // by black right after switching to video. See ``SidebarVideoHosting``.
+            if let videoId = self.playerService.pendingPlayVideoId,
+               self.keepsSidebarVideoSurface
+            {
+                NowPlayingSidebarVideo(
+                    videoId: videoId,
+                    height: self.sidebarVideoHeight,
+                    fillsSurface: self.sidebarVideoFillsSurface(for: videoId)
+                )
+                .opacity(self.playerService.isSidebarVideoShowing ? 1 : 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(!self.playerService.isSidebarVideoShowing)
+            }
+
+            if !self.playerService.isSidebarVideoShowing {
+                NowPlayingSidebarArtwork(
+                    track: self.playerService.currentTrack,
+                    canvasURL: self.canvasURL,
+                    height: self.artworkHeight,
+                    reduceMotion: self.reduceMotion
+                )
+            }
+
+            if self.playerService.hasVideoSurface,
+               self.playerService.pendingPlayVideoId != nil
+            {
+                Button {
+                    HapticService.toggle()
+                    self.playerService.toggleSidebarVideo()
+                } label: {
+                    // To video: icon + "Video" text; back to artwork: icon only.
+                    Group {
+                        if self.playerService.isSidebarVideoShowing {
+                            Image(systemName: "photo.fill")
+                                .frame(width: 30, height: 30)
+                        } else {
+                            HStack(spacing: 6) {
+                                Image(systemName: "video.fill")
+                                Text(String(localized: "Video"))
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 30)
+                        }
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.95))
+                    // The whole capsule is the button: without an explicit content shape
+                    // only the glyphs themselves hit-test and the capsule edges are dead.
+                    .contentShape(.capsule)
+                    .glassEffect(.regular.tint(.black.opacity(0.25)).interactive(), in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.videoToggle)
+                .accessibilityLabel(
+                    self.playerService.isSidebarVideoShowing
+                        ? String(localized: "Show Artwork")
+                        : String(localized: "Show Video")
+                )
+                .help(
+                    self.playerService.isSidebarVideoShowing
+                        ? String(localized: "Show the artwork instead of the video")
+                        : String(localized: "Watch the music video")
+                )
+                .padding(.bottom, 10)
+                .padding(.leading, 8)
+            }
+        }
+        // The slot is the media's own height, and a video taller than it (a clamped portrait
+        // behind a square artwork) is clipped rather than shrunk: clipping leaves the WebView's
+        // frame alone, so the surface is the same size in both states.
+        .frame(
+            height: self.playerService.isSidebarVideoShowing ? self.sidebarVideoHeight : self.artworkHeight,
+            alignment: .bottomLeading
+        )
+        .clipped()
+        // Deliberately not animated. The video surface is a live WebView: an animated height
+        // change resizes its viewport on every frame of the curve, and WebKit repaints a
+        // resizing view asynchronously — so the surface could show a black or half-drawn frame
+        // while it grew. The swap is instant, which is also how the picture avoids being
+        // scaled through an intermediate shape it will never have again.
+    }
+
+    /// Whether the video's WebView stays mounted while the artwork is on screen.
+    private var keepsSidebarVideoSurface: Bool {
+        SidebarVideoHosting.keepsSurface(
+            isSidebarVisible: self.playerService.isNowPlayingSidebarVisible,
+            hasVideoSurface: self.playerService.hasVideoSurface,
+            hasPendingVideo: self.playerService.pendingPlayVideoId != nil,
+            isFullscreenPodcastPresented: self.playerService.isFullscreenPodcastPresented
+        )
+    }
+
+    /// Width the media is drawn at: the column's own width, never measured here.
+    private var mediaWidth: CGFloat {
+        self.columnWidth > 0 ? self.columnWidth : NowPlayingSidebarLayout.artworkMaxDimension
+    }
+
+    /// The sidebar video's surface: the column width over the observed video ratio, clamped to
+    /// a sane range and to the column's own bounds, plus whether that surface is the video's own
+    /// shape (see ``SidebarVideoAspect/box(forWidth:observedAspectRatio:availableHeight:reservedHeight:)``).
+    ///
+    /// The ratio is the content's, not a locked one — but a vertical video is floored before it
+    /// can become a tower, and the height itself never leaves the artwork's own floor/ceiling.
+    private var sidebarVideoBox: SidebarVideoAspect.Box {
+        SidebarVideoAspect.box(
+            forWidth: self.mediaWidth,
+            observedAspectRatio: self.playerService.miniPlayerVideoAspectRatio,
+            availableHeight: self.columnHeight,
+            reservedHeight: NowPlayingSidebarLayout.reservedHeight
+        )
+    }
+
+    private var sidebarVideoHeight: CGFloat {
+        self.sidebarVideoBox.height
+    }
+
+    /// Whether the video surface is the picture's own shape, so the picture fills it.
+    ///
+    /// The box is only the picture's shape once the page has reported the video's own dimensions;
+    /// before that it is the 16:9 fallback, and letterboxing a picture that is not 16:9 inside it
+    /// is the frame of black around the video right after switching to it. The rule for that
+    /// moment lives in ``SidebarVideoAspect/fillsSurface(_:shapeIsKnown:)``.
+    private func sidebarVideoFillsSurface(for videoId: String) -> Bool {
+        SidebarVideoAspect.fillsSurface(
+            self.sidebarVideoBox,
+            shapeIsKnown: self.playerService.miniPlayerVideoAspectRatioVideoId == videoId
+        )
+    }
+
+    /// The artwork's shape: square album art for music, fixed 16:9 for podcasts.
+    ///
+    /// Podcast artwork is the 16:9-ish video still, so forcing the square music frame crops its top
+    /// and bottom. Deliberately fixed (not the observed video ratio): reading the live ratio
+    /// re-rendered this column on every WebView dimension report and crashed in
+    /// `NSProgressIndicator setFont:` (see `SidebarVideoAspect.artworkAspectRatio`).
+    private var artworkAspectRatio: CGFloat {
+        SidebarVideoAspect.artworkAspectRatio(isPodcast: self.playerService.isCurrentTrackPodcast)
+    }
+
+    /// The artwork height: the column width over its aspect, until a short window makes it give up
+    /// height to the rows below it.
     ///
     /// It follows the column's authoritative width, so it is always exactly as wide as the column -
     /// no lag, no overshoot that would push it past the column's edge mid-resize.
     private var artworkHeight: CGFloat {
-        let width = self.columnWidth > 0
-            ? self.columnWidth
-            : NowPlayingSidebarLayout.artworkMaxDimension
+        let rawHeight = self.mediaWidth / self.artworkAspectRatio
 
         // Before the first layout the height is unknown, not zero: sizing from the width alone
-        // (a square) is stable and correct on a normal window, whereas treating the height as zero
+        // is stable and correct on a normal window, whereas treating the height as zero
         // would open the column on a 150pt stub and pop it to full a frame later.
         guard self.columnHeight > 0 else {
-            return min(width, NowPlayingSidebarLayout.artworkMaxHeight)
+            return min(rawHeight, NowPlayingSidebarLayout.artworkMaxHeight)
         }
 
         let leftover = self.columnHeight - NowPlayingSidebarLayout.reservedHeight
         return min(
-            width,
+            rawHeight,
             NowPlayingSidebarLayout.artworkMaxHeight,
             max(NowPlayingSidebarLayout.artworkMinHeight, leftover)
         )
     }
 
-    // MARK: - Lyrics Section
+    // MARK: - Lyrics / Transcript Section
 
+    /// The section under the titles: the lyric card for a song, the transcript card for an episode.
+    @ViewBuilder
     private var lyricsSection: some View {
-        NowPlayingSidebarCard {
+        if self.playerService.isCurrentTrackPodcast {
+            self.transcriptSection
+        } else {
+            self.lyricsCard
+        }
+    }
+
+    private var lyricsCard: some View {
+        NowPlayingSidebarCard(onTap: { self.expand(to: .lyrics) }) {
             VStack(alignment: .leading, spacing: 4) {
+                // The animation sits on the stack itself, not on the caption alone: the caption's
+                // removal has to take its height with it, so the preview below closes the gap
+                // instead of jumping up while the text fades. (A `Group` is transparent — an
+                // animation attached to it travels down to the caption and leaves with it, so the
+                // removal ran unanimated.)
                 self.sectionHeader(
                     title: String(localized: "Lyrics"),
                     systemImage: "quote.bubble",
@@ -253,17 +439,104 @@ struct NowPlayingSidebarView: View {
                     action: { self.expand(to: .lyrics) }
                 )
 
-                Group {
-                    if self.syncedLyricsService.searchingForBetterLyrics, self.hasSyncedLyricsOnScreen {
-                        LyricsSearchingCaption(horizontalPadding: 0, verticalPadding: 2)
-                    }
+                if self.showsLyricsSearchingCaption {
+                    LyricsSearchingCaption(horizontalPadding: 0, verticalPadding: 2)
                 }
-                .animation(.smooth(duration: 0.4), value: self.syncedLyricsService.searchingForBetterLyrics)
 
+                // A better sheet usually arrives in the same update that removes the caption. It is
+                // exempted from the animation above so its rows swap without animating; only the
+                // card's layout moves with the caption.
                 self.lyricsPreview
+                    .animation(nil, value: self.syncedLyricsService.currentLyrics)
                     .frame(height: NowPlayingSidebarLayout.lyricsPreviewHeight)
             }
+            .animation(.smooth(duration: 0.4), value: self.showsLyricsSearchingCaption)
         }
+    }
+
+    // MARK: - Transcript Section
+
+    /// The lyric card's place on an episode: the transcript, collapsed to its own header.
+    ///
+    /// A transcript paragraph is long, and the overview is the column's quietest surface — a preview
+    /// of it there read as clutter. So the card states only that a transcript exists; the reader
+    /// opens it when they want it, and nothing is fetched until they do.
+    private var transcriptSection: some View {
+        NowPlayingSidebarCard {
+            VStack(alignment: .leading, spacing: 8) {
+                self.sectionHeader(
+                    title: String(localized: "Transcript"),
+                    systemImage: "text.bubble",
+                    trailing: self.transcriptCaption,
+                    expandLabel: self.isTranscriptOpen
+                        ? String(localized: "Hide the episode transcript")
+                        : String(localized: "Show the episode transcript"),
+                    chevron: self.isTranscriptOpen ? "chevron.down" : "chevron.right",
+                    identifier: AccessibilityID.NowPlayingSidebar.transcriptSection,
+                    action: { self.toggleTranscript() }
+                )
+
+                if self.isTranscriptOpen {
+                    self.transcriptPanel
+                        .frame(height: NowPlayingSidebarLayout.transcriptPanelHeight)
+                        .transition(.opacity)
+                        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.transcript)
+                }
+            }
+        }
+        .animation(AppAnimation.standard, value: self.isTranscriptOpen)
+    }
+
+    @ViewBuilder
+    private var transcriptPanel: some View {
+        if self.transcriptService.isLoading {
+            LyricsStateView(
+                icon: nil,
+                title: String(localized: "Loading transcript…"),
+                message: nil,
+                isLoading: true,
+                compact: true
+            )
+        } else if self.hasLoadedTranscript {
+            LyricsClockReader { currentTimeMs, _, _ in
+                PodcastTranscriptView(
+                    transcript: self.transcriptService.transcript,
+                    currentTimeMs: currentTimeMs,
+                    onSeek: { timeMs in
+                        Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
+                    },
+                    style: .sidebar
+                )
+            }
+            // Faded at both edges like the lyric window, so the paragraphs run past the card's
+            // window instead of being cut through the middle of their glyphs.
+            .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
+        } else {
+            LyricsStateView(
+                icon: "text.bubble",
+                title: String(localized: "No Transcript Available"),
+                message: self.transcriptService.errorMessage
+                    ?? String(localized: "This episode has no captions on YouTube, so there is no transcript to show."),
+                compact: true
+            )
+        }
+    }
+
+    /// Whether the transcript on hand belongs to the episode that is playing.
+    private var hasLoadedTranscript: Bool {
+        self.transcriptService.transcript.isAvailable
+            && self.transcriptService.transcriptVideoId == self.playerService.currentTrack?.videoId
+    }
+
+    /// Language of the open transcript, or `nil` while it is collapsed or absent.
+    private var transcriptCaption: String? {
+        guard self.isTranscriptOpen, self.hasLoadedTranscript else { return nil }
+        let transcript = self.transcriptService.transcript
+        guard let code = transcript.languageCode else { return nil }
+        let language = Locale.current.localizedString(forLanguageCode: code) ?? code.uppercased()
+        return transcript.isAutoGenerated
+            ? "\(language) · \(String(localized: "Auto-generated"))"
+            : language
     }
 
     /// Three lines of the *same* sheet the classic panel and the fullscreen player render: same rows,
@@ -330,7 +603,7 @@ struct NowPlayingSidebarView: View {
     // MARK: - Up Next Section
 
     private var upNextSection: some View {
-        NowPlayingSidebarCard {
+        NowPlayingSidebarCard(onTap: { self.expand(to: .queue) }) {
             VStack(alignment: .leading, spacing: 8) {
                 self.sectionHeader(
                     title: String(localized: "Up Next"),
@@ -470,6 +743,7 @@ struct NowPlayingSidebarView: View {
         systemImage: String,
         trailing: String? = nil,
         expandLabel: String,
+        chevron: String = "chevron.right",
         identifier: String,
         action: @escaping () -> Void
     ) -> some View {
@@ -485,7 +759,7 @@ struct NowPlayingSidebarView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
+                Image(systemName: chevron)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
@@ -520,6 +794,15 @@ struct NowPlayingSidebarView: View {
     private var hasSyncedLyricsOnScreen: Bool {
         if case .synced = self.lyricsState { return true }
         return false
+    }
+
+    /// Whether the lyric card shows the "still searching for lyrics" caption.
+    ///
+    /// A search can outlive the sheet it was started for, so the caption follows the pair of states
+    /// rather than the search flag alone. The caption's animation is keyed on this same pair: a sheet
+    /// change that hides the caption then eases out like the search finishing does.
+    private var showsLyricsSearchingCaption: Bool {
+        self.syncedLyricsService.searchingForBetterLyrics && self.hasSyncedLyricsOnScreen
     }
 
     private var trackArtistText: String {
@@ -565,6 +848,10 @@ struct NowPlayingSidebarView: View {
     // MARK: - Actions
 
     private func expand(to page: NowPlayingSidebarPage) {
+        // A card is one click target whose own content also handles clicks, so one press can arrive
+        // twice (the header's button and the card's gesture). Opening the page that is already open is
+        // the same page, so the second arrival is dropped rather than ticking the haptic again.
+        guard self.playerService.nowPlayingSidebarPage != page else { return }
         HapticService.toggle()
         withAnimation(AppAnimation.standard) {
             self.playerService.setNowPlayingSidebarPage(page)
@@ -609,6 +896,47 @@ struct NowPlayingSidebarView: View {
             }
 
             try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    // MARK: - Transcript Loading
+
+    /// Identity of the transcript the card would show: opening is what starts a lookup, and a new
+    /// episode while it is open is a new transcript.
+    ///
+    /// Whether a transcript is on hand is part of it so the card heals itself: the fullscreen
+    /// podcast experience clears the service when it closes (it owns that reset), and the card that
+    /// stayed open behind it would otherwise sit on "No Transcript Available" until re-opened.
+    private var transcriptTaskID: String {
+        let videoId = self.playerService.currentTrack?.videoId ?? "none"
+        return "\(self.isTranscriptOpen)|\(videoId)|\(self.hasLoadedTranscript)"
+    }
+
+    /// Shows or hides the episode's transcript. Nothing is fetched while it is closed.
+    private func toggleTranscript() {
+        HapticService.toggle()
+        withAnimation(AppAnimation.standard) {
+            self.isTranscriptOpen.toggle()
+        }
+    }
+
+    /// Loads the transcript once the card is opened, never while it is collapsed.
+    @MainActor
+    private func loadTranscriptIfNeeded() async {
+        guard self.isTranscriptOpen,
+              self.playerService.isCurrentTrackPodcast,
+              let videoId = self.playerService.currentTrack?.videoId
+        else { return }
+        await self.transcriptService.loadTranscript(for: videoId)
+    }
+
+    /// Keeps the high-frequency playback clock running for whichever surface needs it: the open
+    /// transcript, or synced lyrics. A collapsed card hands it back to the lyric pipeline.
+    private func updatePlaybackPoll() {
+        if self.isTranscriptOpen {
+            SingletonPlayerWebView.shared.startLyricsPoll()
+        } else {
+            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
         }
     }
 
@@ -733,6 +1061,7 @@ struct NowPlayingSidebarView: View {
     NowPlayingSidebarView()
         .environment(PlayerService())
         .environment(SyncedLyricsService())
+        .environment(PodcastTranscriptService(client: MockUITestYTMusicClient()))
         .environment(CanvasService())
         .frame(width: 380, height: 760)
 }
