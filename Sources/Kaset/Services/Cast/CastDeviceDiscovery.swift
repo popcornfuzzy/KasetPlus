@@ -72,7 +72,7 @@ final class CastDeviceDiscovery: CastDeviceBrowsing {
     /// Default Cast control port.
     static let defaultControlPort = 8009
 
-    private let queue = DispatchQueue(label: "com.sertacozercan.Kaset.cast.discovery")
+    private let queue = DispatchQueue(label: "com.popcornfuzzy.Kaset.cast.discovery")
     private let port: Int
     private var browser: NWBrowser?
 

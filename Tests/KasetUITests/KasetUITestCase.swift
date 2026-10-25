@@ -137,7 +137,7 @@ class KasetUITestCase: XCTestCase {
         if FileManager.default.fileExists(atPath: appURL.path) {
             self.app = XCUIApplication(url: appURL)
         } else {
-            self.app = XCUIApplication(bundleIdentifier: "com.sertacozercan.Kaset")
+            self.app = XCUIApplication(bundleIdentifier: "com.popcornfuzzy.Kaset")
         }
 
         // Add UI test mode arguments

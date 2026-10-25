@@ -476,7 +476,7 @@ Default Media Receiver, so the queue, seeking, and track changes keep working ex
 The cast log names the stage it stopped at, which separates the three failure modes:
 
 ```bash
-log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info | grep -i cast
+log show --last 5m --predicate 'subsystem == "com.popcornfuzzy.Kaset"' --info | grep -i cast
 ```
 
 | Log line | Meaning |

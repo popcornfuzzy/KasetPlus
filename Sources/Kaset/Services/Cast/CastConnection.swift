@@ -34,7 +34,7 @@ final class CastConnection: CastMessageChannel {
     private let host: String
     private let port: Int
     private let endpoint: NWEndpoint
-    private let queue = DispatchQueue(label: "com.sertacozercan.Kaset.cast.connection")
+    private let queue = DispatchQueue(label: "com.popcornfuzzy.Kaset.cast.connection")
     private var connection: NWConnection?
     private var framer = CastMessageFramer()
     private var isClosed = false

@@ -20,7 +20,7 @@ which is a set of `os.Logger`s on **one subsystem** with one category per area:
 | `History` | `.history` | Listening history |
 | `Scripting`, `Cast`, `Scrobbling`, `AI`, `Haptic`, `Notification`, `Updater` | — | As named |
 
-Subsystem is **`com.sertacozercan.Kaset`**. That string is the key to every command below: it is what
+Subsystem is **`com.popcornfuzzy.Kaset`**. That string is the key to every command below: it is what
 separates the app's own entries from the hundreds of other subsystems macOS logs every second.
 
 Use `DiagnosticsLogger`, never `print()`. `print()` goes to stdout, which is gone the moment the app is
@@ -42,7 +42,7 @@ The equivalent by hand:
 
 ```bash
 log stream --style compact --info --debug \
-  --predicate 'subsystem == "com.sertacozercan.Kaset"'
+  --predicate 'subsystem == "com.popcornfuzzy.Kaset"'
 ```
 
 `--info --debug` matter. Most of the app's narrative is logged at `info` and the layout diagnostics at
@@ -53,7 +53,7 @@ Narrow to one category by adding to the predicate:
 
 ```bash
 log stream --style compact --info --debug \
-  --predicate 'subsystem == "com.sertacozercan.Kaset" AND category == "Player"'
+  --predicate 'subsystem == "com.popcornfuzzy.Kaset" AND category == "Player"'
 ```
 
 ### Reading it afterwards
@@ -64,10 +64,10 @@ window is still there:
 ```bash
 # Everything the app logged in the last five minutes.
 log show --last 5m --info --debug --style compact \
-  --predicate 'subsystem == "com.sertacozercan.Kaset"'
+  --predicate 'subsystem == "com.popcornfuzzy.Kaset"'
 
 # One stage of one subsystem — the cast log names the stage it stopped at.
-log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info | grep -i cast
+log show --last 5m --predicate 'subsystem == "com.popcornfuzzy.Kaset"' --info | grep -i cast
 
 # A temporary probe (see below).
 log show --last 3m --info --debug --predicate 'process == "Kaset"' | grep LayoutProbe
@@ -95,9 +95,9 @@ answer for a value worth seeing is usually to log the part that matters as its o
 Console.app shows the same stream and is easier to keep open. Filter on the subsystem and category:
 
 ```
-subsystem:com.sertacozercan.Kaset
-subsystem:com.sertacozercan.Kaset category:Player
-subsystem:com.sertacozercan.Kaset category:UI
+subsystem:com.popcornfuzzy.Kaset
+subsystem:com.popcornfuzzy.Kaset category:Player
+subsystem:com.popcornfuzzy.Kaset category:UI
 ```
 
 Select a process in the sidebar first, then use the Action menu → **Include Info Messages** and

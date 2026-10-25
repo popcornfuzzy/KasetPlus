@@ -2,7 +2,7 @@
 # Stream Kaset's own log output live, while you use the app.
 #
 # Kaset logs through `DiagnosticsLogger`, which is a set of `os.Logger`s on one subsystem
-# (`com.sertacozercan.Kaset`) with one category per area — `player`, `ui`, `app`, `webKit`, `api`,
+# (`com.popcornfuzzy.Kaset`) with one category per area — `player`, `ui`, `app`, `webKit`, `api`,
 # `auth`, `history`, and so on (see Sources/Kaset/Utilities/DiagnosticsLogger.swift).
 #
 # `log stream` is the live side of the same log store `log show` reads: it prints each entry as it is
@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-SUBSYSTEM="${KASET_LOG_SUBSYSTEM:-com.sertacozercan.Kaset}"
+SUBSYSTEM="${KASET_LOG_SUBSYSTEM:-com.popcornfuzzy.Kaset}"
 CATEGORY="${1:-}"
 LOG_FILE="${KASET_LOG_FILE:-${TMPDIR:-/tmp}/kaset-live.log}"
 

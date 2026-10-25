@@ -56,5 +56,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, architecture, and 
 
 We welcome AI-assisted contributions! You can submit traditional PRs or **prompt requests** — share the AI prompt that generates your changes, and maintainers can review the intent before running the code. See the [AI-Assisted Contributions](CONTRIBUTING.md#ai-assisted-contributions--prompt-requests) section for details.
 
+## License
+
+Kaset+ is licensed under the [GNU General Public License v3.0](LICENSE) (or any later version). It is a fork of [Kaset](https://github.com/sozercan/kaset); the original MIT notice for the code inherited from it is retained at the end of the [LICENSE](LICENSE) file, and the fork's own copyright is stated at the top of it.
+
 ## Disclaimer
 Kaset is an unofficial application and not affiliated with YouTube or Google Inc. in any way. "YouTube", "YouTube Music" and the "YouTube Logo" are registered trademarks of Google Inc.

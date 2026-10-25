@@ -44,7 +44,7 @@ final class LocalAudioStreamServer {
     }
 
     private let configuration: Configuration
-    private let queue = DispatchQueue(label: "com.sertacozercan.Kaset.cast.stream")
+    private let queue = DispatchQueue(label: "com.popcornfuzzy.Kaset.cast.stream")
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: Client] = [:]
     private var pendingAudio = Data()

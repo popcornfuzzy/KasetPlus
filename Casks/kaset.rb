@@ -1,26 +1,16 @@
 cask "kaset" do
-  version "0.4.1"
-  sha256 "e63d0d61bb6d0c2c5a61db54fd10606a1816b70e822c867588d0a301a5dd49b1"
+  version "0.8"
+  sha256 "981106634241c3cd66023c2101ca2ddf5d6a03842385681afeff6d76016be490"
 
-  url "https://github.com/sozercan/kaset/releases/download/v#{version}/kaset-v#{version}.dmg"
+  url "https://github.com/popcornfuzzy/kaset/releases/download/v#{version}/kaset-v#{version}.dmg"
   name "Kaset"
   desc "Native YouTube Music client"
-  homepage "https://github.com/sozercan/kaset"
-
-  deprecate! date: "2026-01-06", because: "has moved to the tap at https://github.com/sozercan/homebrew-repo"
+  homepage "https://github.com/popcornfuzzy/kaset"
 
   auto_updates false
   depends_on macos: ">= :tahoe"
 
   app "Kaset.app"
-
-  caveats <<~EOS
-    ⚠️  This tap is deprecated and will no longer receive updates.
-
-    To migrate to the new tap:
-      brew untap sozercan/kaset
-      brew install sozercan/repo/kaset
-  EOS
 
   postflight do
     system_command "/usr/bin/xattr", args: ["-cr", "#{appdir}/Kaset.app"], sudo: false
@@ -28,9 +18,9 @@ cask "kaset" do
 
   zap trash: [
     "~/Library/Application Support/Kaset",
-    "~/Library/Caches/com.sertacozercan.Kaset",
-    "~/Library/Preferences/com.sertacozercan.Kaset.plist",
-    "~/Library/Saved Application State/com.sertacozercan.Kaset.savedState",
-    "~/Library/WebKit/com.sertacozercan.Kaset",
+    "~/Library/Caches/com.popcornfuzzy.Kaset",
+    "~/Library/Preferences/com.popcornfuzzy.Kaset.plist",
+    "~/Library/Saved Application State/com.popcornfuzzy.Kaset.savedState",
+    "~/Library/WebKit/com.popcornfuzzy.Kaset",
   ]
 end

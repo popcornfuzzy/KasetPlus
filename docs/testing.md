@@ -491,8 +491,8 @@ To test auth recovery:
 Use Xcode's Console to filter logs:
 
 ```
-subsystem:com.sertacozercan.Kaset category:Player
-subsystem:com.sertacozercan.Kaset category:Auth
+subsystem:com.popcornfuzzy.Kaset category:Player
+subsystem:com.popcornfuzzy.Kaset category:Auth
 ```
 
 For the live stream (`Scripts/stream-logs.sh`), `log show`, the redaction rules and the diagnostics
