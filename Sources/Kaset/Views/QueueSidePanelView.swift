@@ -277,9 +277,15 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         /// The column follows the view's width on every layout pass. This is what makes the queue keep
         /// up with a divider drag: AppKit lays the scroll view out at its new width and this reads that
         /// width in the same pass, where a width handed down from SwiftUI state would be one pass old.
+        ///
+        /// It is also where a deferred initial scroll is resumed: the queue's first update can arrive
+        /// before the page is given its height, and this is the pass that supplies one.
         override func viewDidLayout() {
             super.viewDidLayout()
             self.sizeColumnToPanel()
+            if let tableView {
+                self.coordinator?.syncAutoScroll(in: tableView)
+            }
         }
     }
 
@@ -334,6 +340,15 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
         func syncAutoScroll(in tableView: NSTableView) {
             guard let tableView = tableView as? DraggableTableView else { return }
+
+            // A viewport shorter than a row has no centre to scroll to: the arithmetic below would pin
+            // the playing row's midpoint to the viewport's top edge and cut the top off the row — the
+            // reader opening the queue from the sidebar saw the current song's opening above the
+            // visible area. The page's first update can run before the column gives it its height, so
+            // this waits for a viewport a row fits in; `viewDidLayout` asks again once there is one.
+            guard let clipView = tableView.enclosingScrollView?.contentView,
+                  clipView.bounds.height >= tableView.rowHeight
+            else { return }
 
             let currentChanged = self.previousCurrentIndex != self.currentIndex
             self.previousCurrentIndex = self.currentIndex

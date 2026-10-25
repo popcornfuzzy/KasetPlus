@@ -30,6 +30,29 @@ struct LyricsSettingsView: View {
                 Text("Synced lyrics highlight each line as the song plays. Higher-fidelity providers also light up words individually.")
             }
 
+            // MARK: - Word animation
+
+            Section {
+                Picker("Word Animation", selection: self.$settings.lyricsAnimationStyle) {
+                    ForEach(LyricsAnimationStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .disabled(!self.settings.syncedLyricsEnabled)
+
+                Toggle("Word Slide", isOn: self.$settings.lyricsWordSlideEnabled)
+                    .disabled(!self.settings.syncedLyricsEnabled || self.settings.lyricsAnimationStyle != .betterLyrics)
+            } header: {
+                Text("Animation")
+            } footer: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(self.settings.lyricsAnimationStyle.detail)
+                    Text("Word Slide adds Better Lyrics' sideways drift to each word, at its original amount. It is off by default because that movement reads as jitter through a line.")
+                    Text("Applies where a provider times lyrics word by word; line-synced lyrics fade in.")
+                }
+            }
+
             // MARK: - Providers
 
             Section {

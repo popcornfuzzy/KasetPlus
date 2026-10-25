@@ -186,18 +186,113 @@ struct KuGoProviderTests {
 
     // MARK: - Candidate matching
 
-    @Test("isSongAcceptable applies the duration tolerance")
-    func durationTolerance() {
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 200), duration: 200))
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 205), duration: 200))
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 192), duration: 200))
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 210), duration: 200) == false)
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 190), duration: 200) == false)
-        // A song without a known duration can't be verified against a known
-        // target, so it is rejected.
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: nil), duration: 200) == false)
-        // An unknown target duration accepts any song.
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: 200), duration: nil))
-        #expect(KuGoProvider.isSongAcceptable(KuGoSongInfo(hash: "h", duration: nil), duration: nil))
+    private static func song(_ hash: String, title: String, artist: String, duration: Int?) -> KuGoSongInfo {
+        KuGoSongInfo(hash: hash, duration: duration, songname: title, singername: artist)
+    }
+
+    /// The search behind Baby Jane's "Savior": KuGou has no lyrics for the
+    /// requested track, so its length-only neighbours — songs that share the
+    /// title with another artist, and one by the same artist with another title —
+    /// were what the provider visited instead.
+    @Test("lookupOrder keeps the requested track and drops same-title songs by other artists")
+    func dropsOtherArtistsSongs() {
+        let keyword = KuGoProvider.generateKeyword(title: "Savior", artist: "Baby Jane", album: nil)
+        let songs = [
+            Self.song("sped", title: "Savior", artist: "Baby Jane", duration: 170),
+            Self.song("right", title: "Savior", artist: "Baby Jane", duration: 187),
+            Self.song("deathwish", title: "Deathwish", artist: "akiaura、LONOWN、Baby Jane", duration: 288),
+            Self.song("one-n-only", title: "SAVIOR", artist: "ONE N' ONLY", duration: 179),
+            Self.song("green-day", title: "Fancy Sauce", artist: "Green Day", duration: 241),
+            Self.song("onerepublic", title: "Savior", artist: "OneRepublic", duration: 181),
+            Self.song("novulent", title: "savior", artist: "Novulent", duration: 132),
+        ]
+
+        let ordered = KuGoProvider.lookupOrder(songs, keyword: keyword, duration: 188)
+        #expect(ordered.map(\.hash) == ["right", "sped"])
+    }
+
+    @Test("lookupOrder ranks the requested track's entries by nearest length")
+    func ranksByNearestLength() {
+        let keyword = KuGoProvider.generateKeyword(title: "Blinding Lights", artist: "The Weeknd", album: nil)
+        let songs = [
+            Self.song("live", title: "Blinding Lights (Live)", artist: "The Weeknd", duration: 260),
+            Self.song("studio", title: "Blinding Lights", artist: "The Weeknd", duration: 202),
+            Self.song("remix", title: "Blinding Lights (Remix)", artist: "The Weeknd", duration: 210),
+        ]
+
+        let ordered = KuGoProvider.lookupOrder(songs, keyword: keyword, duration: 200)
+        #expect(ordered.map(\.hash) == ["studio", "remix", "live"])
+    }
+
+    @Test("lookupOrder keeps search order when the playing duration is unknown")
+    func keepsOrderWithoutDuration() {
+        let keyword = KuGoProvider.generateKeyword(title: "Savior", artist: "Baby Jane", album: nil)
+        let songs = [
+            Self.song("least", title: "Savior", artist: "Baby Jane", duration: 300),
+            Self.song("nearest", title: "Savior", artist: "Baby Jane", duration: 187),
+        ]
+
+        #expect(KuGoProvider.lookupOrder(songs, keyword: keyword, duration: nil).map(\.hash) == ["least", "nearest"])
+        #expect(KuGoProvider.lookupOrder(songs, keyword: keyword, duration: -1).map(\.hash) == ["least", "nearest"])
+    }
+
+    @Test("lookupOrder drops entries KuGou didn't name")
+    func dropsUnnamedEntries() {
+        let keyword = KuGoProvider.generateKeyword(title: "Savior", artist: "Baby Jane", album: nil)
+        let songs = [KuGoSongInfo(hash: "h", duration: 187, songname: nil, singername: nil)]
+        #expect(KuGoProvider.lookupOrder(songs, keyword: keyword, duration: 188).isEmpty)
+    }
+
+    @Test("titlesAgree ignores bracketed suffixes, case and punctuation")
+    func titlesAgreeLoose() {
+        #expect(KuGoProvider.titlesAgree("Savior (Sped Up)", "Savior"))
+        #expect(KuGoProvider.titlesAgree("SAVIOR", "Savior"))
+        #expect(KuGoProvider.titlesAgree("Don't Stop Me Now", "Dont Stop Me Now"))
+        #expect(KuGoProvider.titlesAgree("歌（现场版）", "歌"))
+        // A longer title is a different song.
+        #expect(KuGoProvider.titlesAgree("Savior Complex", "Savior") == false)
+        #expect(KuGoProvider.titlesAgree("", "Savior") == false)
+    }
+
+    @Test("artistsAgree matches a shared credit")
+    func artistsAgreeLoose() {
+        // KuGou adds the featured artist the YouTube credit omits.
+        #expect(KuGoProvider.artistsAgree("akiaura、LONOWN、Baby Jane", "Baby Jane"))
+        // KuGou credits only the lead of a duet.
+        #expect(KuGoProvider.artistsAgree("The Weeknd", "The Weeknd、Daft Punk"))
+        #expect(KuGoProvider.artistsAgree("Baby Jane", "Baby Jane"))
+        #expect(KuGoProvider.artistsAgree("OneRepublic", "Baby Jane") == false)
+        #expect(KuGoProvider.artistsAgree("Baby Jane Tribute Band", "Baby Jane") == false)
+        #expect(KuGoProvider.artistsAgree("", "Baby Jane") == false)
+    }
+
+    @Test("bestKeywordCandidate skips hits that name another song")
+    func keywordCandidateNeedsIdentity() throws {
+        let keyword = KuGoProvider.generateKeyword(title: "Savior", artist: "Baby Jane", album: nil)
+        let others = [
+            try Self.candidate(id: 1, song: "Savior", singer: "OneRepublic"),
+            try Self.candidate(id: 2, song: "SAVIOR", singer: "ONE N' ONLY"),
+            try Self.candidate(id: 3, song: "Savior", singer: "Baby Jane"),
+        ]
+        #expect(KuGoProvider.bestKeywordCandidate(others, keyword: keyword)?.id == 3)
+        #expect(KuGoProvider.bestKeywordCandidate(Array(others.prefix(2)), keyword: keyword) == nil)
+    }
+
+    @Test("bestKeywordCandidate accepts the two names in either order")
+    func keywordCandidateToleratesSwap() throws {
+        // This endpoint has served `song: The Weeknd, singer: Blinding Lights`.
+        let keyword = KuGoProvider.generateKeyword(title: "Blinding Lights", artist: "The Weeknd", album: nil)
+        let swapped = try Self.candidate(id: 7, song: "The Weeknd", singer: "Blinding Lights")
+        #expect(KuGoProvider.bestKeywordCandidate([swapped], keyword: keyword)?.id == 7)
+    }
+
+    private static func candidate(id: Int64, song: String?, singer: String?) throws -> KuGoLyricsCandidate {
+        func field(_ value: String?) -> String {
+            guard let value else { return "null" }
+            return "\"\(value)\""
+        }
+        let json = "{\"id\":\(id),\"accesskey\":\"test-access-key\","
+            + "\"song\":\(field(song)),\"singer\":\(field(singer))}"
+        return try JSONDecoder().decode(KuGoLyricsCandidate.self, from: Data(json.utf8))
     }
 }

@@ -84,4 +84,56 @@ struct NowPlayingSidebarQueuePageTests {
             "the queue ends \(Self.pageSize.width - frame.maxX)pt early"
         )
     }
+
+    /// Opening the page while the column is still being laid out must not bake the opening's
+    /// provisional height into the scroll offset.
+    ///
+    /// The queue is AppKit and scrolls itself to the playing row on its first update. When that update
+    /// lands before the page has a viewport, the centring arithmetic has no height to centre in: the
+    /// row's midpoint ends up flush with the viewport's top edge and the top half of the playing row is
+    /// cut off — the reader has to scroll *up* to see the song that is actually playing. The page must
+    /// wait for the layout pass that gives it a height and scroll then.
+    @Test("Opening the queue page leaves the playing row fully visible while the column is still being sized")
+    func initialScrollWaitsForViewportHeight() throws {
+        let playerService = PlayerService()
+        playerService.queue = TestFixtures.makeSongs(count: 30)
+        playerService.currentIndex = 2
+
+        let hosting = NSHostingView(
+            rootView: NowPlayingSidebarQueuePage()
+                .environment(playerService)
+                .environment(FavoritesManager(skipLoad: true))
+        )
+        // The page first appears at a provisional height (the column is still taking its shape) …
+        hosting.frame = NSRect(x: 0, y: 0, width: Self.pageSize.width, height: 40)
+        let window = NSWindow(
+            contentRect: hosting.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hosting
+        window.orderBack(nil)
+        self.pump(0.3)
+
+        // … and only then gets the reader's real viewport.
+        hosting.frame = NSRect(origin: .zero, size: Self.pageSize)
+        window.setContentSize(Self.pageSize)
+        self.pump(0.4)
+        defer { window.orderOut(nil) }
+
+        let scrollView = try #require(self.queueScrollView(in: hosting), "the page hosts no queue table")
+        let tableView = try #require(scrollView.documentView as? NSTableView)
+        let visibleRows = scrollView.contentView.documentVisibleRect
+        let playingRow = tableView.rect(ofRow: 2)
+
+        #expect(
+            playingRow.minY >= visibleRows.minY - 0.5,
+            "the playing row's top is \(visibleRows.minY - playingRow.minY)pt above the queue's viewport"
+        )
+        #expect(
+            playingRow.maxY <= visibleRows.maxY + 0.5,
+            "the playing row's bottom is \(playingRow.maxY - visibleRows.maxY)pt below the queue's viewport"
+        )
+    }
 }

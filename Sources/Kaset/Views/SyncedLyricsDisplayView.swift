@@ -17,6 +17,10 @@ struct SyncedLyricsDisplayView: View {
     /// from the playback samples instead (`receiveClockSample`), so the sheet is already showing the
     /// right line when it is revealed rather than slewing to it in front of the reader.
     var isCovered: Bool = false
+    /// The word animation to draw with, overriding the reader's setting, which is what `nil` uses —
+    /// and what the panel and the sidebar leave it at. A caller that is tracing the rows rather than
+    /// the words pins one.
+    var animationStyle: LyricsAnimationStyle?
     /// Whether the sheet may be scrolled by hand.
     ///
     /// The Now Playing sidebar shows this same sheet in a window three lines tall, where the
@@ -28,20 +32,31 @@ struct SyncedLyricsDisplayView: View {
     let onSeek: (Int) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The word animation the reader chose, read here so a change of style reaches every row.
+    @State private var settings = SettingsManager.shared
     /// Interpolated playback clock. Only the line being sung reads it, and it lives
     /// here so the highlight survives line changes and view re-renders.
     @State private var clock = LyricsPlaybackClock()
     /// Measured line layouts, kept across the sheet's re-renders.
     @State private var layoutCache = KaraokeLayoutCache()
-    /// The line being sung: what the rows' emphasis, the pause dots and the rows'
-    /// liveness are keyed to. It moves when the line it is on is settled, never
-    /// `scrollLookaheadMs` ahead of it (see `KaraokeFillModel.highlightIndex(in:at:)`).
-    @State private var currentLineId: UUID?
+    /// Every moment this sheet's line state changes, built from its lines once
+    /// (`KaraokeFillModel.lineChanges`): which line takes the baton when, and when the sheet starts
+    /// travelling to it. Playback only ever searches this, so no sample derives anything.
+    @State private var changes: [KaraokeLineChange]
+    /// The pending wake-up at the next change, so a line change lands on its own moment instead of
+    /// on the next 10 Hz sample.
+    @State private var wakeUp = KaraokeChangeWakeUp()
+    /// The change the wake-up is currently armed for, so re-arming for the same moment is skipped.
+    @State private var armedChangeMs: Double?
+    /// The line being sung: what the rows' emphasis, the pause dots and the rows' liveness are keyed
+    /// to, and the **only** row drawn bright. It moves when a line's own content opens
+    /// (`KaraokeFillModel.lineChanges`), so the baton passes on the frame its first word starts
+    /// filling.
     @State private var currentLineIndex: Int?
-    /// The line the sheet is scrolled to, which *does* lead playback by
-    /// `KaraokeTiming.scrollLookaheadMs` so the line is already in place when its first word
-    /// is sung. Kept apart from the highlight because the two want different times: the
-    /// scroll has to arrive early, the emphasis must not leave early.
+    /// The line the sheet is travelling to: the line being sung, or the line after it once its first
+    /// word is `KaraokeTiming.scrollLeadMs` away (`KaraokeFillModel.scrollIndex`). Kept apart from the
+    /// highlight because they are two different times — the sheet has to be in place *before* the
+    /// line is sung, and only then does that line take the emphasis.
     @State private var scrollLineId: UUID?
     /// Whether the panel is still putting itself in position: its first paint (a whole lyric
     /// sheet) is the most expensive frame of its life, and the sidebar is sliding in at the
@@ -69,6 +84,13 @@ struct SyncedLyricsDisplayView: View {
         )
     }
 
+    /// The Better Lyrics timing the rows draw with: the same animation, with the word's sideways
+    /// slide put back if the reader asked for it. Resolved by the setting itself, so the two sheets
+    /// cannot disagree about what "off" means.
+    private var richTiming: RichLyricsTiming {
+        self.settings.richLyricsTiming
+    }
+
     private var karaokeEmphasis: Double {
         self.reduceMotion ? 0 : self.emphasis
     }
@@ -92,22 +114,26 @@ struct SyncedLyricsDisplayView: View {
         emphasis: Double = 0.55,
         isCovered: Bool = false,
         allowsScrolling: Bool = true,
+        animationStyle: LyricsAnimationStyle? = nil,
         onSeek: @escaping (Int) -> Void
     ) {
         self.lyrics = lyrics
         self.currentTimeMs = currentTimeMs
         self.isPlaying = isPlaying
         self.emphasis = emphasis
+        self.animationStyle = animationStyle
         self.isCovered = isCovered
         self.allowsScrolling = allowsScrolling
         self.onSeek = onSeek
 
-        let scrollIndex = lyrics.currentLineIndex(at: currentTimeMs + Int(KaraokeTiming.standard.scrollLookaheadMs))
-        _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
+        let changes = KaraokeFillModel.lineChanges(in: lyrics)
+        _changes = State(initialValue: changes)
 
-        let highlightIndex = KaraokeFillModel.highlightIndex(in: lyrics, at: currentTimeMs)
+        let highlightIndex = KaraokeFillModel.highlightIndex(in: changes, at: Double(currentTimeMs))
         _currentLineIndex = State(initialValue: highlightIndex)
-        _currentLineId = State(initialValue: highlightIndex.map { lyrics.lines[$0].id })
+
+        let scrollIndex = KaraokeFillModel.scrollIndex(in: changes, at: Double(currentTimeMs))
+        _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
     }
 
     var body: some View {
@@ -153,6 +179,8 @@ struct SyncedLyricsDisplayView: View {
                                 layoutCache: self.layoutCache,
                                 minimumFrameInterval: plan.minimumInterval,
                                 emphasis: self.karaokeEmphasis,
+                                style: self.animationStyle ?? self.settings.lyricsAnimationStyle,
+                                richTiming: self.richTiming,
                                 onTap: { self.onSeek(line.timeInMs) }
                             )
                             .id(line.id)
@@ -213,24 +241,30 @@ struct SyncedLyricsDisplayView: View {
             )
             .onChange(of: self.currentTimeMs) { _, newTimeMs in
                 self.receiveClockSample(timeMs: newTimeMs, isPlaying: self.isPlaying)
-                self.syncCurrentLine(using: newTimeMs, proxy: proxy, animate: !self.userIsScrolling)
+                self.syncCurrentLine(at: Double(newTimeMs), proxy: proxy, animate: !self.userIsScrolling)
+                self.armNextChange(using: proxy)
             }
             .onChange(of: self.isPlaying) { _, newIsPlaying in
                 // The poll keeps reporting the same position while paused, so it takes
                 // the play state to freeze the clock instead of extrapolating past it.
                 self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: newIsPlaying)
+                self.armNextChange(using: proxy)
             }
-            .onChange(of: self.lyrics) { _, _ in
+            .onChange(of: self.lyrics) { _, newLyrics in
                 // A new track's lyrics start at zero: without this the old clock
                 // position would flash the new first line as already sung.
+                self.changes = KaraokeFillModel.lineChanges(in: newLyrics)
                 self.clock.reset()
+                self.armedChangeMs = nil
                 self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: self.isPlaying)
-                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+                self.syncCurrentLine(at: 0, proxy: proxy, animate: false)
+                self.armNextChange(using: proxy)
                 Task { await self.settleScroll(using: proxy) }
             }
             .onAppear {
                 self.receiveClockSample(timeMs: self.currentTimeMs, isPlaying: self.isPlaying)
-                self.syncCurrentLine(using: self.currentTimeMs, proxy: proxy, animate: false)
+                self.syncCurrentLine(at: Double(self.currentTimeMs), proxy: proxy, animate: false)
+                self.armNextChange(using: proxy)
                 SingletonPlayerWebView.shared.startLyricsPoll()
                 SingletonPlayerWebView.shared.sendCurrentLyricsTime()
             }
@@ -239,6 +273,7 @@ struct SyncedLyricsDisplayView: View {
             }
             .onDisappear {
                 self.scrollResumeTask?.cancel()
+                self.wakeUp.cancel()
             }
         }
     }
@@ -301,14 +336,19 @@ struct SyncedLyricsDisplayView: View {
         )
     }
 
-    private func syncCurrentLine(using timeMs: Int, proxy: ScrollViewProxy, animate: Bool) {
-        self.updateHighlight(using: timeMs)
+    /// Moves the highlight and the scroll together, from one playback sample.
+    ///
+    /// The two ask different questions of the same position. The **highlight** is the line being
+    /// sung right now, so the baton passes when its first word starts filling and the line above
+    /// keeps it until then: one row is bright at a time. The **scroll** has to arrive before that,
+    /// which is why it follows `scrollIndex` — the line after the current one, `scrollLeadMs`
+    /// before its first word — and travels in `scrollDurationMs`, so it is in place with the rest
+    /// of the lead to spare. Neither decision can make the other late: the sheet is already there
+    /// when the baton passes.
+    private func syncCurrentLine(at positionMs: Double, proxy: ScrollViewProxy, animate: Bool) {
+        self.updateHighlight(at: positionMs)
 
-        // The scroll follows slightly ahead of the line's own start so it lands with the
-        // first word instead of a poll interval after it. Only the scroll leads: see
-        // `updateHighlight` for why the emphasis must not.
-        let lookahead = Int(KaraokeTiming.standard.scrollLookaheadMs)
-        guard let scrollIndex = self.lyrics.currentLineIndex(at: timeMs + lookahead) else { return }
+        guard let scrollIndex = KaraokeFillModel.scrollIndex(in: self.changes, at: positionMs) else { return }
         let id = self.lyrics.lines[scrollIndex].id
         let targetChanged = id != self.scrollLineId
         self.scrollLineId = id
@@ -316,40 +356,97 @@ struct SyncedLyricsDisplayView: View {
         // While the panel is still opening, jump: an animated scroll competing with the
         // open animation and the sheet's first paint is what made it stutter.
         if animate, !self.isSettling {
-            withAnimation(.easeInOut(duration: 0.42)) { proxy.scrollTo(id, anchor: .center) }
+            Self.travel(using: proxy, to: id)
         } else {
             proxy.scrollTo(id, anchor: .center)
         }
     }
 
-    /// Moves the highlight onto the line being sung, which happens when the previous line's
-    /// content is settled rather than `scrollLookaheadMs` before that — a line that starts to
-    /// leave while it is still being sung never reaches its sung state, which is what the line
-    /// that had just finished was reported as doing.
-    private func updateHighlight(using timeMs: Int) {
-        guard let index = KaraokeFillModel.highlightIndex(in: self.lyrics, at: timeMs) else { return }
+    /// Wakes the sheet at the next moment its state changes, so a line change is not left waiting for
+    /// the next playback sample (the poll reports at 10 Hz, which on a fast line is long enough for a
+    /// word to be sung by a row that is not the current one yet).
+    ///
+    /// One wake-up at a time, and none at all while paused or covered: the clock is not moving then,
+    /// so there is no moment to wake at.
+    private func armNextChange(using proxy: ScrollViewProxy) {
+        guard self.isPlaying, !self.isCovered, !self.changes.isEmpty else {
+            self.armedChangeMs = nil
+            self.wakeUp.cancel()
+            return
+        }
+        let now = self.clock.displayPositionMs
+        guard let due = KaraokeFillModel.nextChangeMs(in: self.changes, after: now), due != self.armedChangeMs else {
+            return
+        }
+        self.armedChangeMs = due
+        self.wakeUp.arm(afterMs: max(1, due - now)) {
+            self.syncCurrentLine(at: self.clock.displayPositionMs, proxy: proxy, animate: !self.userIsScrolling)
+            self.armedChangeMs = nil
+            self.armNextChange(using: proxy)
+        }
+    }
+
+    /// The sheet's own travel: the one duration every scroll to a line uses, short enough to finish
+    /// inside `KaraokeTiming.scrollLeadMs`.
+    private static func travel(using proxy: ScrollViewProxy, to id: UUID) {
+        withAnimation(.easeInOut(duration: KaraokeTiming.standard.scrollDurationMs / 1000)) {
+            proxy.scrollTo(id, anchor: .center)
+        }
+    }
+
+    /// Moves the highlight onto the line being sung (see `KaraokeFillModel.lineChanges`).
+    private func updateHighlight(at positionMs: Double) {
+        guard let index = KaraokeFillModel.highlightIndex(in: self.changes, at: positionMs) else { return }
         self.currentLineIndex = index
-        self.currentLineId = self.lyrics.lines[index].id
     }
 
     private func scrollToCurrentLine(using proxy: ScrollViewProxy, animated: Bool) {
         guard let id = self.scrollLineId else { return }
         if animated {
-            withAnimation(.easeInOut(duration: 0.42)) {
-                proxy.scrollTo(id, anchor: .center)
-            }
+            Self.travel(using: proxy, to: id)
         } else {
             proxy.scrollTo(id, anchor: .center)
         }
     }
 
     private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus {
-        guard let currentLineIndex else { return .upcoming }
-        if lineIndex < currentLineIndex { return .previous }
-        if lineIndex == currentLineIndex { return .current }
-        return .upcoming
+        KaraokeFillModel.status(forLineAt: lineIndex, highlightIndex: self.currentLineIndex)
     }
 
+}
+
+// MARK: - KaraokeChangeWakeUp
+
+/// One pending look at the display clock, at a moment the clock has not reached yet.
+///
+/// The lyrics poll reports at 10 Hz. A line change is a moment *inside* one of those windows — the
+/// sheet starting to travel for the next line, and that line taking the baton on its first word —
+/// so read from the samples alone the change lands up to 100 ms late. On a fast line that is a word
+/// already part-filled on a row that has not been made the current one yet, and the sheet arriving
+/// after the first word has been sung.
+///
+/// Only one wake-up exists at a time and it is replaced rather than added to, so a seek, a pause or
+/// a fresh sample that re-arms it can never leave two behind. What it does is recomputed from the
+/// clock when it fires, so a wake-up that does outlive the reason it was armed for can only apply the
+/// state the sheet is already in.
+@MainActor
+final class KaraokeChangeWakeUp {
+    private var task: Task<Void, Never>?
+
+    /// Arms the single wake-up, replacing whatever was pending.
+    func arm(afterMs delayMs: Double, fire: @escaping @MainActor () -> Void) {
+        self.cancel()
+        self.task = Task {
+            try? await Task.sleep(for: .milliseconds(max(1, Int(delayMs.rounded()))))
+            guard !Task.isCancelled else { return }
+            fire()
+        }
+    }
+
+    func cancel() {
+        self.task?.cancel()
+        self.task = nil
+    }
 }
 
 // MARK: - KaraokeFrameBudget
@@ -510,7 +607,7 @@ struct SyncedPauseDotsLineView: View {
             anchor: self.isTrailingAligned ? .trailing : .leading
         )
         .animation(.easeInOut(duration: 0.35), value: self.dots.statuses)
-        .animation(AppAnimation.lyricLine, value: self.status)
+        .animation(AppAnimation.lyricEmphasis, value: self.status)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
@@ -585,6 +682,10 @@ struct SyncedLineView: View {
     let layoutCache: KaraokeLayoutCache
     let minimumFrameInterval: Double?
     let emphasis: Double
+    /// How the line's words animate as they are sung.
+    let style: LyricsAnimationStyle
+    /// The Better Lyrics timing to draw with, when that is the style.
+    var richTiming: RichLyricsTiming = .standard
     let onTap: () -> Void
 
     private static let fontSize: CGFloat = 16
@@ -617,7 +718,7 @@ struct SyncedLineView: View {
         // Always animated, including the line that is leaving. A line change is the panel's
         // most visible piece of motion and it must never be conditional — see the panel's
         // initializer for the bug that a conditional here caused.
-        .animation(AppAnimation.lyricLine, value: self.status)
+        .animation(AppAnimation.lyricEmphasis, value: self.status)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
@@ -648,6 +749,9 @@ struct SyncedLineView: View {
                         color: .primary,
                         emphasis: self.emphasis,
                         lineSpacing: 2,
+                        style: self.style,
+                        isSettled: self.status == .previous,
+                        richTiming: self.richTiming,
                         isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)
@@ -664,6 +768,9 @@ struct SyncedLineView: View {
                         color: .secondary,
                         emphasis: self.emphasis,
                         lineSpacing: 2,
+                        style: self.style,
+                        isSettled: self.status == .previous,
+                        richTiming: self.richTiming,
                         isTrailingAligned: self.isTrailingAligned
                     )
                     .fixedSize(horizontal: false, vertical: true)

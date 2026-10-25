@@ -215,7 +215,6 @@ struct PlaylistDetailView: View {
                 library: self.libraryViewModel
             )
         }
-        .topFade()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if case .error = self.viewModel.loadingState {} else {
                 PlayerBar()

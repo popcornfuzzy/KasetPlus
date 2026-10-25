@@ -78,10 +78,11 @@ artwork bullet below already stated. The transport's lyrics/queue buttons and �
 so the column, the toggle and the shortcuts can never disagree.
 
 The app's collapse state and AppKit's pane follow each other in both directions: a page change
-re-derives the pane's collapse, and a collapse the reader performs — the toolbar toggle, a drag, a
-double-click on the divider — is observed on the item and fed back through
-`onInspectorCollapsedChange`, with the app's own writes flagged so they are not read back as a
-reader's action.
+re-derives the pane's collapse, and a collapse that happens to the item is observed and fed back through
+`onInspectorCollapsedChange`, with the app's own writes flagged so they are not read back as a reader's
+action. The toolbar toggle is the **only** way a reader collapses the column — its item states
+`canCollapse = false`, so a divider drag stops at the column's minimum instead of collapsing it (see
+[ADR-0030](0030-appkit-window-shell.md)).
 
 **The width the reader drags is AppKit's to remember**, under `NSSplitView.autosaveName`.
 `SettingsManager.nowPlayingSidebarWidth` is now only the width the column *opens at the first time*,
@@ -238,6 +239,13 @@ The column's chrome is deliberately the album art, not a panel:
   re-implemented: the only differences are `allowsScrolling: false` (a stray scroll in a window this
   short would push the highlight out of it and pause auto-follow for four seconds) and its rows
   opening the full page rather than seeking.
+- **A podcast episode gets the transcript in that card's place**, collapsed to its header. A
+  transcript paragraph is long and the overview is the column's quietest surface, so the card states
+  only that the episode has one: no paragraph is drawn, and no lookup runs, until the reader opens it.
+  Opening it draws a 280pt window of `PodcastTranscriptView` — the same rows, chapter headings and
+  follow-the-spoken-paragraph behaviour as the fullscreen experience, at reading size in the sidebar's
+  own style — and starts the transcript request; collapsing drops the window without refetching, and a
+  new episode closes it. Songs keep the lyric card exactly as it was.
 - **The next song** below it, also plain content on the sidebar background.
 - Each section's label and its content expand into the full page — the shared lyric sheet with the
   provider/variant footer that carries the page's **refresh control**, and the classic queue (reorder,

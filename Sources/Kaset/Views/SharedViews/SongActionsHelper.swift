@@ -8,16 +8,35 @@ import SwiftUI
 enum SongActionsHelper {
     static var artistLibraryReconciliationRetryDelays: [Duration] = [.seconds(2), .seconds(3)]
 
-    private static var artistLibraryReconciliationTasks: [String: Task<Void, Never>] = [:]
+    /// Identifies one reconciliation: the library it refreshes and the artist it is waiting on.
+    ///
+    /// The library is part of the key because a reconciliation writes into that library's state. Keyed
+    /// by artist alone, two libraries reconciling the same artist cancelled each other's work — which
+    /// in the app never happens (there is one library) but in a test process, where every suite builds
+    /// its own, means one suite silently cancelling another's refresh.
+    private struct ArtistReconciliationKey: Hashable {
+        let library: ObjectIdentifier
+        let artistId: String
+    }
 
-    /// Whether an artist library reconciliation is still running.
+    /// The running reconciliation for a key, tagged so its own end cannot remove a newer one.
+    private struct ArtistReconciliation {
+        let token: UInt64
+        let task: Task<Void, Never>
+    }
+
+    private static var artistReconciliations: [ArtistReconciliationKey: ArtistReconciliation] = [:]
+    private static var nextReconciliationToken: UInt64 = 0
+
+    /// Whether a reconciliation for this library is still running.
     ///
     /// The reconciliations are their own tasks (they wait for backend propagation, refresh the library and
     /// may reapply the optimistic state), so a reader that needs to know the work has settled has to ask
     /// about the work. The suites that drive them do exactly that instead of sleeping a fixed duration and
     /// hoping the machine was fast enough (`ArtistDetailViewModelTests.awaitArtistReconciliation`).
-    static var isReconcilingArtistLibrary: Bool {
-        !self.artistLibraryReconciliationTasks.isEmpty
+    static func isReconcilingArtistLibrary(for libraryViewModel: LibraryViewModel) -> Bool {
+        let library = ObjectIdentifier(libraryViewModel)
+        return self.artistReconciliations.keys.contains { $0.library == library }
     }
 
     private static func artistLibraryAliases(for artist: Artist, channelId: String) -> [String] {
@@ -43,10 +62,16 @@ enum SongActionsHelper {
         libraryViewModel: LibraryViewModel
     ) {
         let normalizedArtistId = Artist.publicChannelId(for: channelId) ?? channelId
-        self.artistLibraryReconciliationTasks[normalizedArtistId]?.cancel()
+        let key = ArtistReconciliationKey(
+            library: ObjectIdentifier(libraryViewModel),
+            artistId: normalizedArtistId
+        )
+        self.artistReconciliations[key]?.task.cancel()
 
-        self.artistLibraryReconciliationTasks[normalizedArtistId] = Task { @MainActor in
-            defer { self.artistLibraryReconciliationTasks.removeValue(forKey: normalizedArtistId) }
+        self.nextReconciliationToken &+= 1
+        let token = self.nextReconciliationToken
+        let task = Task { @MainActor in
+            defer { self.finishArtistReconciliation(key: key, token: token) }
 
             for delay in self.artistLibraryReconciliationRetryDelays {
                 do {
@@ -94,6 +119,15 @@ enum SongActionsHelper {
                 libraryViewModel.markNeedsReloadOnActivation()
             }
         }
+        self.artistReconciliations[key] = ArtistReconciliation(token: token, task: task)
+    }
+
+    /// Clears the key, but only if it still holds the reconciliation that just ended: a task cancelled by
+    /// a newer one for the same artist must not unregister its replacement, or a reader waiting for the
+    /// work to settle sees "nothing running" while the replacement is still waiting on the backend.
+    private static func finishArtistReconciliation(key: ArtistReconciliationKey, token: UInt64) {
+        guard self.artistReconciliations[key]?.token == token else { return }
+        self.artistReconciliations.removeValue(forKey: key)
     }
 
     private static func addArtistToLibrary(

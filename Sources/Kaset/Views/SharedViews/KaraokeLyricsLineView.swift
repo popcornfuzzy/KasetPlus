@@ -26,6 +26,9 @@ struct KaraokeLineLayout: Equatable {
     /// Each word split into characters, each with its own slice of that word's fill window.
     /// Derived once, with the layout, so a frame never has to re-derive them.
     let characters: [[KaraokeCharacter]]
+    /// When each word's letters float in the Better Lyrics style, derived once with the layout for
+    /// the same reason the characters are: a frame schedules nothing, it only asks where a letter is.
+    let letterWaves: [[RichLyricsLetterWave]]
     /// Measured advance width of each character, in the same order as `characters`. The
     /// character widths of a word sum to that word's `textWidths` entry.
     let characterWidths: [[CGFloat]]
@@ -99,8 +102,12 @@ struct KaraokeLineLayout: Equatable {
         // and of the masks over it, rather than one that runs to the bearings of the word's ends.
         self.textWidths = characterWidths.map { $0.reduce(0, +) }
         self.characterWidths = characterWidths
-        self.characters = words.indices.map { index in
+        let characters = words.indices.map { index in
             KaraokeFillModel.characters(for: words[index], weightedBy: characterWidths[index])
+        }
+        self.characters = characters
+        self.letterWaves = words.indices.map { index in
+            RichLyricsAnimation.letterWaves(for: words[index], letterCount: characters[index].count)
         }
         self.wordDirections = words.map { $0.text.isRightToLeftText }
         self.gaps = words.indices.map { index in
@@ -228,6 +235,18 @@ struct KaraokeLyricsLineView: View {
     /// being sung. `0` renders a plain wipe, which is what Reduce Motion uses.
     var emphasis: Double = 1.0
     var lineSpacing: CGFloat = 2
+    /// Which word animation the line is drawn with (`LyricsAnimationStyle`). Both are driven by the
+    /// same word windows; only their envelopes and their layers differ.
+    var style: LyricsAnimationStyle = .standard
+    /// Whether this line is no longer the one being sung, and is being drawn at its settled frame.
+    ///
+    /// A Better Lyrics letter's float can outlast its own word — that is what lets a held word keep
+    /// moving — so a line that has finished being sung has to say so, and its letters go back onto
+    /// the baseline that a live line holds them just above.
+    var isSettled: Bool = false
+    /// The Better Lyrics timing to draw with — `standard`, or `withWordSlide` when the reader asked
+    /// for the word's sideways slide back. `.appleMusic` ignores it.
+    var richTiming: RichLyricsTiming = .standard
     /// Whether this is the *other* singer's line, which Apple Music draws against the
     /// trailing edge of the sheet (`SyncedLyricLine.isOppositeTurn`).
     ///
@@ -265,7 +284,10 @@ struct KaraokeLyricsLineView: View {
     /// boundaries and no gradual brightening across the line.
     private var lineSyncedText: some View {
         let word = self.layout.words.first
-        let appear = word?.appearProgress(at: self.displayTimeMs) ?? 0
+        let appear = word.map { self.style == .betterLyrics
+            ? RichLyricsAnimation.lineFadeIn(for: $0, at: self.displayTimeMs, timing: self.richTiming)
+            : $0.appearProgress(at: self.displayTimeMs)
+        } ?? 0
         let halo = word?.haloStrength(at: self.displayTimeMs) ?? 0
 
         return ZStack(alignment: .leading) {
@@ -306,23 +328,60 @@ struct KaraokeLyricsLineView: View {
             isTrailingAligned: self.isTrailingAligned
         ) {
             ForEach(self.layout.words.indices, id: \.self) { index in
-                KaraokeWordView(
-                    word: self.layout.words[index],
-                    characters: self.layout.characters[index],
-                    characterWidths: self.layout.characterWidths[index],
-                    isRightToLeft: self.layout.wordDirections[index],
-                    displayTimeMs: self.displayTimeMs,
-                    color: self.color,
-                    dimOpacity: self.dimOpacity,
-                    fontSize: self.layout.fontSize,
-                    emphasis: self.emphasis
-                )
+                self.word(at: index)
             }
         }
         .font(.system(size: self.layout.fontSize, weight: self.layout.weight))
         // The layout places each row of words inside the width it is given; the frame decides
         // with which edge a shorter content sits when the width is unbounded.
         .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
+    }
+}
+
+// MARK: - Word style
+
+@available(macOS 26.0, *)
+private extension KaraokeLyricsLineView {
+    /// One word, drawn by whichever animation the line was given.
+    @ViewBuilder
+    func word(at index: Int) -> some View {
+        switch self.style {
+        case .betterLyrics:
+            RichLyricsWordView(
+                word: self.layout.words[index],
+                characters: self.layout.characters[index],
+                characterWidths: self.layout.characterWidths[index],
+                isRightToLeft: self.layout.wordDirections[index],
+                // Frozen at the position it settles to once nothing on the word can move any
+                // more: a finished word is then not re-drawn at all, which is what keeps a
+                // syllable-timed line (a duet) to the few words that are actually moving.
+                displayTimeMs: RichLyricsAnimation.renderTimeMs(
+                    for: self.layout.words[index],
+                    waves: self.layout.letterWaves[index],
+                    at: self.displayTimeMs,
+                    timing: self.richTiming
+                ),
+                color: self.color,
+                dimOpacity: self.dimOpacity,
+                fontSize: self.layout.fontSize,
+                emphasis: self.emphasis,
+                waves: self.layout.letterWaves[index],
+                isSettled: self.isSettled,
+                timing: self.richTiming
+            )
+        case .appleMusic:
+            KaraokeWordView(
+                word: self.layout.words[index],
+                characters: self.layout.characters[index],
+                characterWidths: self.layout.characterWidths[index],
+                isRightToLeft: self.layout.wordDirections[index],
+                displayTimeMs: self.displayTimeMs,
+                color: self.color,
+                dimOpacity: self.dimOpacity,
+                fontSize: self.layout.fontSize,
+                emphasis: self.emphasis
+            )
+        }
     }
 }
 

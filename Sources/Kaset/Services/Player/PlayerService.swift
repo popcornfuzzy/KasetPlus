@@ -144,31 +144,17 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Index of current track in queue.
     var currentIndex: Int = 0
 
-    /// Whether the mini player should be shown.
-    var showMiniPlayer: Bool = false
-
-    /// Which window currently hosts the shared player surface (the singleton WebView's layer).
+    /// Whether the right sidebar shows the music/video-podcast video instead of the artwork.
     ///
-    /// ## Why this has to be stated
-    ///
-    /// The app has exactly one `WKWebView` for playback, and `PersistentPlayerView` *re-parents* it
-    /// into whichever container is on screen. A view can have only one superview, so two windows
-    /// cannot both show it: whichever `PersistentPlayerView` laid out last wins, and the other
-    /// window's layer goes blank. Left implicit, that is a race — a second window appearing would
-    /// silently steal the video mid-song, and a DRM-protected stream does not survive being yanked
-    /// out of its view hierarchy.
-    ///
-    /// So the surface has exactly one owner, named here, and every host asks before it claims it
-    /// (`PlayerSurfaceHost.claimsSurface`). The mini player panel is the only thing that can move the
-    /// surface off the main window, and moving it back is explicit (see `PlayerService
-    /// .setPlayerSurfaceHost(_:)`).
-    private(set) var playerSurfaceHost: PlayerSurfaceHost = .mainWindow
+    /// Sticky across tracks: it is only effective while ``hasVideoSurface`` is true, so a track
+    /// without a video falls back to artwork and the next track with one shows video again.
+    var isSidebarVideoEnabled: Bool = false
 
-    /// True when the user explicitly enabled the mini player with the player bar toggle.
-    private(set) var miniPlayerEnabledByUser: Bool = false
-
-    /// True only when the current mini player visibility should auto-dismiss as soon as playback starts.
-    private(set) var shouldAutoDismissMiniPlayerOnPlaybackStart: Bool = false
+    /// Whether the sidebar video is actually on screen: enabled, with a video available and a
+    /// track loaded to show it for.
+    var isSidebarVideoShowing: Bool {
+        self.isSidebarVideoEnabled && self.hasVideoSurface && self.pendingPlayVideoId != nil
+    }
 
     /// Sticky classification for the currently active playback item.
     /// This avoids relying on transient web metadata that may omit podcast markers.
@@ -184,7 +170,17 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Observed video aspect ratio (width / height) from the active HTML video element.
     /// `nil` means the UI should use its fallback ratio until dimensions become available.
+    /// Drives the right sidebar video height; kept under its historic name so observations
+    /// and tests keep working.
     private(set) var miniPlayerVideoAspectRatio: Double?
+
+    /// The video the observed ratio belongs to.
+    ///
+    /// The ratio describes *one* video, so it must be tagged with it rather than with "the
+    /// current playback": re-classifying the item that is already playing (an API verdict, a
+    /// podcast re-reconciliation) must not forget the shape of the picture on screen, or the
+    /// sidebar falls back to 16:9 and letterboxes a video that was filling its surface.
+    private(set) var miniPlayerVideoAspectRatioVideoId: String?
 
     /// The video ID that needs to be played in the mini player.
     var pendingPlayVideoId: String?
@@ -292,20 +288,52 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Kept for metadata compatibility with the web observer.
     var currentTrackHasVideo: Bool = false
 
+    /// Video ID the authoritative (API) video-availability verdict belongs to.
+    ///
+    /// Once the API has spoken for the playing video (`musicVideoType`/counterpart),
+    /// later DOM updates stop overriding it: the DOM toggle scan false-positives on some
+    /// pages, and an ATV still frame still reports video dimensions — either of which
+    /// resurrects the button on a track the API confirmed has no video.
+    private var authoritativeVideoAvailabilityVideoId: String?
+
+    /// Video-variant id learned from the page while the sidebar video is showing.
+    ///
+    /// The Song/Video tab switch moves the page to the video variant, whose id Kaset may
+    /// not know (unresolved pairing, `preferAudioVersions` off, queue-less play). The first
+    /// observation of an unknown id for the current song while its video is on screen *is*
+    /// that switch — not queue drift — so it is learned and folded back onto the song (see
+    /// `foldUnknownObservationIfSidebarSwitch`). Without this the drift handlers reload the
+    /// song page out from under the video. Scoped to one song
+    /// (`observedVideoVariantForVideoId`); reset on every track change. Never learned for
+    /// podcasts (no variants there) and never for an id that belongs to the queue (a
+    /// genuine move must still be caught).
+    /// Internal (not private): the WebQueueSync extension assigns it. Tests read it.
+    var observedVideoVariantVideoId: String?
+    /// Song the learned variant belongs to. Internal (not private): the WebQueueSync
+    /// extension reads it; `private` would confine it to this file.
+    var observedVideoVariantForVideoId: String?
+
     /// Whether a video surface is worth showing for the current playback item: either the
     /// metadata says a video exists, or the WebView player has already reported video dimensions.
     var hasVideoSurface: Bool {
-        self.currentTrackHasVideo || self.miniPlayerVideoAspectRatio != nil
+        // Music with an API verdict for this video: the verdict rules. The ATV still
+        // frame decodes at real dimensions, so bare dimensions must not count as video.
+        // Podcasts keep the legacy behavior — episode video-ness is only observable
+        // from the player itself, so dimensions stay a valid signal there.
+        if !self.isCurrentTrackPodcast,
+           let verdictId = self.authoritativeVideoAvailabilityVideoId,
+           verdictId == (self.pendingPlayVideoId ?? self.currentTrack?.videoId)
+        {
+            return self.currentTrackHasVideo || self.currentTrackVideoVariant != nil
+        }
+        return self.currentTrackHasVideo || self.miniPlayerVideoAspectRatio != nil
     }
 
     /// The video variant paired with the currently playing song, when it has one.
     ///
-    /// Kaset plays the song version; this is the music video the PiP miniplayer switches to on
+    /// Kaset plays the song version; this is the music video the sidebar video switches to on
     /// demand. Set by ``play(song:webLoadStrategy:episode:)`` from the song/video matcher.
     var currentTrackVideoVariant: Song?
-
-    /// Whether the miniplayer is currently showing the video variant rather than the song.
-    var isMiniPlayerShowingVideoVariant: Bool = false
 
     /// Matches music-video tracks with their song-only counterparts.
     let variantMatcher = SongVariantMatcher()
@@ -367,11 +395,6 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     private var forwardSkipIndexStack: [Int] = []
 
     /// One-shot fallback task that reveals the mini player if the first hidden song fails to start quickly.
-    private var miniPlayerFallbackTask: Task<Void, Never>?
-
-    /// Ensures the hidden-song fallback only runs once per app session.
-    private var hasArmedFirstHiddenSongFallbackThisSession: Bool = false
-
     /// UserDefaults key for persisting volume.
     static let volumeKey = "playerVolume"
     /// UserDefaults key for persisting the playback rate.
@@ -495,67 +518,21 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.logger.info("Playback rate set to \(clampedRate)x")
     }
 
-    /// Whether the shared player surface has been detached into the mini player panel.
-    ///
-    /// The one thing both windows ask before hosting the surface: the main window stands down while
-    /// this is true, and the panel is the only host. Stating it as a property — rather than each host
-    /// testing `playerSurfaceHost` itself — is what keeps the two answers from drifting apart.
-    var isPlayerSurfaceDetachedToPanel: Bool {
-        self.playerSurfaceHost == .miniPlayerPanel
+    /// Toggles the right sidebar between artwork and video.
+    func toggleSidebarVideo() {
+        self.setSidebarVideoEnabled(!self.isSidebarVideoEnabled)
     }
 
-    /// Whether the player bar's mini player button should detach the player into its own window
-    /// (General settings) rather than float the in-window layer.
-    var isMiniPlayerWindowModeEnabled: Bool {
-        SettingsManager.shared.miniPlayerWindowModeEnabled
-    }
-
-    /// Moves the shared player surface to a window, or back to the main window.
-    ///
-    /// The surface host is what the panel is *for*: detaching the mini player hands the WebView to
-    /// the panel, and closing the panel hands it back. A no-op when the host is already the requested
-    /// one, so a panel that is merely being re-laid-out cannot re-trigger a move.
-    func setPlayerSurfaceHost(_ host: PlayerSurfaceHost) {
-        guard self.playerSurfaceHost != host else { return }
-        self.playerSurfaceHost = host
-        self.logger.info("Player surface host: \(host.rawValue)")
-    }
-
-    /// Toggles user-controlled mini player visibility from the player bar.
-    func toggleMiniPlayerVisibilityByUser() {
-        self.setMiniPlayerVisibilityByUser(enabled: !self.miniPlayerEnabledByUser)
-    }
-
-    /// Applies user-controlled mini player visibility from the player bar.
-    func setMiniPlayerVisibilityByUser(enabled: Bool) {
-        self.miniPlayerEnabledByUser = enabled
-        self.cancelMiniPlayerFallback()
-        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
-
-        if enabled {
-            self.showMiniPlayer = true
-            // The miniplayer is the one place the music video appears: switching it on shows the
-            // video variant of a matched track (see `MiniPlayerWebView`), while the queue and the
-            // player bar keep the song's album art.
-            self.isMiniPlayerShowingVideoVariant = self.currentTrackVideoVariant != nil
-            self.logger.info("Mini player enabled manually")
+    /// Shows the sidebar video (`true`) or the artwork (`false`). Enabling without a video
+    /// available is a no-op so the toggle cannot blank the artwork.
+    func setSidebarVideoEnabled(_ enabled: Bool) {
+        guard enabled != self.isSidebarVideoEnabled else { return }
+        if enabled, !self.hasVideoSurface {
+            self.logger.debug("Sidebar video toggle ignored: no video available")
             return
         }
-
-        self.showMiniPlayer = false
-        self.isMiniPlayerShowingVideoVariant = false
-        self.logger.info("Mini player manual override disabled")
-    }
-
-    /// Handles playback-start transitions that may auto-dismiss the mini player.
-    func handlePlaybackStartedForMiniPlayer() {
-        self.cancelMiniPlayerFallback()
-
-        guard self.showMiniPlayer, self.shouldAutoDismissMiniPlayerOnPlaybackStart else {
-            return
-        }
-
-        self.confirmPlaybackStarted()
+        self.isSidebarVideoEnabled = enabled
+        self.logger.info("Sidebar video \(enabled ? "enabled" : "disabled")")
     }
 
     func isPodcastTrack(_ song: Song?) -> Bool {
@@ -565,8 +542,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     func updateCurrentPlaybackKind(using song: Song?) {
         if self.isPodcastTrack(song) {
+            // Video on by default for podcasts: only on the transition into podcast
+            // playback, so a reader who turns it off mid-episode is not fought.
+            let wasPodcast = self.currentPlaybackIsPodcast
             self.currentPlaybackIsPodcast = true
             self.podcastClassificationVideoId = song?.videoId
+            if !wasPodcast { self.isSidebarVideoEnabled = true }
             return
         }
 
@@ -578,11 +559,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.podcastClassificationVideoId = nil
     }
 
-    private func applyMiniPlayerPolicyForPlayback(videoId: String, isPodcast: Bool) {
-        self.cancelMiniPlayerFallback()
-        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
-        self.miniPlayerEnabledByUser = false
-
+    private func applyPlaybackKindForPlayback(videoId: String, isPodcast: Bool) {
         // Callers that only know a video ID — `play(videoId:)`, queue-drift correction, autoplay —
         // pass `isPodcast: false`. Replaying the item we already classified must keep that
         // classification, or restarting an episode mid-playback would flip the transport controls
@@ -590,44 +567,27 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         let classifiedVideoId = self.podcastClassificationVideoId
         let isPodcastPlayback = isPodcast || (classifiedVideoId != nil && videoId == classifiedVideoId)
 
+        let wasPodcast = self.currentPlaybackIsPodcast
         self.currentPlaybackIsPodcast = isPodcastPlayback
         self.podcastClassificationVideoId = isPodcastPlayback ? videoId : nil
-        self.miniPlayerVideoAspectRatio = nil
-
-        if isPodcastPlayback {
-            self.showMiniPlayer = true
-            self.logger.info("Mini player auto-opened for podcast playback")
-            return
+        // The observed ratio belongs to a video, not to a playback: keeping it for the item it
+        // describes is what stops a reclassification of the playing song from collapsing the
+        // sidebar surface back to the 16:9 fallback (and letterboxing the picture).
+        if self.miniPlayerVideoAspectRatioVideoId != videoId {
+            self.miniPlayerVideoAspectRatio = nil
+            self.miniPlayerVideoAspectRatioVideoId = nil
         }
-
-        self.showMiniPlayer = false
-
-        if !self.hasArmedFirstHiddenSongFallbackThisSession {
-            self.hasArmedFirstHiddenSongFallbackThisSession = true
-            self.armFirstHiddenSongFallback(videoId: videoId)
-        }
-    }
-
-    private func armFirstHiddenSongFallback(videoId: String) {
-        self.miniPlayerFallbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1800))
-
-            guard !Task.isCancelled else { return }
-            guard self.pendingPlayVideoId == videoId else { return }
-            guard !self.isPlaying else { return }
-            guard !self.showMiniPlayer else { return }
-            guard !self.isCurrentTrackPodcast else { return }
-
-            self.showMiniPlayer = true
-            self.shouldAutoDismissMiniPlayerOnPlaybackStart = true
-            self.logger.info(
-                "Mini player fallback shown because hidden song playback did not start quickly")
-        }
-    }
-
-    private func cancelMiniPlayerFallback() {
-        self.miniPlayerFallbackTask?.cancel()
-        self.miniPlayerFallbackTask = nil
+        // A new video means a newly learnable variant: the previous track's learned
+        // id must not fold observations for this one.
+        self.observedVideoVariantVideoId = nil
+        self.observedVideoVariantForVideoId = nil
+        // A new video means a new verdict: the previous track's API answer must not
+        // gate the DOM fast path (or `hasVideoSurface`) for this one.
+        self.authoritativeVideoAvailabilityVideoId = nil
+        // Video on by default for podcasts (transition only; sticky afterwards).
+        if isPodcastPlayback, !wasPodcast { self.isSidebarVideoEnabled = true }
+        // Sidebar video preference is sticky: a track without video falls back to artwork
+        // via `isSidebarVideoShowing`, and the next track with one shows video again.
     }
 
     // MARK: - Now Playing Sidebar
@@ -870,12 +830,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentTrackVideoVariant = self.preferAudioVersions
             ? variantSource.flatMap { self.variantMatcher.videoVariant(of: $0) }
             : nil
-        self.isMiniPlayerShowingVideoVariant = false
         self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
 
         self.pendingPlayVideoId = videoId
 
-        self.applyMiniPlayerPolicyForPlayback(videoId: videoId, isPodcast: false)
+        self.applyPlaybackKindForPlayback(videoId: videoId, isPodcast: false)
         SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
 
         // Fetch full song metadata in the background to get feedbackTokens
@@ -900,12 +859,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         episode: ArtistEpisode? = nil
     ) async {
         // Always play the song/audio variant when one exists; the video is kept as the
-        // counterpart for the PiP miniplayer (see ``currentTrackVideoVariant``).
+        // counterpart for the sidebar video (see ``currentTrackVideoVariant``).
         let song = self.audioPreferredVariant(song)
         self.currentTrackVideoVariant = self.preferAudioVersions
             ? self.variantMatcher.videoVariant(of: song)
             : nil
-        self.isMiniPlayerShowingVideoVariant = false
 
         self.logger.info("Playing song: \(song.title)")
         self.logger.debug("Web load strategy: \(String(describing: webLoadStrategy))")
@@ -918,7 +876,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.shouldSuppressAutoplayAfterQueueEnd = false
         let previousVideoId = self.currentTrack?.videoId
         self.currentTrack = song
-        // A paired music video is a video surface for the PiP toggle even though the song plays.
+        // A paired music video is a video surface for the sidebar toggle even though the song plays.
         self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
 
         // Kaset-driven track changes (`next()`, `previous()`, `playFromQueue`) don't produce a
@@ -959,7 +917,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         self.pendingPlayVideoId = song.videoId
 
-        self.applyMiniPlayerPolicyForPlayback(
+        self.applyPlaybackKindForPlayback(
             videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
         SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
 
@@ -972,24 +930,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.resolveUpcomingVariants()
     }
 
-    /// Called when the mini player confirms playback has started.
+    /// Marks playback as confirmed started (used by tests and playback handoffs).
     func confirmPlaybackStarted() {
-        self.cancelMiniPlayerFallback()
-        self.showMiniPlayer = false
-        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
         self.state = .playing
         self.hasUserInteractedThisSession = true
         self.logger.info("Playback confirmed started, user interaction recorded")
-    }
-
-    /// Called when the mini player is dismissed.
-    func miniPlayerDismissed() {
-        self.cancelMiniPlayerFallback()
-        self.showMiniPlayer = false
-        self.shouldAutoDismissMiniPlayerOnPlaybackStart = false
-        if self.state == .loading {
-            self.state = .idle
-        }
     }
 
     func markPlaybackEnded() {
@@ -1122,7 +1067,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Updates whether the current track has video available.
     /// Kept as metadata for current track capabilities.
+    ///
+    /// The DOM fast path: once the API verdict for the playing video has landed, it
+    /// sticks — later DOM updates for the same video are ignored so a track the API
+    /// confirmed as video-less (ATV, no counterpart) keeps its button hidden.
     func updateVideoAvailability(hasVideo: Bool) {
+        if let verdictId = self.authoritativeVideoAvailabilityVideoId,
+           verdictId == (self.pendingPlayVideoId ?? self.currentTrack?.videoId)
+        {
+            return
+        }
         let previousValue = self.currentTrackHasVideo
         self.currentTrackHasVideo = hasVideo
 
@@ -1131,12 +1085,38 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
     }
 
+    /// Authoritative video availability from the API (`musicVideoType`/counterpart).
+    ///
+    /// Records the verdict for `videoId` so later DOM updates cannot override it.
+    /// Reset on every track change (`applyPlaybackKindForPlayback`), so the DOM fast
+    /// path stays live until the API answers for the new track.
+    func updateVideoAvailabilityFromAPI(hasVideo: Bool, videoId: String) {
+        self.authoritativeVideoAvailabilityVideoId = videoId
+        let previousValue = self.currentTrackHasVideo
+        self.currentTrackHasVideo = hasVideo
+
+        if previousValue != hasVideo {
+            self.logger.debug("Video availability from API updated: \(hasVideo)")
+        }
+    }
+
     /// Updates the mini player aspect ratio from observed HTML video dimensions.
-    func updateMiniPlayerVideoDimensions(width: Int, height: Int) {
+    ///
+    /// `videoId` is the video the dimensions were read from, so the ratio can outlive a
+    /// reclassification of that same video (see ``miniPlayerVideoAspectRatioVideoId``).
+    func updateMiniPlayerVideoDimensions(width: Int, height: Int, videoId: String? = nil) {
         guard width > 0, height > 0 else { return }
 
         let ratio = Double(width) / Double(height)
         guard ratio.isFinite, ratio >= 0.3, ratio <= 4.0 else { return }
+
+        // A different video is a real change even when the ratio is the same: the tag is what
+        // decides whether the next reclassification keeps this shape.
+        if let videoId, videoId != self.miniPlayerVideoAspectRatioVideoId {
+            self.miniPlayerVideoAspectRatio = ratio
+            self.miniPlayerVideoAspectRatioVideoId = videoId
+            return
+        }
 
         if let currentRatio = self.miniPlayerVideoAspectRatio,
             abs(currentRatio - ratio) < 0.001
@@ -1211,7 +1191,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         if shouldLoadPendingVideo {
             let isPodcast = self.isPodcastTrack(self.currentTrack)
-            self.applyMiniPlayerPolicyForPlayback(videoId: pendingPlayVideoId, isPodcast: isPodcast)
+            self.applyPlaybackKindForPlayback(videoId: pendingPlayVideoId, isPodcast: isPodcast)
             self.state = .loading
             SingletonPlayerWebView.shared.loadVideo(videoId: pendingPlayVideoId)
             return

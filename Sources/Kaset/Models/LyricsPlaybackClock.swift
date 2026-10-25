@@ -62,14 +62,24 @@ struct KaraokeTiming: Equatable, Sendable {
     /// teleport the highlight.
     var maximumFrameMs: Double = 100
 
-    /// How far ahead of a line's own start the auto-scroll starts following it, so
-    /// the line is in place when its first word is sung.
+    /// How far before a line begins the sheet starts travelling to it, in milliseconds.
     ///
-    /// This leads the *scroll* only. The highlight moves when the line it is on is
-    /// settled (`KaraokeFillModel.highlightIndex`), never this much ahead of it:
-    /// a highlight that arrives early is a line that starts leaving while it is still
-    /// being sung.
-    var scrollLookaheadMs: Double = 120
+    /// This is the whole of the lead: the sheet is a column of one line's height per line, so a
+    /// line that is about to be sung has to be brought into place *before* it is sung — it cannot
+    /// be scrolled to on the frame its first word lands. The value is Better Lyrics' own
+    /// (`--blyrics-lyric-ending-threshold` / `--blyrics-scroll-timing-offset`, both `0.5 s`).
+    ///
+    /// It is deliberately **not** the lead on the emphasis. The line being sung keeps the
+    /// highlight until the next line's first content opens, which is the moment the baton passes:
+    /// one bright line is always the line being read, and it never starts to leave while it is
+    /// still filling.
+    var scrollLeadMs: Double = 500
+
+    /// How long the sheet takes to travel from one line to the next, in milliseconds.
+    ///
+    /// Shorter than `scrollLeadMs` on purpose, with the difference absorbing a late playback
+    /// sample: the travel is always over before the line it is travelling to is sung.
+    var scrollDurationMs: Double = 400
 
     /// How far before the line after the one being sung has anything to show that it takes
     /// the display clock.

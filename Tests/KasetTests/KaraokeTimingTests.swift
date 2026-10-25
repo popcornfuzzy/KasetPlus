@@ -441,8 +441,8 @@ struct KaraokeFillModelTests {
         #expect(!isLive(4, 5, nil, 0))
     }
 
-    @Test("The highlight moves when a line has been sung, not a scroll lead before it")
-    func highlightAdvancesOnlyWhenTheLineIsSung() {
+    @Test("The highlight moves on the next line's first content, not a scroll lead before it")
+    func highlightAdvancesOnTheNextLineContent() {
         let first = SyncedLyricLine(
             timeInMs: 0,
             duration: 2000,
@@ -451,32 +451,37 @@ struct KaraokeFillModelTests {
         )
         let second = SyncedLyricLine(timeInMs: 2000, duration: 2000, text: "next line", words: nil)
         let lyrics = SyncedLyrics(lines: [first, second], source: "HighlightTest")
+        let timing = KaraokeTiming.standard
+        // A line timed as a whole opens its appear ramp one attack lead before its timestamp.
+        let baton = 2000 - timing.attackLeadMs
 
         // The panel used to compute this from `currentLineIndex(at: timeMs + scrollLookaheadMs)`,
         // so the highlight — and with it the departing line's dim, shrink and recede — moved on
-        // 120 ms before the line had finished being sung. The last word of the line above fills
-        // until 1960 ms, so the old rule started leaving with it still sweeping.
+        // 120 ms (and, for a while, a whole hand-off lead) before the line above was sung out.
         #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1880) == 0)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1960) == 0)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1999) == 0)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 2000) == 1)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: Int(baton) - 1) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: Int(baton)) == 1)
 
-        // Everything the departing line was still doing is done by then: its fill is complete
-        // and its time envelopes have run out, which is why the frame it settles to is the frame
-        // it was already showing.
+        // The last word of the line above lands a release tail after it (`settleBoundaryMs`), and
+        // its row keeps drawing until then — so that word finishes filling as the line dims instead
+        // of freezing half-swept, and by the time the row leaves the clock its fill is complete and
+        // its envelopes have run out.
         let sung = KaraokeFillModel.words(for: first)
-        #expect(sung.allSatisfy { $0.fill(at: 2000) == 1 })
-        #expect(sung.allSatisfy { $0.glowStrength(at: 2000) == 0 && $0.swell(at: 2000) == 0 })
-
-        // And its row has stopped drawing on that same frame.
-        #expect(!KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: first, clockMs: 2000))
+        let filled = sung.map(\.fillEndMs).max() ?? 0
+        #expect(filled == 1960)
+        #expect(sung.allSatisfy { $0.fill(at: filled) == 1 })
+        #expect(sung.allSatisfy { $0.glowStrength(at: filled) == 0 && $0.swell(at: filled) == 0 })
+        // …and its row keeps the clock until the later of its declared end and that last fill.
+        let settled = KaraokeFillModel.settleBoundaryMs(for: first)
+        #expect(settled == 2000)
+        #expect(KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: first, clockMs: baton))
+        #expect(!KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: first, clockMs: settled))
     }
 
-    @Test("The highlight waits for a line whose words overran its declared end")
-    func highlightWaitsForAWordThatOverranItsLine() {
+    @Test("A line whose last word overruns is left to finish, while the next line is being sung")
+    func anOverrunningWordKeepsFillingAsItsLineLeaves() {
         // A provider gave the line no duration at all. Such a line is sung for as long as its
-        // words say, so there is no declared end to step off — the only honest boundary is the
-        // end of its last fill ramp.
+        // words say, so its last word can land after the next line has started.
         let undated = SyncedLyricLine(
             timeInMs: 0,
             duration: 0,
@@ -486,12 +491,15 @@ struct KaraokeFillModelTests {
         let next = SyncedLyricLine(timeInMs: 1000, duration: 2000, text: "next", words: nil)
         let lyrics = SyncedLyrics(lines: [undated, next], source: "HighlightTest")
 
-        // The last word is still filling at 1280 ms, well past the point the declared rule has
-        // moved on, so the highlight stays with the line that is still being sung.
         #expect(KaraokeFillModel.settleBoundaryMs(for: undated) == 1280)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1100) == 0)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1279) == 0)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1280) == 1)
+
+        // The baton goes to the line that is being sung now — there is only ever one — and the row
+        // above stays on the display clock until its own last word has landed, so that word keeps
+        // sweeping as the line dims instead of freezing half-filled.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1100) == 1)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1279) == 1)
+        #expect(KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: undated, clockMs: 1_100))
+        #expect(!KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: undated, clockMs: 1_280))
     }
 
     @Test("A pause waits for a backing vocal that is still sounding, a sung line does not")
@@ -549,10 +557,16 @@ struct KaraokeFillModelTests {
         #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_000) == 0)
         #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_299) == 0)
 
-        // Past the row, the sheet has nothing left at all: the hold is bounded by the silent
-        // row's own window, so it can never outlast it.
+        // Past the row's own window the line above is still sounding (its backing phrase lands at
+        // 1350), so the baton stays where the singing is: the change is driven by when the sound
+        // stops, not by when the silent row's own window closed.
         #expect(lyrics.currentLineIndex(at: 1_300) == nil)
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_300) == nil)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_300) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_349) == 0)
+
+        // And the row in play is never nothing at all: the silence takes the baton once the line
+        // above has stopped sounding, rather than leaving the whole sheet with no current row.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1_350) == 1)
     }
 
     @Test("A line-synced line has settled before the highlight leaves it")
@@ -570,20 +584,101 @@ struct KaraokeFillModelTests {
         #expect(abs(word.haloStrength(at: 2000) - word.haloStrength(at: 5000)) < 0.001)
     }
 
-    @Test("The scroll still leads playback, even though the highlight does not")
-    func scrollKeepsItsLookahead() {
+    @Test("Exactly one line is being sung, and the baton passes on its first word")
+    func theBatonPassesOnTheFirstWord() {
         let lyrics = SyncedLyrics(
             lines: (0 ..< 3).map { index in
                 SyncedLyricLine(timeInMs: index * 2000, duration: 2000, text: "line \(index)", words: nil)
             },
             source: "HighlightTest"
         )
+        let timing = KaraokeTiming.standard
+        // A line the provider timed as a whole begins when its appear ramp opens, one attack lead
+        // before its timestamp.
+        let baton = 2000 - timing.attackLeadMs
+        #expect(KaraokeFillModel.contentStartMs(for: lyrics.lines[1], timing: timing) == baton)
 
-        // The highlight is still on the first line — it is being sung — while the scroll is
-        // already heading for the second, so the sheet is in place when the second line's first
-        // word starts. The two leads are deliberately different.
-        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: 1900) == 0)
-        #expect(lyrics.currentLineIndex(at: 1900 + Int(KaraokeTiming.standard.scrollLookaheadMs)) == 1)
+        // A sample before it, the sheet is on the first line and the second is still upcoming.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: Int(baton) - 1) == 0)
+        #expect(KaraokeFillModel.status(forLineAt: 1, highlightIndex: 0) == .upcoming)
+
+        // At its own first content the baton passes, and it is one row on either side: the line above
+        // is `previous` on the same sample that the line below becomes `current`, so two rows of the
+        // column are never bright at once.
+        #expect(KaraokeFillModel.highlightIndex(in: lyrics, at: Int(baton)) == 1)
+        #expect(KaraokeFillModel.status(forLineAt: 0, highlightIndex: 1) == .previous)
+        #expect(KaraokeFillModel.status(forLineAt: 1, highlightIndex: 1) == .current)
+        #expect(KaraokeFillModel.status(forLineAt: 2, highlightIndex: 1) == .upcoming)
+
+        // The scroll is the part that leads: the sheet starts travelling for the next line a scroll
+        // lead before its first word, and the travel is over before that word on the same clock.
+        let scrollStart = Int(baton - timing.scrollLeadMs)
+        #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: scrollStart - 1) == 0)
+        #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: scrollStart) == 1)
+        #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: Int(baton)) == 1)
+        #expect(timing.scrollDurationMs <= timing.scrollLeadMs, "the travel has to fit inside its own lead")
+
+        // A row with nothing to sing takes neither early: the dots are not sung, so they take the
+        // highlight when the silence begins and the sheet waits for it.
+        let withPause = SyncedLyrics(
+            lines: [
+                SyncedLyricLine(timeInMs: 0, duration: 2000, text: "one", words: nil),
+                SyncedLyricLine(timeInMs: 2000, duration: 2000, text: "", words: nil),
+            ],
+            source: "HighlightTest"
+        )
+        #expect(KaraokeFillModel.status(forLineAt: 1, highlightIndex: 0) == .upcoming)
+        #expect(KaraokeFillModel.scrollIndex(in: withPause, at: 1_900) == 0)
+        #expect(KaraokeFillModel.highlightIndex(in: withPause, at: 2_000) == 1)
+
+        // A word-timed line begins when its *first word* fills, which is the attack lead before the
+        // line's timestamp — so a word-timed sheet passes the baton a little earlier than a
+        // line-synced one, and never on a frame where that word is already part-filled.
+        let wordTimed = SyncedLyricLine(
+            timeInMs: 2000,
+            duration: 2000,
+            text: "one two",
+            words: [TimedWord(timeInMs: 2000, word: "one"), TimedWord(timeInMs: 3000, word: " two")]
+        )
+        let firstRamp = KaraokeFillModel.words(for: wordTimed)[0].fillStartMs
+        #expect(firstRamp == 2000 - timing.attackLeadMs)
+        #expect(KaraokeFillModel.contentStartMs(for: wordTimed, timing: timing) == firstRamp)
+    }
+
+    @Test("One schedule holds the line logic, and playback only searches it")
+    func theScheduleIsTheWholeOfTheLineLogic() {
+        let lyrics = SyncedLyrics(
+            lines: (0 ..< 4).map { index in
+                SyncedLyricLine(timeInMs: index * 2000, duration: 2000, text: "line \(index)", words: nil)
+            },
+            source: "HighlightTest"
+        )
+        let changes = KaraokeFillModel.lineChanges(in: lyrics)
+        #expect(changes.count == 4)
+        #expect(changes.map(\.lineIndex) == [0, 1, 2, 3])
+
+        // Batons only ever move forward, which is what makes "the last change that has happened" a
+        // well-defined answer for any position.
+        #expect(zip(changes, changes.dropFirst()).allSatisfy { $0.batonMs <= $1.batonMs })
+
+        // Each line begins on its own first content, and the sheet starts travelling to it a scroll
+        // lead earlier.
+        let second = changes[1]
+        #expect(second.batonMs == 2_000 - KaraokeTiming.standard.attackLeadMs)
+        #expect(second.scrollStartMs == second.batonMs - KaraokeTiming.standard.scrollLeadMs)
+
+        // Walking it from before the first line visits every moment the state changes, in order and
+        // once each — which is exactly what the sheet's wake-up does while a song plays.
+        var visited: [Double] = []
+        var position = -10_000.0
+        while let due = KaraokeFillModel.nextChangeMs(in: changes, after: position) {
+            visited.append(due)
+            position = due
+        }
+        #expect(visited.count == 8)
+        #expect(Set(visited).count == 8)
+        #expect(visited == visited.sorted())
+        #expect(changes.allSatisfy { visited.contains($0.batonMs) && visited.contains($0.scrollStartMs) })
     }
 
     @Test("A finished line runs on until the later of its end and its last fill")

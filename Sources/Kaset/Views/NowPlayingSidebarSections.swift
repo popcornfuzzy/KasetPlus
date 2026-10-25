@@ -16,6 +16,12 @@ enum NowPlayingSidebarLayout {
     /// Height of the three-line lyric window in the sidebar's preview.
     static let lyricsPreviewHeight: CGFloat = 116
 
+    /// Height of the podcast transcript window once its card is opened.
+    ///
+    /// Taller than the lyric preview because a transcript paragraph is read, not glanced at — and
+    /// still a window, so the column's overview keeps its shape around it.
+    static let transcriptPanelHeight: CGFloat = 280
+
     /// Side of the small artwork on the up-next row.
     static let rowArtworkSide: CGFloat = 40
 
@@ -114,9 +120,12 @@ struct NowPlayingSidebarBackground: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .blur(radius: 42)
-                        // Zoom past the blur's soft edges, so the wash reaches every corner instead of
-                        // fading out into the window background at the sides.
-                        .scaleEffect(1.3)
+                        // Flipped vertically (and zoomed past the blur's soft edges, so the wash
+                        // reaches every corner instead of fading out into the window background at
+                        // the sides). The hero artwork dissolves downward, so the wash's *top* edge
+                        // continues the cover's bottom edge rather than repeating its top: the
+                        // picture and its color meet along the same seam.
+                        .scaleEffect(x: 1.3, y: -1.3)
                         .opacity(self.colorScheme == .dark ? 0.9 : 0.6)
                 }
             }
@@ -191,13 +200,27 @@ struct NowPlayingSidebarBackground: View {
 @available(macOS 26.0, *)
 struct NowPlayingSidebarCard<Content: View>: View {
     var cornerRadius: CGFloat = 16
+    /// Opens what the card previews. Set on the whole card, not just its header and content, so the
+    /// empty space inside its edges is the same target as the text is.
+    var onTap: (() -> Void)?
     @ViewBuilder var content: Content
 
     var body: some View {
-        self.content
+        let card = self.content
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
             .glassEffect(.regular, in: .rect(cornerRadius: self.cornerRadius))
+            // The shape is taken after the padding, so the rect is the glass card's bounds rather than
+            // the content's ink.
+            .contentShape(.rect(cornerRadius: self.cornerRadius))
+
+        if let onTap {
+            // Simultaneous, so a row, a scroll view or a button the content draws keeps its own click
+            // instead of losing it to the card — and the card still hears the ones they leave alone.
+            card.simultaneousGesture(TapGesture().onEnded(onTap))
+        } else {
+            card
+        }
     }
 }
 
@@ -295,6 +318,40 @@ struct NowPlayingSidebarArtwork: View {
     }
 }
 
+// MARK: - NowPlayingSidebarVideo
+
+/// The music video / video podcast in the right sidebar, shown in place of the artwork.
+///
+/// The same singleton WebView the hidden audio layer uses is re-parented here, with the
+/// video-focused presentation (`isExpanded: true, prefersVideo: true`) that extracts the
+/// `<video>` element into the page's container. Its height follows the observed video aspect
+/// ratio (clamped to ``NowPlayingSidebarLayout``'s sane range), so the column grows and
+/// shrinks with the content instead of letterboxing it into a fixed frame.
+@available(macOS 26.0, *)
+struct NowPlayingSidebarVideo: View {
+    let videoId: String
+    let height: CGFloat
+    /// Whether the surface is the video's own shape (so the picture fills it) or one the column
+    /// imposed (so the whole picture is letterboxed inside it).
+    var fillsSurface: Bool = false
+
+    var body: some View {
+        PersistentPlayerView(
+            videoId: self.videoId,
+            isExpanded: true,
+            prefersVideo: true,
+            fillsSurface: self.fillsSurface
+        )
+        .frame(maxWidth: .infinity)
+        .frame(height: self.height)
+        .background(.black)
+        .clipped()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(localized: "Music video"))
+        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.video)
+    }
+}
+
 // MARK: - NowPlayingSidebarUpNext
 
 /// The next song in the queue: artwork, title, artist and length, or a short empty state. Plain
@@ -322,17 +379,26 @@ struct NowPlayingSidebarUpNext: View {
                     Text(song.title)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Text(song.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : song.artistsDisplay)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                // The text column takes the leftover width (minWidth 0 lets it shrink
+                // under a long title); without this the title's ideal width pushes the
+                // row past the column edge and the sidebar reads as cropped.
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
 
                 Spacer(minLength: 0)
 
                 Text(song.durationDisplay)
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
             } else {
                 Text(String(localized: "Nothing queued"))
                     .font(.system(size: 12))

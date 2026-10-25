@@ -54,7 +54,6 @@ extension PlayerService {
         self.currentTrackHasVideo = currentSong.isVideoVariant
             || self.currentTrackVideoVariant != nil
             || (currentSong.hasVideo ?? false)
-        self.showMiniPlayer = false
         self.songNearingEnd = false
         self.isKasetInitiatedPlayback = false
 

@@ -93,6 +93,16 @@ struct WindowToolbarItems {
     var onBack: () -> Void
     var onAI: () -> Void
 
+    /// How far the page's name sits from the leading edge of the page's region.
+    ///
+    /// At a root the name *leads* the region, and AppKit lays the first item almost against the
+    /// sidebar's divider — measured at 3.5pt in the running window, which read as the title hanging off
+    /// the left edge of the page. A name behind a back control is already separated from the divider by
+    /// that control and its space, so only the leading case is inset.
+    var pageTitleLeadingInset: CGFloat {
+        self.canGoBack ? 0 : 12
+    }
+
     /// The window's item order.
     ///
     /// The order *is* the mechanism: each tracking separator turns the region before it into one whose
@@ -101,6 +111,11 @@ struct WindowToolbarItems {
     /// divider — the page's controls therefore stop where the column begins instead of landing on it — and
     /// the inspector's separator comes last, with the Now Playing toggle pushed to the window's trailing
     /// edge behind it.
+    ///
+    /// While the column is **closed** there is no inspector region: the toggle's region is the window's,
+    /// so it belongs to that same right-aligned run as its last member. Stated anywhere else, the toggle
+    /// was only as far right as the thing in front of it — and on a page with no controls and no AI
+    /// button, that thing is the page's name.
     ///
     /// The toggle never moves into the column. It used to, and the column carried its own control in its
     /// top-trailing corner so that opening the sidebar looked like the toggle sliding into it — but that
@@ -123,6 +138,19 @@ struct WindowToolbarItems {
         if self.pageControls != nil {
             rightAligned.append(WindowToolbarItem.pageControls)
         }
+        // While the column is closed the toggle shares this run: its region *is* the window's, so it
+        // has to be pushed by the same flexible space that pushes the page's controls rather than
+        // appended behind them. Appended, it sat against whatever came last — with a page that has no
+        // controls and no Ask AI button (Home, no Apple Intelligence), that was the page's own name, so
+        // the toggle read as part of the title instead of as the window's inspector control.
+        if self.showsNowPlayingToggle, !self.tracksColumn {
+            // Its own control, not the page's: a fixed space ends the page's capsule so the toggle is
+            // never drawn as part of the controls beside it (the same rule as the AI button above).
+            if !rightAligned.isEmpty {
+                rightAligned.append(.space)
+            }
+            rightAligned.append(WindowToolbarItem.nowPlaying)
+        }
 
         var identifiers: [NSToolbarItem.Identifier] = [.toggleSidebar, .sidebarTrackingSeparator]
         // Immediately after the sidebar's separator, which is the leading edge of the region the sidebar
@@ -143,7 +171,7 @@ struct WindowToolbarItems {
         identifiers.append(contentsOf: rightAligned)
         // Only while the column is open: with the column closed its divider sits at the window's edge, so
         // the region to the separator's right would be empty and the control that opens the column — which
-        // belongs there — would have nowhere to go.
+        // belongs there — would have nowhere to go. (A closed column's toggle is in the run above.)
         if self.tracksColumn {
             identifiers.append(.inspectorTrackingSeparator)
             // The column's own header, at the leading edge of the region above the column — where the
@@ -153,14 +181,12 @@ struct WindowToolbarItems {
                 identifiers.append(WindowToolbarItem.sidebarHeader)
             }
         }
-        if self.showsNowPlayingToggle {
-            // A flexible space per region: with the column open the toggle's region is the inspector's,
-            // and without one the item would sit against the separator at the *leading* edge of that
-            // region — over the column's left edge, in the middle of its titlebar band. With it, the
-            // toggle is the window's trailing control, where a macOS window puts an inspector toggle.
-            if self.tracksColumn {
-                identifiers.append(.flexibleSpace)
-            }
+        if self.showsNowPlayingToggle, self.tracksColumn {
+            // A flexible space per region: the toggle's region is the inspector's, and without one the
+            // item would sit against the separator at the *leading* edge of that region — over the
+            // column's left edge, in the middle of its titlebar band. With it, the toggle is the
+            // window's trailing control, where a macOS window puts an inspector toggle.
+            identifiers.append(.flexibleSpace)
             identifiers.append(WindowToolbarItem.nowPlaying)
         }
         return identifiers
@@ -178,12 +204,16 @@ struct WindowToolbarItems {
 @available(macOS 26.0, *)
 struct WindowToolbarTitleView: View {
     let title: String
+    /// See `WindowToolbarItems.pageTitleLeadingInset`: the name needs its own inset when it leads the
+    /// page's region, because nothing ahead of it does.
+    var leadingInset: CGFloat = 0
 
     var body: some View {
         Text(self.title)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.primary)
             .lineLimit(1)
+            .padding(.leading, self.leadingInset)
             .accessibilityIdentifier(AccessibilityID.Toolbar.pageTitle)
     }
 }
@@ -267,14 +297,17 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     /// the refresh spinner judder through every load.
     func apply(items: WindowToolbarItems, onAI: @escaping () -> Void) {
         let pageControlsChanged = items.pageControls?.id != self.items.pageControls?.id
+        // The inset is part of what is drawn: the name moves when a page becomes (or stops being) the
+        // page a back control returns to, and a cached root view would keep the old inset.
         let pageTitleChanged = items.pageTitle != self.items.pageTitle
+            || items.pageTitleLeadingInset != self.items.pageTitleLeadingInset
         let sidebarHeaderChanged = items.sidebarHeader?.title != self.items.sidebarHeader?.title
         self.items = items
         if pageControlsChanged {
             self.pageControlsView?.rootView = items.pageControls?.content ?? AnyView(EmptyView())
         }
         if pageTitleChanged {
-            self.pageTitleView?.rootView = Self.pageTitleContent(title: items.pageTitle)
+            self.pageTitleView?.rootView = Self.pageTitleContent(from: items)
         }
         if sidebarHeaderChanged {
             self.sidebarHeaderView?.rootView = Self.sidebarHeaderContent(for: items.sidebarHeader)
@@ -283,8 +316,13 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The page's name, as the hosted view it is drawn by.
-    private static func pageTitleContent(title: String) -> AnyView {
-        AnyView(WindowToolbarTitleView(title: title))
+    private static func pageTitleContent(from items: WindowToolbarItems) -> AnyView {
+        AnyView(
+            WindowToolbarTitleView(
+                title: items.pageTitle,
+                leadingInset: items.pageTitleLeadingInset
+            )
+        )
     }
 
     /// The column's header, as the hosted view it is drawn by.
@@ -355,12 +393,16 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     private func rehostPageControls(in toolbar: NSToolbar) {
         if let item = toolbar.items.first(where: { $0.itemIdentifier == WindowToolbarItem.pageTitle }) {
             let host = item.view as? NSHostingView<AnyView> ?? {
-                let created = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+                let created = NSHostingView(rootView: Self.pageTitleContent(from: self.items))
                 created.sizingOptions = [.intrinsicContentSize]
                 item.view = created
                 return created
             }()
-            host.rootView = Self.pageTitleContent(title: self.items.pageTitle)
+            host.rootView = Self.pageTitleContent(from: self.items)
+            // Unbordered *after* the view is in place: the glass platter AppKit draws behind a toolbar
+            // item is what `isBordered` removes, and a re-hosted item is exactly where a wrongly
+            // bordered title showed up as a white block behind the text.
+            item.isBordered = false
             self.pageTitleView = host
         }
 
@@ -420,7 +462,9 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     ///
     /// Wired by the shell to its own `NSSplitViewController.toggleInspector(_:)`, so the item's action is
     /// the app's rather than a selector sent down the responder chain, where nothing is guaranteed to be
-    /// in the chain to receive it — which is why the button used to do nothing at all when pressed.
+    /// in the chain to receive it — which is why the button used to do nothing at all when pressed. The
+    /// shell runs it through `toggleNowPlayingColumn()`, which is where the column's animation comes from;
+    /// this button is also the only gesture that collapses the column (a divider drag stops at its minimum).
     var onToggleNowPlaying: (() -> Void)?
 
     // MARK: - Item list
@@ -492,10 +536,12 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             item.paletteLabel = self.items.pageTitle
             // Unbordered: the name is plain titlebar text, not a control, so AppKit draws no glass
             // capsule behind it. (Bordered is what put the title in its own pill beside the chevron.)
-            item.isBordered = false
-            let host = NSHostingView(rootView: Self.pageTitleContent(title: self.items.pageTitle))
+            let host = NSHostingView(rootView: Self.pageTitleContent(from: self.items))
             host.sizingOptions = [.intrinsicContentSize]
             item.view = host
+            // Set after the view: see `rehostPageControls` — this is the setting that keeps the
+            // system from drawing a glass platter behind a non-interactive item.
+            item.isBordered = false
             self.pageTitleView = host
             return item
 

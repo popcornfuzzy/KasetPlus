@@ -25,6 +25,21 @@ struct WindowShellLayout: Equatable {
     /// what the window used to do to it (see `minimumWindowWidth(tracksColumn:)`).
     var minContentWidth: CGFloat = 680
 
+    /// The narrowest the page is squeezed to by a *divider drag*, as opposed to a window resize.
+    ///
+    /// `minContentWidth` is what the **window's** minimum is computed from, so a window never opens with a
+    /// page narrower than it. The split item, though, has to allow the page to give way: the side panes'
+    /// ranges are stated as their own bounds, and with the page's floor enforced as a hard minimum those
+    /// bounds had no room left at the window's own opening width (at 1280 the Now Playing column's cap was
+    /// 313 at best and 293 with the navigation sidebar at its usual 220 — under the column's own minimum, so
+    /// its divider could not move and a drag inward collapsed it, leaving the reader to toggle the column
+    /// back open). A reader dragging a sidebar wider is asking for exactly that trade, so they get it, and
+    /// the pane bounds stop depending on the window.
+    ///
+    /// It stays well above zero, so the page is still a page while the column is dragged out to its
+    /// maximum, and the two panes can never squeeze it to nothing.
+    var contentSqueezeWidth: CGFloat = 500
+
     /// The width the window's owner states for it, independent of which panes are open.
     ///
     /// The window's minimum is this or the panes' own sum, whichever is larger: `MainWindow` states it as
@@ -40,12 +55,13 @@ struct WindowShellLayout: Equatable {
 
     /// The window's minimum **content** width for a given column state.
     ///
-    /// The panes' own minimums plus the dividers. The page never gives up `minContentWidth`, which is the
-    /// point: the window used to satisfy a small window by shrinking the page instead — down to a stated
-    /// `squeezedContentWidth` of 320 — and a split view cannot satisfy a requirement larger than its own
-    /// width, so what AppKit did with the leftover was break a constraint and draw the page past the
-    /// window's edge. Opening the column therefore asks for a window wide enough to hold it rather than
-    /// making the page give way.
+    /// The panes' own minimums plus the dividers, with the page at `minContentWidth`: the window is never
+    /// smaller than a page wide enough for its content, and the window used to satisfy a small window by
+    /// shrinking the page instead — down to a stated `squeezedContentWidth` of 320 — and a split view cannot
+    /// satisfy a requirement larger than its own width, so what AppKit did with the leftover was break a
+    /// constraint and draw the page past the window's edge. Opening the column therefore asks for a window
+    /// wide enough to hold it rather than making the page give way. `contentSqueezeWidth` is not part of
+    /// this: it is what a *divider drag* may trade, never what a window resize may.
     func minimumWindowWidth(tracksColumn: Bool) -> CGFloat {
         let column = tracksColumn ? self.minInspectorWidth : 0
         let panes = self.minSidebarWidth + self.minContentWidth + column + (2 * Self.dividerThickness)
@@ -54,21 +70,21 @@ struct WindowShellLayout: Equatable {
 
     /// How wide the navigation sidebar may be at a given split width.
     ///
-    /// What is left once the page's minimum and the Now Playing column have been given theirs, so the three
-    /// panes always add up and AppKit is never handed a requirement it cannot satisfy. Never below the
+    /// What is left once the page's squeeze floor and the Now Playing column have been given theirs, so the
+    /// three panes always add up and AppKit is never handed a requirement it cannot satisfy. Never below the
     /// sidebar's own minimum, which is what makes it a limit rather than a squeeze. The other panes' own
     /// **current** widths are the inputs, which is what keeps the two maxima consistent with each other:
     /// stated against their minimums instead, two panes could each sit inside their own cap and still not
     /// fit together.
     func sidebarMaximum(splitWidth: CGFloat, inspectorWidth: CGFloat, columnOpen: Bool) -> CGFloat {
         let column = columnOpen ? inspectorWidth : 0
-        let room = splitWidth - self.minContentWidth - column - (2 * Self.dividerThickness)
+        let room = splitWidth - self.contentSqueezeWidth - column - (2 * Self.dividerThickness)
         return max(self.minSidebarWidth, min(self.maxSidebarWidth, room))
     }
 
     /// How wide the Now Playing column may be at a given split width (see `sidebarMaximum`).
     func inspectorMaximum(splitWidth: CGFloat, sidebarWidth: CGFloat) -> CGFloat {
-        let room = splitWidth - self.minContentWidth - sidebarWidth - (2 * Self.dividerThickness)
+        let room = splitWidth - self.contentSqueezeWidth - sidebarWidth - (2 * Self.dividerThickness)
         return max(self.minInspectorWidth, min(self.maxInspectorWidth, room))
     }
 
@@ -106,7 +122,9 @@ struct WindowShellLayout: Equatable {
 ///   inspector AppKit's standard `NSToolbarSidebarTrackingSeparatorItemIdentifier` /
 ///   `NSToolbarInspectorTrackingSeparatorItemIdentifier` discover and align to.
 /// - Collapse: `NSSplitViewController.toggleSidebar(_:)` / `toggleInspector(_:)` and the items' own
-///   `canCollapse`, with the animation.
+///   `canCollapse`, with the animation. The Now Playing column's item does not accept a *user* collapse, so
+///   a divider drag stops at the column's minimum rather than collapsing the column; the toolbar toggle
+///   turns the flag back on for the length of its own call (`toggleNowPlayingColumn`).
 /// - The divider drag, its cursor, and the clamping to each item's minimum and maximum thickness — which
 ///   is why the app no longer has a resize handle, a divider observer or any width arithmetic.
 /// - Persistence: `splitView.autosaveName`.
@@ -123,8 +141,8 @@ struct WindowShell: NSViewControllerRepresentable {
     let layout: WindowShellLayout
 
     /// Whether the Now Playing sidebar is open. The app's page state is the source of truth, so the pane
-    /// is collapsed or expanded from here; a collapse the reader performs comes back through
-    /// `onInspectorCollapsedChange`.
+    /// is collapsed or expanded from here; a collapse the reader performs — the toolbar toggle — is
+    /// observed on the item and comes back through `onInspectorCollapsedChange`.
     let showsInspector: Bool
     /// Width the Now Playing sidebar opens at the first time the app runs; AppKit's autosave owns it from
     /// then on.
@@ -229,6 +247,8 @@ final class WindowShellController: NSSplitViewController {
     var onInspectorCollapsedChange: ((Bool) -> Void)?
 
     private let toolbarController = WindowToolbarController()
+    /// The bar's surface, which AppKit draws only in fullscreen (see `WindowBarBackdropView`).
+    private let barBackdrop = WindowBarBackdropController()
 
     private let logger = DiagnosticsLogger.ui
 
@@ -281,13 +301,34 @@ final class WindowShellController: NSSplitViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // The toolbar's Now Playing toggle runs *this* controller's AppKit inspector toggle, so the
-        // column opens with AppKit's animation, AppKit's divider clamping and AppKit's own collapse
-        // bookkeeping — the app only says which object the item's action is addressed to.
+        // The toolbar's Now Playing toggle runs AppKit's own inspector toggle, so the column opens and
+        // closes with AppKit's animation and AppKit's bookkeeping — the app only says which object the
+        // item's action is addressed to. A collapse the reader performs is read back off the item and fed
+        // into the app's state by `inspectorCollapseDidChange`.
         self.toolbarController.onToggleNowPlaying = { [weak self] in
-            self?.toggleInspector(nil)
+            self?.toggleNowPlayingColumn()
         }
         self.configureSplitView()
+    }
+
+    /// Collapses or expands the Now Playing column with AppKit's own animation.
+    ///
+    /// `NSSplitViewController.toggleInspector(_:)` is where the animation comes from, and it is a no-op
+    /// while the item's `canCollapse` is off — which it is, because that flag is what makes a divider drag
+    /// stop at the column's minimum instead of collapsing the column (`configureSplitView`). So the flag is
+    /// turned on for the length of this call and put straight back: the collapse decision AppKit takes here
+    /// is never a drag's, and no drag can begin inside a button's action.
+    private func animateInspectorToggle() {
+        guard let inspectorItem = self.inspectorItem else { return }
+        let canCollapse = inspectorItem.canCollapse
+        inspectorItem.canCollapse = true
+        self.toggleInspector(nil)
+        inspectorItem.canCollapse = canCollapse
+    }
+
+    /// The toolbar's Now Playing toggle: AppKit's own animated inspector toggle.
+    func toggleNowPlayingColumn() {
+        self.animateInspectorToggle()
     }
 
     override func viewDidLayout() {
@@ -308,11 +349,22 @@ final class WindowShellController: NSSplitViewController {
         self.logLayoutIfNeeded()
         self.logSidebarSurfaceIfNeeded()
         self.installToolbar()
+        if let window = self.view.window {
+            self.barBackdrop.install(in: window, contentPane: self.contentController.view)
+        }
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         self.installToolbar()
+        if let window = self.view.window {
+            self.barBackdrop.install(in: window, contentPane: self.contentController.view)
+        }
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        self.barBackdrop.remove()
     }
 
     // MARK: - Inputs
@@ -373,7 +425,7 @@ final class WindowShellController: NSSplitViewController {
         self.pendingInspectorVisibility?.cancel()
         self.pendingInspectorVisibility = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled else { return }
-            self.applyInspectorVisibility()
+            self.applyInspectorVisibility(animated: true)
         }
     }
 
@@ -391,6 +443,10 @@ final class WindowShellController: NSSplitViewController {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: self.sidebarController)
         sidebarItem.canCollapse = true
         sidebarItem.canCollapseFromWindowResize = false
+        // Stated rather than defaulted: full height is what lets the sidebar's material run under the
+        // transparent titlebar instead of starting below a bar, and it is what the user reported as
+        // missing when the window was briefly made standard.
+        sidebarItem.allowsFullHeightLayout = true
 
         let contentItem = NSSplitViewItem(viewController: self.contentController)
         contentItem.canCollapse = false
@@ -398,8 +454,15 @@ final class WindowShellController: NSSplitViewController {
         contentItem.holdingPriority = NSLayoutConstraint.Priority(249)
 
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: self.inspectorController)
-        inspectorItem.canCollapse = true
+        // A divider drag **stops** at the column's minimum; it does not collapse it. AppKit's rule for a
+        // collapsible item is that a drag past its minimum collapses it, which read as the column breaking
+        // exactly where a narrow column is still useful. Collapsing is the toolbar toggle's job, which turns
+        // this flag back on for its own call (`toggleNowPlayingColumn`), and `isCollapsed` can still be set
+        // programmatically with it off — which is how the app's state hides the column.
+        inspectorItem.canCollapse = false
         inspectorItem.canCollapseFromWindowResize = false
+        // The column's artwork belongs to the top edge of the window, not to a strip below the toolbar.
+        inspectorItem.allowsFullHeightLayout = true
         // Just above the page's, so the column keeps the width the reader gave it when the *window* is
         // resized: without a stated priority the two flexible panes trade width arbitrarily, and the
         // column visibly lost its divider position on every window resize.
@@ -440,7 +503,13 @@ final class WindowShellController: NSSplitViewController {
     }
 
     /// Collapses or expands the Now Playing pane from the app's own state.
-    private func applyInspectorVisibility() {
+    ///
+    /// `animated` is for a change asked for from outside a layout pass (the transport's lyrics/queue
+    /// buttons, ⌘L, the Settings switch): it runs AppKit's own toggle, which is where the column's open and
+    /// close animation comes from. A change applied *inside* a layout pass states the item's `isCollapsed`
+    /// directly instead — AppKit lays the panes out from that toggle, and doing that while it is laying the
+    /// split view out is how a constraint pass is entered re-entrantly.
+    private func applyInspectorVisibility(animated: Bool = false) {
         guard let inspectorItem = self.inspectorItem else { return }
         let shouldCollapse = !self.state.showsInspector
         if inspectorItem.isCollapsed != shouldCollapse {
@@ -448,7 +517,11 @@ final class WindowShellController: NSSplitViewController {
                 shouldCollapse ? "the Now Playing column is being collapsed" : "the Now Playing column is being opened"
             )
             self.isApplyingState = true
-            inspectorItem.isCollapsed = shouldCollapse
+            if animated {
+                self.animateInspectorToggle()
+            } else {
+                inspectorItem.isCollapsed = shouldCollapse
+            }
             self.isApplyingState = false
             MainThreadStallReporter.shared.note("the Now Playing column's collapse was applied")
         }
@@ -492,26 +565,35 @@ final class WindowShellController: NSSplitViewController {
         self.logger.info("\(message, privacy: .public)")
     }
 
-    /// The panes' limits: the page's minimum, and how wide either side pane may be right now.
+    /// The panes' limits: the page's squeeze floor, and how wide either side pane may be right now.
     ///
-    /// The page's minimum is a **floor**, held at every window width — it is not a function of the room
-    /// that is left, which is what it used to be. Shrinking it was how the window stayed small, and a page
-    /// squeezed to the old `squeezedContentWidth` of 320 is a page whose controls are cut off.
+    /// The window's minimum is the page's stated width (`minContentWidth`), held at every window width — it
+    /// is not a function of the room that is left, which is what it used to be. Shrinking it was how the
+    /// window stayed small, and a page squeezed to the old `squeezedContentWidth` of 320 is a page whose
+    /// controls are cut off.
     ///
-    /// What gives way instead is the *side panes' maxima*: each is capped at what is left once the page
-    /// and the other pane have been given theirs, so the three panes always add up to the split view and
-    /// AppKit is never handed a requirement it cannot satisfy (its answer to one is to break a constraint
-    /// and draw a pane past the window's edge). The caps are read from the panes' **current** widths, which
-    /// is what keeps them consistent with each other — with the minimums of the other pane, two panes could
-    /// each be within their own cap and still not fit together. Clamping only ever narrows a pane and never
-    /// below its minimum, so the pass settles rather than oscillating.
+    /// What gives way instead is the *page*, and only while a reader drags a divider: the item enforces
+    /// `contentSqueezeWidth`, so the side panes keep their stated bounds at any window width and the page
+    /// absorbs the difference. A window resize never does this — the window's minimum keeps the page at
+    /// `minContentWidth` — so the page only gives way when the reader asks for a wider sidebar.
+    ///
+    /// The side panes are still capped at what is left once the squeeze floor and the other pane have
+    /// been given theirs, so the three panes always add up to the split view and AppKit is never handed a
+    /// requirement it cannot satisfy (its answer to one is to break a constraint and draw a pane past the
+    /// window's edge). The caps are read from the panes' **current** widths, which is what keeps them
+    /// consistent with each other — with the minimums of the other pane, two panes could each be within
+    /// their own cap and still not fit together. Clamping only ever narrows a pane and never below its
+    /// minimum, so the pass settles rather than oscillating.
     private func applyPaneLimits() {
         guard let contentItem = self.contentItem,
               let sidebarItem = self.sidebarItem,
               let inspectorItem = self.inspectorItem
         else { return }
 
-        contentItem.minimumThickness = self.layout.minContentWidth
+        // The page's *own* floor is the window's (`minContentWidth`); what the split item enforces is the
+        // squeeze floor, so a divider drag can trade page width for a side pane's range. See
+        // `WindowShellLayout.contentSqueezeWidth`.
+        contentItem.minimumThickness = self.layout.contentSqueezeWidth
 
         let splitWidth = self.splitView.bounds.width
         guard splitWidth > 0 else { return }
@@ -533,14 +615,15 @@ final class WindowShellController: NSSplitViewController {
 
         // A pane drawn past the window is the whole symptom this arithmetic exists to prevent, and it is
         // invisible in the app's source: the split view is told one width and lays itself out at its own
-        // minimum instead. So it is reported rather than left to be seen. Seeing it means the page's content
-        // needs more than `minContentWidth` states (`MainWindow.Layout.pageMinWidth`, measured at 765).
+        // minimum instead. So it is reported rather than left to be seen. Seeing it means the split view's
+        // own minimum (`contentSqueezeWidth`) does not fit the window it is in.
         if let window = self.view.window {
             let contentWidth = window.contentLayoutRect.width
             if contentWidth > 0, splitWidth > contentWidth + 0.5 {
                 let overflow = "Shell overflow: the split view is \(Int(splitWidth)) wide in a "
                     + "\(Int(contentWidth))pt window (page=\(Int(panes.count > 1 ? panes[1].frame.width : 0)) "
-                    + "pageMin=\(Int(self.layout.minContentWidth)) columnOpen=\(columnOpen))"
+                    + "pageMin=\(Int(self.layout.minContentWidth)) "
+                    + "pageSqueeze=\(Int(self.layout.contentSqueezeWidth)) columnOpen=\(columnOpen))"
                 self.logger.warning("\(overflow, privacy: .public)")
             }
         }
@@ -553,6 +636,7 @@ final class WindowShellController: NSSplitViewController {
         inspectorItem.maximumThickness = inspectorMaximum
         let message = "Shell pane limits: split=\(Int(splitWidth)) "
             + "pageMin=\(Int(self.layout.minContentWidth)) "
+            + "pageSqueeze=\(Int(self.layout.contentSqueezeWidth)) "
             + "sidebar=[\(Int(sidebarItem.minimumThickness)),\(Int(sidebarMaximum))] "
             + "inspector=[\(Int(inspectorItem.minimumThickness)),\(Int(inspectorMaximum))] "
             + "columnOpen=\(columnOpen) panes=\(Int(sidebarWidth))/\(Int(inspectorWidth))"
@@ -586,6 +670,10 @@ final class WindowShellController: NSSplitViewController {
     }
 
     /// Reports a collapse the reader performed, so the app's page state follows the pane.
+    ///
+    /// The toolbar toggle is the only gesture that can do this — a divider drag stops at the column's
+    /// minimum, because the item does not accept a user collapse — and the app's own writes are flagged by
+    /// `isApplyingState`, so what arrives here is always something the app did not ask for.
     private func inspectorCollapseDidChange(_ collapsed: Bool) {
         let source = self.isApplyingState ? "app" : "reader"
         // Notice, not debug: this is one of the steps the fullscreen player's exit is made of (opening it
@@ -1090,12 +1178,14 @@ final class WindowShellController: NSSplitViewController {
 
     // MARK: - Toolbar
 
-    /// Keeps the window's chrome in the shape a sidebar-plus-toolbar window has.
+    /// Keeps the window's chrome the system's.
     ///
-    /// The app's window sets these when it is created (`AppDelegate.installMainWindow`), so this is
-    /// normally a no-op — it is re-asserted from the layout pass, and only writes when a value actually
-    /// differs, so nothing that takes the window over later can leave the reader's sidebar looking like an
-    /// opaque band above a sidebar.
+    /// The content runs under a transparent titlebar, so AppKit owns the toolbar's floating background,
+    /// the scroll-edge effect where content passes beneath it, and the full-height layout of the sidebar
+    /// and inspector. The window is opaque: the panes and their materials need a surface to composite
+    /// against, and a transparent window is what made the earlier chrome unreadable. Re-asserted from the
+    /// layout pass so nothing that takes the window over later can remove the style mask the full-height
+    /// panes depend on.
     private func applyWindowChrome() {
         guard let window = self.view.window else { return }
         self.applyTitleVisibility()
@@ -1105,20 +1195,17 @@ final class WindowShellController: NSSplitViewController {
         if !window.titlebarAppearsTransparent {
             window.titlebarAppearsTransparent = true
         }
+        if window.toolbarStyle != .unified {
+            window.toolbarStyle = .unified
+        }
         if window.titlebarSeparatorStyle != .none {
-            // A hairline under the toolbar draws a line across the whole window, including over the
-            // navigation sidebar, where the two regions' different materials meet.
             window.titlebarSeparatorStyle = .none
         }
-        // The window is a clear sheet, so the sidebar's material has the desktop to blur rather than the
-        // window's own background to blend against. Re-asserted here for the same reason as the rest of
-        // the chrome: only a value that actually differs is written, and it means nothing that takes the
-        // window over later can put an opaque background back behind the sidebar.
-        if window.isOpaque {
-            window.isOpaque = false
+        if !window.isOpaque {
+            window.isOpaque = true
         }
-        if window.backgroundColor.alphaComponent != 0 {
-            window.backgroundColor = .clear
+        if window.backgroundColor.alphaComponent != 1 {
+            window.backgroundColor = .windowBackgroundColor
         }
     }
 
@@ -1210,9 +1297,8 @@ final class WindowShellController: NSSplitViewController {
 /// **inside** it.
 ///
 /// The effect view is what supplies the sidebar's *own* surface: AppKit's `sidebarWithViewController:`
-/// item gives the pane the sidebar's behaviour, and this gives it the sidebar's material. The pane ignores
-/// the top safe area so the material runs to the window's top edge (the way a macOS sidebar does), while
-/// the hosting view inside it is inset by AppKit's safe area.
+/// item gives the pane the sidebar's behaviour, and this gives it the sidebar's material. The pane simply
+/// fills the content area the window hands it, below the standard titlebar and toolbar.
 ///
 /// ## The sidebar draws in a vibrant appearance, and cannot be talked out of it
 ///
@@ -1233,15 +1319,13 @@ final class WindowShellController: NSSplitViewController {
 /// colour, the link dims the whole row whatever colour it is given. `Sidebar ink:` is the line that
 /// measures the rendered result of both.
 ///
-/// ## `.behindWindow`, and why the window has to be clear
+/// ## `.withinWindow`
 ///
-/// The material blurs what is *behind the window*, not what is behind the view. That is the difference
-/// between a macOS sidebar and a grey panel: `.withinWindow` has only the window's own background to
-/// composite against, so `.sidebar` renders as a flat grey sheet laid over it — which is what the column
-/// looked like. For `.behindWindow` to have the desktop to sample, the window must not be opaque and must
-/// not draw a background (`AppDelegate.installMainWindow`); the panes that *are* a surface — the page and
-/// the Now Playing column — paint their own opaque backgrounds, so the translucency is the sidebar's
-/// alone.
+/// The window is an ordinary opaque one, so the material blurs the window's own surface behind the pane.
+/// `.behindWindow` was tried while the window was a clear sheet: it makes the sidebar sample the desktop,
+/// but it also requires a transparent window — which is what made every other pane, the toolbar band and
+/// the titlebar into rectangles the app then had to draw around. A standard window is worth more than a
+/// desktop-blurred column.
 ///
 /// ## Emphasis, and the rows' contrast
 ///
@@ -1262,10 +1346,9 @@ struct SidebarMaterialPane<Content: View>: NSViewRepresentable {
     func makeNSView(context _: Context) -> NSVisualEffectView {
         let view = EmphasizedMaterialView()
         view.material = .sidebar
-        // Behind the window: the material is the column's own surface, blurring the desktop the way
-        // Finder's and Mail's sidebars do. The window is non-opaque and draws no background for exactly
-        // this (see the type's documentation), and every other pane paints an opaque surface of its own.
-        view.blendingMode = .behindWindow
+        // Within the window: the window is an ordinary opaque one, so the material blurs the surface
+        // behind the pane rather than the desktop.
+        view.blendingMode = .withinWindow
         view.state = .followsWindowActiveState
 
         let host = NSHostingView(rootView: AnyView(self.content()))

@@ -58,10 +58,9 @@ playerService.play(videoId: "dQw4w9WgXcQ")
 
 This sets:
 - `pendingPlayVideoId` = video ID
-- `showMiniPlayer` based on playback type:
-    - Podcast episodes auto-open the mini player
-    - Normal songs stay hidden by default
-    - First hidden song can arm a one-shot fallback that reveals the mini player if autoplay does not start quickly
+- playback kind (podcast classification) for transport and fullscreen presentation.
+  Nothing auto-opens: the sidebar video only shows when the reader enables it and a video
+  is available (see [ADR-0032](adr/0032-sidebar-video-replaces-mini-player.md)).
 
 ### 2. WebView Loads
 
@@ -74,8 +73,9 @@ if PlayerWebViewPreload.shouldHostPlayerWebView(
     isSignedIn: authService.state.isLoggedIn,
     hasPendingVideo: playerService.pendingPlayVideoId != nil
 ) {
-    PersistentPlayerView(videoId: playerService.pendingPlayVideoId, isExpanded: playerService.showMiniPlayer)
-        .frame(width: showMiniPlayer ? 160 : 1, height: showMiniPlayer ? 90 : 1)
+    // Hidden 1x1 audio layer; the Now Playing sidebar hosts the surface when its video is on.
+    PersistentPlayerView(videoId: playerService.pendingPlayVideoId, isExpanded: false, prefersVideo: false)
+        .frame(width: 1, height: 1)
 }
 ```
 
@@ -342,32 +342,14 @@ Kaset treats its own queue as the source of truth whenever one exists:
 - At the end of a non-repeating queue, Kaset marks playback ended rather than
   allowing autoplay to continue into unrelated tracks
 
-## Mini Player UI
+## Sidebar Video
 
-A small toast in the bottom-right corner:
-
-| State | Size | Purpose |
-|-------|------|---------|
-| Visible | 160×90 | User clicks to interact |
-| Hidden | 1×1 | WebView stays in hierarchy |
-
-```swift
-.frame(
-    width: playerService.showMiniPlayer ? 160 : 1,
-    height: playerService.showMiniPlayer ? 90 : 1
-)
-```
-
-### Auto-Dismiss
-
-When playback starts, the mini player auto-dismisses:
-
-```swift
-// In Coordinator
-if isPlaying && playerService.showMiniPlayer {
-    playerService.confirmPlaybackStarted()
-}
-```
+The Now Playing right sidebar shows the music video / video podcast in place of the
+artwork when the reader enables it and `hasVideoSurface` is true (see
+[ADR-0032](adr/0032-sidebar-video-replaces-mini-player.md)). The sidebar re-parents the
+singleton WebView with the video-focused presentation; the main window keeps a hidden 1×1
+audio layer and stands down while the sidebar hosts the surface. Height follows the
+observed video ratio clamped to 0.75–2.4 within the artwork's 150–520pt bounds.
 
 ## Common Issues
 
@@ -512,7 +494,7 @@ log show --last 5m --predicate 'subsystem == "com.sertacozercan.Kaset"' --info |
 A track often exists as both a song (`MUSIC_VIDEO_TYPE_ATV`) and a music video
 (`MUSIC_VIDEO_TYPE_OMV`); playlists and radio mixes frequently carry the video. Kaset plays the
 song version everywhere — queue, direct play, radio/mix, session restore — so the now-playing and
-queue show the album art, and keeps the video for the PiP miniplayer. See
+queue show the album art, and keeps the video for the sidebar video. See
 [ADR-0028](adr/0028-song-video-variant-matching.md).
 
 | Component | File | Purpose |
@@ -525,7 +507,7 @@ queue show the album art, and keeps the video for the PiP miniplayer. See
 title, artist and length (`searchSongs`).
 - Resolution runs ahead of playback for the next `PlayerService.variantResolutionWindow` entries,
 so a video is swapped before it starts.
-- A known video counterpart makes `hasVideoSurface` true; expanding the miniplayer clicks
+- A known video counterpart makes `hasVideoSurface` true; enabling the sidebar video clicks
 YouTube's Video tab. `PlayerService+WebQueueSync.canonicalPlaybackVideoId(for:)` folds the video
 page's id back onto the song so the queue does not see drift and the album art is kept.
 - The behavior is gated by **Settings → General → Prefer Audio (Song) Versions** (default on).
