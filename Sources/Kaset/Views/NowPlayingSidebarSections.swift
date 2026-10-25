@@ -120,9 +120,12 @@ struct NowPlayingSidebarBackground: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .blur(radius: 42)
-                        // Zoom past the blur's soft edges, so the wash reaches every corner instead of
-                        // fading out into the window background at the sides.
-                        .scaleEffect(1.3)
+                        // Flipped vertically (and zoomed past the blur's soft edges, so the wash
+                        // reaches every corner instead of fading out into the window background at
+                        // the sides). The hero artwork dissolves downward, so the wash's *top* edge
+                        // continues the cover's bottom edge rather than repeating its top: the
+                        // picture and its color meet along the same seam.
+                        .scaleEffect(x: 1.3, y: -1.3)
                         .opacity(self.colorScheme == .dark ? 0.9 : 0.6)
                 }
             }
