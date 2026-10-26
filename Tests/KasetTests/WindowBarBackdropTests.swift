@@ -96,6 +96,40 @@ struct WindowBarBackdropTests {
         #expect(WindowBarBackdropController.isScrolled(scrollView))
     }
 
+    /// The fullscreen Now Playing view hides the window's toolbar, and that is the bar's rule too — the
+    /// surface has to go with it without waiting for the pointer to pass over the band, and come back
+    /// with the toolbar over a page that is still scrolled.
+    @Test("The surface follows the window's toolbar")
+    @MainActor
+    func surfaceFollowsToolbarVisibility() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.toolbar = NSToolbar(identifier: "test.toolbar")
+        let pane = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 600))
+        let page = NSScrollView(frame: pane.bounds)
+        // The window's own layout replaces automatically adjusted insets, so the test states them.
+        page.automaticallyAdjustsContentInsets = false
+        page.contentInsets = NSEdgeInsets(top: 52, left: 0, bottom: 0, right: 0)
+        pane.addSubview(page)
+        window.contentView = pane
+        page.contentView.bounds.origin.y = -20
+
+        let controller = WindowBarBackdropController()
+        defer { controller.remove() }
+        controller.install(in: window, contentPane: pane)
+        #expect(controller.isSurfaceShowing)
+
+        window.toolbar?.isVisible = false
+        #expect(!controller.isSurfaceShowing)
+
+        window.toolbar?.isVisible = true
+        #expect(controller.isSurfaceShowing)
+    }
+
     @Test("The pointer at the top edge shows the surface")
     func pointerInBandShowsTheSurface() {
         #expect(self.policy(pointerInBand: true).showsSurface)

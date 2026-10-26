@@ -162,7 +162,7 @@ final class WindowBarBackdropView: NSView {
 
     /// The last state a fade was started for. The controller re-evaluates on every layout pass; without
     /// this, each pass during a resize restarted the fade from its current alpha.
-    private var isSurfaceVisible = false
+    private(set) var isSurfaceVisible = false
 
     /// Fades the surface in or out. A bar that pops would draw more attention than the content it covers.
     func setVisible(_ visible: Bool) {
@@ -225,6 +225,10 @@ final class WindowBarBackdropController {
 
     private var mouseMonitor: Any?
     private var fullscreenObservers: [any NSObjectProtocol] = []
+    /// The window's toolbar visibility is the policy's other input, and hiding the toolbar changes no
+    /// frame the shell would lay out — so it is watched rather than read on the next layout pass.
+    private var toolbarVisibilityObserver: NSKeyValueObservation?
+    private weak var observedToolbar: NSToolbar?
 
     private var isFullscreen = false
     private var isPointerInBand = false
@@ -235,6 +239,8 @@ final class WindowBarBackdropController {
     func remove() {
         if let monitor = self.mouseMonitor { NSEvent.removeMonitor(monitor) }
         self.mouseMonitor = nil
+        self.toolbarVisibilityObserver = nil
+        self.observedToolbar = nil
         self.stopTrackingPane()
         for observer in self.fullscreenObservers {
             NotificationCenter.default.removeObserver(observer)
@@ -255,8 +261,25 @@ final class WindowBarBackdropController {
             self.installMonitors()
             self.observeFullscreen(of: window)
         }
+        self.trackToolbar(of: window)
         self.trackPane(pane)
         self.refresh()
+    }
+
+    /// Follows the window's toolbar visibility: the fullscreen now-playing view hides the toolbar, and the
+    /// bar goes with it — and comes back with it over a page that is still scrolled.
+    ///
+    /// KVO because AppKit has no notification for this, and no frame changes for the shell to notice it by.
+    private func trackToolbar(of window: NSWindow) {
+        let toolbar = window.toolbar
+        guard toolbar !== self.observedToolbar else { return }
+        self.toolbarVisibilityObserver = nil
+        self.observedToolbar = toolbar
+        self.toolbarVisibilityObserver = toolbar?.observe(\.isVisible, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                self?.refresh()
+            }
+        }
     }
 
     private func installInThemeFrame(of window: NSWindow) {
@@ -418,6 +441,8 @@ final class WindowBarBackdropController {
     /// Re-evaluates the surface, e.g. after the shell hides or shows the toolbar.
     func refresh() {
         guard let window else { return }
+        // A toolbar installed after this controller's first pass is the one whose visibility matters.
+        self.trackToolbar(of: window)
         self.updateBackdropFrame()
         self.updatePageScrollView()
         self.isFullscreen = window.styleMask.contains(.fullScreen)
@@ -459,6 +484,9 @@ final class WindowBarBackdropController {
         let origin = window.convertPoint(toScreen: inWindow.origin)
         return NSRect(origin: origin, size: inWindow.size)
     }
+
+    /// Whether the surface is up. The state a test reads to see that the policy's inputs arrive.
+    var isSurfaceShowing: Bool { self.backdrop.isSurfaceVisible }
 
     /// Whether the page's content has moved past the top of its scroll view, i.e. under the band.
     ///

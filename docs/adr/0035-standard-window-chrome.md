@@ -55,8 +55,12 @@ had tried a transparent window; it had not tried an ordinary opaque window with 
   on the pane). The pointer is read **inside that rectangle**, so hovering a sidebar's top does not raise
   the page's bar.
 - It is shown (`WindowBarBackdropPolicy`) while the page has **content under the band** or the pointer is in
-  the band, and hidden otherwise; fullscreen stays AppKit's. What holds it up is the page's **scroll
-  position**, not the scroll gesture: the controller follows the page's own scroll view (the outermost,
+  the band, and only while the window's toolbar is visible: the fullscreen Now Playing view hides the
+  toolbar, and the bar goes with it — and comes back with it over a page that is still scrolled. That
+  visibility is observed (KVO), not read on the next layout pass, because hiding the toolbar moves nothing
+  the shell lays out and the surface otherwise stayed over the player until the pointer passed over it.
+  Entering real fullscreen stays AppKit's. What holds it up is the page's **scroll position**, not the
+  scroll gesture: the controller follows the page's own scroll view (the outermost,
   tallest one in the column) through `NSView.boundsDidChangeNotification` on its clip view, so a scroll that
   ends, the pointer leaving the window or another app becoming active does not uncover content still under
   the bar, and a page scrolled back to its top puts it away without waiting for a timer. Deriving it from the

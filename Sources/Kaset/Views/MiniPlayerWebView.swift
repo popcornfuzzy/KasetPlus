@@ -361,6 +361,16 @@ final class SingletonPlayerWebView {
         )
         configuration.userContentController.addUserScript(mediaControlBootstrapScript)
 
+        // The system's Now Playing panel is fed by this WebView's media session, so its metadata is
+        // pinned to Kaset's track from document start — before YouTube Music's own scripts, whose
+        // writes would otherwise describe the page's view of the song rather than the playing one.
+        let nowPlayingMetadataScript = WKUserScript(
+            source: Self.nowPlayingMetadataScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(nowPlayingMetadataScript)
+
         let adBlockingFlagScript = WKUserScript(
             source: "window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");",
             injectionTime: .atDocumentStart,
@@ -1493,6 +1503,10 @@ final class SingletonPlayerWebView {
 
             // A new document has its own player: nothing learned from the previous one describes it.
             self.playerService.resetPagePlaybackBridge()
+
+            // The new document also has a new media session, so the Now Playing panel goes back to
+            // whatever the page describes until this track is pushed into it again.
+            NowPlayingManager.shared.refreshNowPlayingMetadata()
 
             SingletonPlayerWebView.shared.reapplyMiniPlayerPresentationIfNeeded()
 

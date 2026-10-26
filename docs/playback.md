@@ -644,6 +644,26 @@ page's id back onto the song so the queue does not see drift and the album art i
 
 For floating video window functionality, see [docs/video.md](video.md).
 
+## The system's Now Playing panel
+
+macOS shows this app's Now Playing entry from the **WebView's media session**, not from
+`MPNowPlayingInfoCenter` — Kaset never writes that. So with the page playing Kaset's tracks, the panel
+was describing the page's own idea of the song: a title and byline that lagged the track change, and an
+artwork URL belonging to another item, with the panel right only for the moment the track changed.
+
+Kaset therefore owns that metadata. `nowPlayingMetadataScript` is injected at document start — before
+YouTube Music's own scripts — and wraps `MediaSession.prototype.metadata`, so:
+
+- every change of `currentTrack` (start, advance, refined byline, artwork arriving with fetched
+  metadata) is pushed into the session as that track's title, byline, album and `thumbnailURL`
+  (`NowPlayingManager.pushNowPlayingMetadata`), and
+- the page's later writes to the same property are dropped; it was describing the same moment from its
+  own state, which is exactly what was wrong.
+
+A page load replaces the session, so `didFinish` pushes the track again. Clearing the track clears the
+entry and unpins the property, returning the panel to the page; the "Loading..." placeholder is never
+published, so the previous description stays until the new track has one.
+
 ## Future Improvements
 
 - [x] Queue management (next/previous)

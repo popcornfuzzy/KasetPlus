@@ -4,9 +4,14 @@ import MediaPlayer
 import Observation
 import os
 
-/// Manages remote command center integration for media key support.
-/// Note: Now Playing info display is handled natively by WKWebView's media session.
-/// This class only sets up remote command handlers to route media keys to our PlayerService.
+/// Manages remote command center integration for media key support, and keeps the system's Now
+/// Playing panel on the track Kaset is playing.
+///
+/// The panel itself is fed by WKWebView's media session, not by `MPNowPlayingInfoCenter`: macOS reads
+/// the WebView as the app's player. YouTube Music writes that session from its own state, which is
+/// exactly what the panel must not show while the page plays Kaset's queue, so the session's metadata
+/// is pinned to `currentTrack` (see `nowPlayingMetadataScript`). Remote media keys are routed to
+/// `PlayerService`.
 @MainActor
 @Observable
 final class NowPlayingManager {
@@ -30,9 +35,45 @@ final class NowPlayingManager {
         self.playerService = playerService
         self.setupRemoteCommands()
         self.syncMediaControlSetting()
-        self.logger.info("NowPlayingManager configured (remote commands only)")
+        self.logger.info("NowPlayingManager configured (remote commands, Now Playing metadata)")
 
         self.observeSettingsChanges()
+        self.observeNowPlayingMetadata()
+    }
+
+    /// Keeps the system's Now Playing panel on the track Kaset is playing.
+    ///
+    /// Every change of `currentTrack` — a start, an advance, the page's refined byline, or the album
+    /// art arriving with fetched metadata — is pushed to the media session; the session's pin drops
+    /// whatever the page writes there afterwards. `nil` (nothing playing, or only the "Loading..."
+    /// placeholder) clears the entry instead of describing a song that is not the one playing.
+    private func observeNowPlayingMetadata() {
+        withObservationTracking {
+            self.pushNowPlayingMetadata(for: self.playerService?.currentTrack)
+        } onChange: {
+            Task { @MainActor [weak self] in
+                self?.observeNowPlayingMetadata()
+            }
+        }
+    }
+
+    /// Re-pushes the current track.
+    ///
+    /// A page load replaces the media session, and with it the pin, so whatever the app last pushed
+    /// has to be pushed again — otherwise the first track after a navigation is described by the page.
+    func refreshNowPlayingMetadata() {
+        self.pushNowPlayingMetadata(for: self.playerService?.currentTrack)
+    }
+
+    private func pushNowPlayingMetadata(for track: Song?) {
+        guard let track else {
+            SingletonPlayerWebView.shared.clearNowPlayingMetadata()
+            return
+        }
+        // A start seeds `currentTrack` with the "Loading..." placeholder; pushing that would blank the
+        // panel for the length of the start. The last real description stays until this track has one.
+        guard let metadata = WebNowPlayingMetadata(song: track) else { return }
+        SingletonPlayerWebView.shared.applyNowPlayingMetadata(metadata)
     }
 
     private func observeSettingsChanges() {
