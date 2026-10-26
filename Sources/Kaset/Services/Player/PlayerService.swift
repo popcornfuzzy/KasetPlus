@@ -256,6 +256,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// second call lands one row further. Only one automatic advance may run at a time.
     @ObservationIgnored var isAutomaticQueueAdvanceInFlight = false
 
+    /// The video the structured record was last asked for (see ``enrichSongMetadataIfNeeded(videoId:)``).
+    /// One request per track: the observation pipeline reports the same track over and over.
+    @ObservationIgnored var songMetadataRequestedVideoId: String?
+
     /// Whether the user has successfully interacted at least once this session.
     /// After first successful playback, we can auto-play without showing the popup.
     private(set) var hasUserInteractedThisSession: Bool = false
@@ -1017,8 +1021,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
         SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
 
-        // Fetch full song metadata if we don't have feedbackTokens
-        if song.feedbackTokens == nil {
+        // Ask for the structured record when the row does not already state all of it. The like status
+        // and the library state are what the transport draws, and a row parsed from a page carries
+        // neither: `getSong` is the only place they come from (`fetchSongMetadata`).
+        if song.feedbackTokens == nil || song.likeStatus == nil || song.isInLibrary == nil {
             await self.fetchSongMetadata(videoId: song.videoId)
         }
 

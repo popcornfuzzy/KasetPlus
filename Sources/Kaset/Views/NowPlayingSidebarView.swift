@@ -1,6 +1,176 @@
 import AppKit
 import SwiftUI
 
+// MARK: - NowPlayingSidebarCredits
+
+/// What the title and the artist line under the artwork open, as data.
+///
+/// A song can arrive with one artist or several, with an artist that has no channel ID, with an album
+/// that has no browse ID, or as a podcast episode that has neither. Those are the rules the credits
+/// follow, so they are stated once here and the column only draws the result.
+struct NowPlayingSidebarCredits {
+    struct ArtistCredit: Identifiable {
+        let artist: Artist
+        /// Whether this name is a page that can be opened. A name without a channel ID stays plain text.
+        let opensPage: Bool
+
+        var id: String {
+            self.artist.id
+        }
+    }
+
+    /// The album page the title opens, or `nil` when there is no album to open.
+    let album: Playlist?
+
+    /// Every credited artist, in the order the track credits them.
+    let artists: [ArtistCredit]
+
+    /// Whether there is a track at all, which is what tells an uncredited song from an idle column.
+    let hasSong: Bool
+
+    /// - Parameters:
+    ///   - song: the playing track, which is what the column draws. It already carries the artists' IDs
+    ///     and the album: the page's byline is written over the queue's row rather than replacing it
+    ///     (`PlayerService.heldTrack`), and the record fills in what the row lacked
+    ///     (`PlayerService.enrichSongMetadataIfNeeded`).
+    ///   - isPodcast: whether the track is an episode, whose "album" is its show and whose credit is not
+    ///     an artist page.
+    init(song: Song?, isPodcast: Bool) {
+        guard let song else {
+            self.album = nil
+            self.artists = []
+            self.hasSong = false
+            return
+        }
+        self.hasSong = true
+
+        // A song opens its album and its artists' pages; an episode opens neither, and its names still
+        // read as they always did.
+        if !isPodcast, let album = song.album, album.hasNavigableId {
+            // An album page is a playlist page in this app: the value the song menus' Go to Album pushes.
+            self.album = Playlist(
+                id: album.id,
+                title: album.title,
+                description: nil,
+                thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
+                trackCount: album.trackCount,
+                author: song.artistsDisplay
+            )
+        } else {
+            self.album = nil
+        }
+
+        self.artists = song.artists.map { artist in
+            ArtistCredit(artist: artist, opensPage: !isPodcast && artist.hasNavigableId)
+        }
+    }
+}
+
+// MARK: - NowPlayingSidebarTrackCredits
+
+/// The title and the credited artists under the artwork.
+///
+/// Split out of the column so the credit rows can be hosted on their own: this is the one place in the
+/// sidebar with several click targets on one line, and the hitboxes are the whole of whether a click
+/// lands (`NowPlayingSidebarTrackCreditsClickTests` presses them).
+struct NowPlayingSidebarTrackCredits: View {
+    let title: String
+    let credits: NowPlayingSidebarCredits
+    var onOpen: (DetailNavigationRoute) -> Void = { _ in }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            self.titleView
+            self.artistView
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The title, which opens the song's album when there is one to open. Otherwise it is the plain text
+    /// it has always been, with the full title one hover away when it truncates.
+    ///
+    /// Its button takes the row's whole width so the row is the target, not the glyphs: a title that
+    /// truncated after three words was a click that landed on nothing.
+    @ViewBuilder
+    private var titleView: some View {
+        let title = Text(self.title)
+            .font(.system(size: 17, weight: .bold))
+            .lineLimit(2)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        Group {
+            if let album = self.credits.album {
+                Button {
+                    self.onOpen(.album(album))
+                } label: {
+                    title.contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "Open the album"))
+            } else {
+                title.help(self.title)
+            }
+        }
+        .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.trackTitle)
+    }
+
+    /// The credited artists on one line, each opening its own page.
+    ///
+    /// One button per name, the way the album header's credit is built (ADR-0023): a song can credit
+    /// one artist or several, and every name must open the artist it names rather than the last of them.
+    /// Names without a channel ID stay plain text, so the line reads the same either way.
+    @ViewBuilder
+    private var artistView: some View {
+        Group {
+            if self.credits.artists.isEmpty {
+                Text(self.credits.hasSong
+                    ? String(localized: "Unknown Artist")
+                    : String(localized: "Nothing playing"))
+            } else {
+                HStack(spacing: 0) {
+                    ForEach(Array(self.credits.artists.enumerated()), id: \.element.id) { index, credit in
+                        if index > 0 {
+                            Text(verbatim: ", ")
+                        }
+
+                        self.artistCredit(credit)
+                    }
+                }
+            }
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
+
+    /// A credited artist that opens its page on click.
+    @ViewBuilder
+    private func artistCredit(_ credit: NowPlayingSidebarCredits.ArtistCredit) -> some View {
+        if credit.opensPage {
+            Button {
+                self.onOpen(.artist(credit.artist))
+            } label: {
+                Text(credit.artist.name)
+                    // Stated on the label, not only on the row: a name that opens a page must not look
+                    // different from one that does not.
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, Self.artistHitboxInset)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.trackArtist(credit.artist.id))
+        } else {
+            Text(credit.artist.name)
+        }
+    }
+
+    /// How far a credited name's click area reaches past its glyphs: a line of 13pt names is otherwise
+    /// a target a couple of points tall (`NowPlayingSidebarTrackCreditsClickTests` measures the band).
+    static let artistHitboxInset: CGFloat = 4
+}
+
 // MARK: - NowPlayingSidebarView
 
 /// The artwork-first right sidebar: a real column of the window, not a panel floating over it.
@@ -53,9 +223,19 @@ struct NowPlayingSidebarView: View {
     /// up by exactly this amount so it is flush with the window's top edge (the documented design: the
     /// artwork is genuinely *behind* the toolbar, not below it) while the pages' own headers stay below it.
     var topInset: CGFloat = 0
+
+    /// Opens a page in the window's detail column.
+    ///
+    /// The column is a sibling of the page, so the credits under the artwork cannot be
+    /// `NavigationLink`s — nothing encloses them to push into. They hand the route to the window, which
+    /// pushes it onto the stack of the page on screen (`PageNavigationModel`). The default does nothing,
+    /// which is what a hosted test or a preview gets.
+    var onOpen: (DetailNavigationRoute) -> Void = { _ in }
+
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
+
     /// Whether the podcast episode's transcript is open. Collapsed is the default and shows no
     /// transcript text at all — a paragraph is long, and the overview is the column's quiet part.
     @State private var isTranscriptOpen = false
@@ -222,23 +402,23 @@ struct NowPlayingSidebarView: View {
 
     /// Title and artist. Not a card: Apple Music puts them straight on the artwork's own color, under
     /// the cover, and so does this.
+    ///
+    /// Both open a page, and both keep the type they had: the title is the song's album (an album page is
+    /// a playlist page), each credited name is that artist's page.
     private var trackTitles: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
-                .font(.system(size: 17, weight: .bold))
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.trackTitle)
-                // The full title stays one hover away when it truncates.
-                .help(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
+        NowPlayingSidebarTrackCredits(
+            title: self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"),
+            credits: self.credits,
+            onOpen: self.onOpen
+        )
+    }
 
-            Text(self.trackArtistText)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    /// What the credits can open for the playing track.
+    private var credits: NowPlayingSidebarCredits {
+        NowPlayingSidebarCredits(
+            song: self.playerService.currentTrack,
+            isPodcast: self.playerService.isCurrentTrackPodcast
+        )
     }
 
     /// The media at the top of the column: the video when the reader asked for it and one is
@@ -808,11 +988,6 @@ struct NowPlayingSidebarView: View {
     /// change that hides the caption then eases out like the search finishing does.
     private var showsLyricsSearchingCaption: Bool {
         self.syncedLyricsService.searchingForBetterLyrics && self.hasSyncedLyricsOnScreen
-    }
-
-    private var trackArtistText: String {
-        guard let track = self.playerService.currentTrack else { return String(localized: "Nothing playing") }
-        return track.artistsDisplay.isEmpty ? String(localized: "Unknown Artist") : track.artistsDisplay
     }
 
     private var loadingProviderText: String? {

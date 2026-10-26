@@ -41,6 +41,13 @@ struct NowPlayingSidebarCardTapTests {
             defer: false
         )
         window.contentView = hosting
+        // Never ordered: a press needs a window, not one on the desktop. These used to put real windows
+        // on the reader's screen — one per hosted test.
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.collectionBehavior = [.transient, .ignoresCycle]
         window.orderBack(nil)
         self.pump()
         return window

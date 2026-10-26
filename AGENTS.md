@@ -18,6 +18,22 @@ Kaset is a native macOS YouTube Music client (Swift/SwiftUI) using a hidden WebV
 
 > ⚠️ **Prefer API over WebView** — Always use `YTMusicClient` API calls when functionality exists. Only use WebView for playback (DRM-protected audio) and authentication.
 
+> 🎧 **The WebView Byline Is Not Metadata** — The player bar's text is a rendering: no artist IDs, no
+> album, no like or library state. Ask YouTube Music for the record (`YTMusicClient.getSong`, the `next`
+> endpoint) when a track starts — `PlayerService.enrichSongMetadataIfNeeded` does this for every track,
+> including the ones YouTube starts itself (autoplay, radio, a restored session), which never go through
+> `play(song:)`. Do not fix a metadata gap by parsing the byline, and do not add a search by title and
+> artist to identify the playing track.
+
+> 🎵 **Artist Lines Never Credit the Album or the Release Year** — YouTube's player-bar byline names the
+> artists; a shelf or saved row can list the album and the release year beside them. That is why
+> `PlayerService.heldTrack` **replaces** the row's artist list with the page's byline — the byline is the
+> artist line — and keeps the row's channel IDs for the names the byline still credits, so the album and
+> the year fall away and the names stay clickable. On the API side, a byline run is an artist only when it
+> links to an artist page: an album link becomes the album (`SongMetadataParser.parseAlbum`) and view,
+> play or like counts are not artists. Never "fix" a failing test by expecting the album or the year in
+> an artist line; this has been lost more than once by agents rewriting these paths.
+
 > 🔧 **Improve API Explorer, Don't Write One-Off Scripts** — When exploring or debugging API-related functionality, **always enhance `Sources/APIExplorer/main.swift`** instead of writing temporary scripts.
 
 > 📝 **Document Architectural Decisions** — For significant design changes, create an ADR in `docs/adr/`. You are allowed to write comments in code, but keep them short ant concise. Use ADRs for detailed explanations of design decisions.

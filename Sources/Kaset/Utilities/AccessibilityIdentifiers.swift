@@ -62,6 +62,10 @@ enum AccessibilityID {
         static let video = "nowPlayingSidebar.video"
         static let videoToggle = "nowPlayingSidebar.videoToggle"
         static let trackTitle = "nowPlayingSidebar.trackTitle"
+        /// A credited artist under the artwork: one button per artist, each opening its own page.
+        static func trackArtist(_ artistId: String) -> String {
+            "nowPlayingSidebar.trackArtist.\(artistId)"
+        }
         static let lyricsSection = "nowPlayingSidebar.lyricsSection"
         /// The podcast episode's transcript card and the transcript it opens into.
         static let transcriptSection = "nowPlayingSidebar.transcriptSection"

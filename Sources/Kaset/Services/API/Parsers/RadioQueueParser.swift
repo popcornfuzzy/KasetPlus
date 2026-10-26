@@ -226,29 +226,12 @@ enum RadioQueueParser {
     }
 
     /// Parses artists from the panel video renderer's longBylineText.
+    ///
+    /// A radio row's byline is "Artist • Album • Year", and only the artist is an artist: the album's
+    /// run is a link to an album page and the year is metadata (`SongMetadataParser.parseArtists` states
+    /// the rule once, and a radio row is the same shape).
     private static func parseArtists(from renderer: [String: Any]) -> [Artist] {
-        var artists: [Artist] = []
-        guard let bylineData = renderer["longBylineText"] as? [String: Any],
-              let runs = bylineData["runs"] as? [[String: Any]]
-        else { return artists }
-
-        for run in runs {
-            guard let text = run["text"] as? String,
-                  text != " • ", text != " & ", text != ", ", text != " · "
-            else { continue }
-
-            let artistId: String = if let navEndpoint = run["navigationEndpoint"] as? [String: Any],
-                                      let browseEndpoint = navEndpoint["browseEndpoint"] as? [String: Any],
-                                      let browseId = browseEndpoint["browseId"] as? String
-            {
-                browseId
-            } else {
-                // Generate stable ID from artist name when no browse ID available
-                ParsingHelpers.stableId(title: "artist", components: text)
-            }
-            artists.append(Artist(id: artistId, name: text))
-        }
-        return artists
+        SongMetadataParser.parseArtists(from: renderer)
     }
 
     /// Parses the thumbnail URL from the panel video renderer.

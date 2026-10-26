@@ -483,14 +483,14 @@ enum ParsingHelpers {
     ]
 
     /// Returns true for the separator runs that split byline text (e.g. " • ", " & ").
-    private static func isArtistSeparator(_ text: String) -> Bool {
+    static func isArtistSeparator(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == "•" || trimmed == "&" || trimmed == "," || trimmed == "·"
     }
 
     /// Returns true for byline runs that carry metadata rather than an artist name
-    /// (content type labels, durations, view/play counts, song counts, years, etc.).
-    private static func isMetadataText(_ text: String, includingContentType: Bool = true) -> Bool {
+    /// (content type labels, durations, audience counts, song counts, years, etc.).
+    static func isMetadataText(_ text: String, includingContentType: Bool = true) -> Bool {
         if (includingContentType && Self.contentTypeKeywords.contains(text))
             || Self.parseDuration(text) != nil
             || Self.extractSongCount(from: text) != nil
@@ -499,15 +499,15 @@ enum ParsingHelpers {
             return true
         }
 
+        // A run that counts something — "1.8B views", "19M likes" — is a video's audience, and a song's
+        // byline names none of it: the byline is the artist line.
         let lowercased = text.lowercased()
-        return lowercased.contains(" views")
-            || lowercased.contains(" plays")
-            || lowercased.contains(" subscribers")
-            || lowercased.contains("episodes")
+        let counts = [" views", " plays", " likes", " subscribers", "episodes"]
+        return counts.contains { lowercased.contains($0) }
     }
 
     /// Returns true when a byline run is a standalone 4-digit year (e.g. "2026").
-    private static func isStandaloneYear(_ text: String) -> Bool {
+    static func isStandaloneYear(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count == 4,
             trimmed.allSatisfy(\.isNumber),

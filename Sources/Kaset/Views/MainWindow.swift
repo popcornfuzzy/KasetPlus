@@ -626,7 +626,11 @@ struct MainWindow: View {
                 NowPlayingSidebarView(
                     columnWidth: size.width,
                     columnHeight: size.height,
-                    topInset: topInset
+                    topInset: topInset,
+                    // The column's title and artist credits open pages in the page's own stack, which the
+                    // column is not inside of: the page on screen publishes how to push (see
+                    // `PageNavigationModel`), and the window hands that on.
+                    onOpen: { route in self.openFromNowPlayingSidebar(route) }
                 )
             }
         } else {
@@ -726,6 +730,25 @@ struct MainWindow: View {
         }
     }
 
+    /// Opens a page asked for by the Now Playing column's credits.
+    ///
+    /// The page on screen's own stack is asked first, so the album or artist opens over the page the reader
+    /// is on and the window's back control returns to it. Pages without a stack — Home, Search, Liked
+    /// Music's overview — publish nothing to push into, and the click used to do nothing there at all;
+    /// those open the page in the content pane instead.
+    private func openFromNowPlayingSidebar(_ route: DetailNavigationRoute) {
+        guard !self.pageNavigation.open(route) else { return }
+
+        switch route {
+        case let .album(playlist):
+            DiagnosticsLogger.ui.info("Now Playing credit: opening album \(playlist.id, privacy: .public) in the page column")
+            self.navigationSelection = .album(playlist)
+        case let .artist(artist):
+            DiagnosticsLogger.ui.info("Now Playing credit: opening artist \(artist.id, privacy: .public) in the page column")
+            self.navigationSelection = .artist(artist)
+        }
+    }
+
     private func detailView(for selection: SidebarSelection?, client _: any YTMusicClientProtocol) -> some View {
         Group {
             if let selection {
@@ -751,20 +774,41 @@ struct MainWindow: View {
             case let .navigation(item):
                 self.viewForNavigationItem(item)
             case let .playlist(playlistId):
-                let playlist = self.sidebarPlaylist(for: playlistId)
                 // A stack is what makes the playlist's own links (artist, album) work when the
                 // playlist is opened straight from the sidebar instead of a navigated list.
-                DetailNavigationStack(id: "playlist-\(playlist.id)") { path in
-                    PlaylistDetailView(
-                        playlist: playlist,
-                        viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client),
-                        onNavigateToArtist: { artist in path.wrappedValue.append(artist) }
+                self.playlistPage(self.sidebarPlaylist(for: playlistId))
+            // The Now Playing column's credits, when the page that was on screen had no stack of its own
+            // to push them onto. An album page is a playlist page here, so both cases show the same view.
+            case let .album(playlist):
+                self.playlistPage(playlist)
+            case let .artist(artist):
+                DetailNavigationStack(id: "artist-\(artist.id)") { path in
+                    ArtistDetailView(
+                        artist: artist,
+                        viewModel: ArtistDetailViewModel(
+                            artist: artist,
+                            client: self.client,
+                            libraryViewModel: self.libraryViewModel
+                        )
                     )
                     .navigationDestinations(client: self.client, artistPath: path)
                 }
-                .id(playlist.id)
+                .id(artist.id)
             }
         }
+    }
+
+    /// A playlist or album page with its own stack, so its links (artist, album) open over it.
+    private func playlistPage(_ playlist: Playlist) -> some View {
+        DetailNavigationStack(id: "playlist-\(playlist.id)") { path in
+            PlaylistDetailView(
+                playlist: playlist,
+                viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client),
+                onNavigateToArtist: { artist in path.wrappedValue.append(artist) }
+            )
+            .navigationDestinations(client: self.client, artistPath: path)
+        }
+        .id(playlist.id)
     }
 
     private func sidebarPlaylist(for playlistId: String) -> Playlist {
@@ -1009,6 +1053,11 @@ enum NavigationItem: String, Hashable, CaseIterable, Identifiable {
 enum SidebarSelection: Hashable {
     case navigation(NavigationItem)
     case playlist(String)
+    /// An album or artist opened by the Now Playing column's credits while the page on screen had no stack
+    /// to push onto. They are pages, not sidebar rows, and no row matches them — the list simply shows no
+    /// selection until the reader picks one.
+    case album(Playlist)
+    case artist(Artist)
 }
 
 @available(macOS 26.0, *)

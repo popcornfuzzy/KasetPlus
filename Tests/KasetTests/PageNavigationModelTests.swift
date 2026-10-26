@@ -67,4 +67,38 @@ struct PageNavigationModelTests {
         #expect(newPops == 1)
         #expect(oldPops == 0)
     }
+
+    @Test("An opened page goes onto the stack of the page on screen, not the one that left")
+    func openFollowsTheCurrentPage() {
+        let model = PageNavigationModel()
+        let album = DetailNavigationRoute.album(Playlist(
+            id: "MPREb_test",
+            title: "Test Album",
+            description: nil,
+            thumbnailURL: nil,
+            trackCount: 10,
+            author: nil
+        ))
+        var oldOpened: [DetailNavigationRoute] = []
+        var newOpened: [DetailNavigationRoute] = []
+        model.publish(id: "home", canGoBack: false, goBack: {}, open: { oldOpened.append($0) })
+        model.publish(id: "search", canGoBack: false, goBack: {}, open: { newOpened.append($0) })
+
+        #expect(model.open(album) == true, "a page on screen takes the route")
+        #expect(newOpened == [album])
+        #expect(oldOpened.isEmpty, "the outgoing page's stack must not receive the push")
+    }
+
+    @Test("Opening a page while no page is on screen does nothing")
+    func openWithoutAPageIsANoOp() {
+        let model = PageNavigationModel()
+        var opened = 0
+        model.publish(id: "home", canGoBack: false, goBack: {}, open: { _ in opened += 1 })
+        model.retract(id: "home")
+
+        // `false` is what the window answers by showing the page in the content pane: a page with no stack
+        // (Home, Search, an artist page) must not make the column's credits a click that does nothing.
+        #expect(model.open(.artist(Artist(id: "UCtest", name: "Test Artist"))) == false)
+        #expect(opened == 0, "a page that is gone must not push anything")
+    }
 }

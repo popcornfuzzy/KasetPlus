@@ -115,6 +115,45 @@ taken from the page, because that is exactly what pressing play used to do and n
 only happens when the page also reports the held track's video ID, so a shell, a half-rendered page or
 an ad cannot rename the track.
 
+The album and the year are **not artists**, and the page's byline is what says so. YouTube's player bar
+names the artists alone; a shelf or saved row lists the album and the year beside them. Adopting the
+byline is therefore what has always removed them, and it stays: `PlayerService.heldTrack` takes the
+names the page credits and matches each to the row's artist of that name, so the line reads as the page
+spells it and every name still carries the row's channel ID. A name the row does not know stays a
+credit with no page behind it. Do not re-add the album or the year as artists, and do not "fix" a
+failing test by expecting them in an artist line: `NowPlayingSidebarCreditTests` and
+`PlayerServiceWebQueueSyncTests` pin the adoption.
+
+### The byline is a rendering; `getSong` is the record
+
+The byline names the track in words. Everything else the app knows — artist IDs, the album, the like
+status, the library state, the feedback tokens — is YouTube Music's own record of the video, and the
+app asks for it with `YTMusicClient.getSong` (the `next` endpoint) — `PlayerService.fetchSongMetadata`.
+That call used to be made only from `play(song:)`, and only when the row had no feedback tokens, so a
+track YouTube started itself (autoplay after the queue, a radio station, a track a restored session
+resumed) was never asked about: its artist line was one unopenable name, its album was missing, and
+the transport's thumb and add-to-library button had nothing behind them.
+
+The record's own byline is parsed by *what each run is*, not by guessing at words: a run that links to
+an artist page is an artist, a run that links to an album page is the album
+(`SongMetadataParser.parseAlbum`), and a run that counts an audience ("1.8B views", "19M likes") or a
+release year is metadata. YouTube sends exactly these shapes for a song ("Artist • Album • Year") and
+for a video ("Artist • views • likes"), so neither the album nor the counts reach the artist line.
+
+The like status is the *player overlay's*, not the row menu's:
+`playerOverlays.playerOverlayRenderer.actions[].likeButtonRenderer.likeStatus` is where a real `next`
+response keeps the rating the transport draws (`SongMetadataParser.parseLikeStatus`). The panel row's
+`menuRenderer.topLevelButtons` is empty on that response, so a rating read from it is always unknown —
+which left every liked track's thumb unlit.
+
+`PlayerService.enrichSongMetadataIfNeeded(videoId:)` closes that: called for every track that reaches
+the player — including the observed ones, through a `defer` in `updateTrackMetadata` and in
+`reconcilePreloadedTrackMetadata` — it asks once per video when the row does not already state the
+artists' IDs, the like status and the library state. So the Now Playing column's credits and the
+transport's like and library state come from the record, not from parsing text. A metadata gap is
+never fixed by parsing the byline, and the playing track is never identified by searching for its
+title and artist: that matched the wrong video often enough to matter.
+
 Both waits are reported into `PlayerService` and drawn by the player bar's loading wash
 (`PlayerBarLoadingRule`): the **bar's own capsule is the mask**, the wash sits under the controls, and it
 is drawn in the bar's foreground colour rather than the brand accent — which is what keeps it legible on

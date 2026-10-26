@@ -4,11 +4,10 @@ import Foundation
 enum SongMetadataParser {
     private static let logger = DiagnosticsLogger.api
 
-    /// Contains parsed menu data including feedback tokens, library status, and like status.
+    /// Contains parsed menu data including feedback tokens and library status.
     struct MenuParseResult {
         var feedbackTokens: FeedbackTokens?
         var isInLibrary: Bool
-        var likeStatus: LikeStatus?
     }
 
     /// Parses song metadata from the "next" endpoint response.
@@ -21,22 +20,27 @@ enum SongMetadataParser {
         let panelVideoRenderer = try extractPanelVideoRenderer(from: data, videoId: videoId)
 
         let title = self.parseTitle(from: panelVideoRenderer)
-        let artists = self.parseArtists(from: panelVideoRenderer)
+        // The byline names the album as well as the artists, and it says which is which: the album's
+        // run is a link to a `MUSIC_PAGE_TYPE_ALBUM` page. Parsed as the album it can open, and kept
+        // out of the artist line, instead of arriving as an artist the way it used to.
+        let album = self.parseAlbum(from: panelVideoRenderer)
+        let artists = self.parseArtists(from: panelVideoRenderer, albumTitle: album?.title)
         let thumbnailURL = self.parseThumbnail(from: panelVideoRenderer)
         let duration = self.parseDuration(from: panelVideoRenderer)
         let menuData = self.parseMenuData(from: panelVideoRenderer)
+        let likeStatus = self.parseLikeStatus(from: data)
         let musicVideoType = self.parseMusicVideoType(from: panelVideoRenderer)
 
         var song = Song(
             id: videoId,
             title: title,
             artists: artists,
-            album: nil,
+            album: album,
             duration: duration,
             thumbnailURL: thumbnailURL,
             videoId: videoId,
             musicVideoType: musicVideoType,
-            likeStatus: menuData.likeStatus,
+            likeStatus: likeStatus,
             isInLibrary: menuData.isInLibrary,
             feedbackTokens: menuData.feedbackTokens
         )
@@ -121,30 +125,100 @@ enum SongMetadataParser {
         return "Unknown"
     }
 
-    /// Parses artists from the panel video renderer's longBylineText.
-    static func parseArtists(from renderer: [String: Any]) -> [Artist] {
-        var artists: [Artist] = []
+    /// Parses the album the byline names, with the release year beside it.
+    ///
+    /// A song's byline is "Artist • Album • Year", and YouTube marks the album's run as a link to a
+    /// `MUSIC_PAGE_TYPE_ALBUM` page (`MPRE…`/`OLAK…`). That is the record of which album the track is
+    /// on — it is not parsed out of the artists, and the title can open it.
+    static func parseAlbum(from renderer: [String: Any]) -> Album? {
         guard let bylineData = renderer["longBylineText"] as? [String: Any],
               let runs = bylineData["runs"] as? [[String: Any]]
-        else { return artists }
+        else { return nil }
 
         for run in runs {
-            guard let text = run["text"] as? String,
-                  text != " • ", text != " & ", text != ", ", text != " · "
+            guard let title = (run["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty,
+                  let browseId = Self.browseId(of: run),
+                  browseId.hasPrefix("MPRE") || browseId.hasPrefix("OLAK")
             else { continue }
 
-            let artistId: String = if let navEndpoint = run["navigationEndpoint"] as? [String: Any],
-                                      let browseEndpoint = navEndpoint["browseEndpoint"] as? [String: Any],
-                                      let browseId = browseEndpoint["browseId"] as? String
-            {
-                browseId
-            } else {
-                // Generate stable ID from artist name when no browse ID available
-                ParsingHelpers.stableId(title: "artist", components: text)
-            }
-            artists.append(Artist(id: artistId, name: text))
+            let year = runs
+                .compactMap { $0["text"] as? String }
+                .first { ParsingHelpers.isStandaloneYear($0) }
+
+            return Album(
+                id: browseId,
+                title: title,
+                artists: nil,
+                thumbnailURL: nil,
+                year: year,
+                trackCount: nil
+            )
         }
-        return artists
+
+        return nil
+    }
+
+    /// Parses artists from the panel video renderer's longBylineText.
+    ///
+    /// A byline is not a list of artists: it is "Artist • Album • Year" for a song, and
+    /// "Artist • 1.8B views • 19M likes" for a video. Only a run that names an artist's page is an
+    /// artist; a link to anything else (the album, a playlist) and a run of metadata are not, and the
+    /// album the app already parsed is never one either. A byline written as plain text keeps its names,
+    /// which is how an uploaded track with no linked artist still shows who made it.
+    static func parseArtists(from renderer: [String: Any], albumTitle: String? = nil) -> [Artist] {
+        guard let bylineData = renderer["longBylineText"] as? [String: Any],
+              let runs = bylineData["runs"] as? [[String: Any]]
+        else { return [] }
+
+        var linked: [Artist] = []
+        var plain: [String] = []
+
+        for run in runs {
+            guard let text = (run["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty,
+                  !ParsingHelpers.isArtistSeparator(text)
+            else { continue }
+
+            if let browseId = Self.browseId(of: run) {
+                if Artist.isNavigableId(browseId) {
+                    linked.append(Artist(id: browseId, name: text))
+                }
+                // Any other link in a byline is a page, not an artist: the album's own run is one.
+                continue
+            }
+
+            guard !ParsingHelpers.isMetadataText(text),
+                  !(albumTitle.map { Self.isSameName(text, $0) } ?? false)
+            else { continue }
+
+            plain.append(text)
+        }
+
+        if !linked.isEmpty { return linked }
+
+        return plain.map { name in
+            Artist(id: ParsingHelpers.stableId(title: "artist", components: name), name: name)
+        }
+    }
+
+    /// Whether two names are the same name, ignoring case, diacritics and surrounding space.
+    private static func isSameName(_ lhs: String, _ rhs: String) -> Bool {
+        func canonical(_ name: String) -> String {
+            name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.diacriticInsensitive], locale: .current)
+                .lowercased()
+        }
+        let left = canonical(lhs)
+        return !left.isEmpty && left == canonical(rhs)
+    }
+
+    /// The browse ID a byline run links to, when it links to a page.
+    private static func browseId(of run: [String: Any]) -> String? {
+        guard let navigation = run["navigationEndpoint"] as? [String: Any],
+              let browse = navigation["browseEndpoint"] as? [String: Any]
+        else { return nil }
+        return browse["browseId"] as? String
     }
 
     /// Parses the thumbnail URL from the panel video renderer.
@@ -183,9 +257,9 @@ enum SongMetadataParser {
         return MusicVideoType(rawValue: typeString)
     }
 
-    /// Parses menu data (feedbackTokens, library status, like status) from the panel video renderer.
+    /// Parses menu data (feedbackTokens, library status) from the panel video renderer.
     static func parseMenuData(from renderer: [String: Any]) -> MenuParseResult {
-        var result = MenuParseResult(feedbackTokens: nil, isInLibrary: false, likeStatus: nil)
+        var result = MenuParseResult(feedbackTokens: nil, isInLibrary: false)
 
         guard let menu = renderer["menu"] as? [String: Any],
               let menuRenderer = menu["menuRenderer"] as? [String: Any],
@@ -197,8 +271,34 @@ enum SongMetadataParser {
             self.parseToggleMenuItem(item, into: &result)
         }
 
-        self.parseLikeStatus(from: menuRenderer, into: &result)
         return result
+    }
+
+    /// Parses the rating of the video the player holds.
+    ///
+    /// The like button is not in the panel row's menu — its `topLevelButtons` is empty on a real
+    /// `next` response. It is in the player overlays, which describe the video being played:
+    /// `playerOverlays.playerOverlayRenderer.actions[].likeButtonRenderer.likeStatus`. That is the
+    /// rating YouTube Music shows on its own transport, and the one the app's transport draws.
+    static func parseLikeStatus(from data: [String: Any]) -> LikeStatus? {
+        guard let overlays = data["playerOverlays"] as? [String: Any],
+              let overlayRenderer = overlays["playerOverlayRenderer"] as? [String: Any],
+              let actions = overlayRenderer["actions"] as? [[String: Any]]
+        else { return nil }
+
+        for action in actions {
+            guard let likeButtonRenderer = action["likeButtonRenderer"] as? [String: Any],
+                  let status = likeButtonRenderer["likeStatus"] as? String
+            else { continue }
+
+            return switch status {
+            case "LIKE": .like
+            case "DISLIKE": .dislike
+            default: .indifferent
+            }
+        }
+
+        return nil
     }
 
     /// Parses a menuServiceItemRenderer for library tokens.
@@ -247,20 +347,4 @@ enum SongMetadataParser {
         return feedback["feedbackToken"] as? String
     }
 
-    /// Parses the like status from the menu renderer's top level buttons.
-    private static func parseLikeStatus(from menuRenderer: [String: Any], into result: inout MenuParseResult) {
-        guard let topLevelButtons = menuRenderer["topLevelButtons"] as? [[String: Any]] else { return }
-
-        for button in topLevelButtons {
-            if let likeButtonRenderer = button["likeButtonRenderer"] as? [String: Any],
-               let status = likeButtonRenderer["likeStatus"] as? String
-            {
-                result.likeStatus = switch status {
-                case "LIKE": .like
-                case "DISLIKE": .dislike
-                default: .indifferent
-                }
-            }
-        }
-    }
 }

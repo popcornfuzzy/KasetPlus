@@ -231,7 +231,38 @@ The column's chrome is deliberately the album art, not a panel:
 - **Artwork, edge to edge.** The cover spans the full column width, flush with the top, with the
   track's animated canvas crossfading over it. No card, no inset, no corner radius.
 - **Title and artist under the artwork**, directly on the sidebar's own background — not in a
-  caption card.
+  caption card. Both open a page and both keep the type they had: the title is the song's album (an
+  album page is a `Playlist` page, the value the song menus' **Go to Album** pushes), and each credited
+  name is that artist's page — one control per name, so a song crediting three artists opens the one
+  clicked, the rule the album header already follows (ADR-0023). The album and the release year a row
+  can list beside its artists are never credited: the page's own byline replaces the row's artist list
+  when a track starts (`PlayerService.heldTrack`), keeping the row's channel IDs for the names it still
+  credits, so the album and the year fall away and every name keeps its page. Names and albums whose IDs
+  are not browseable (inline references with generated UUIDs), and a podcast episode's credit, stay
+  plain text. The column is a *sibling* of the page, so these cannot be `NavigationLink`s — nothing encloses
+  them to push into. The page on screen publishes how to open a route alongside its back control
+  (`PageNavigationModel`, keyed by the page's id), the stack appends it at the one place that holds the
+  path, and the window hands that action to the column. The sidebar's selection is therefore left alone:
+  the album or artist page opens on top of the page the reader was on, with the window's back control
+  to return. ``PageNavigationModel/open(_:)`` answers whether a page took the route, and a page that
+  publishes no stack — none does while a page is still coming up, and a page whose view is not a stack
+  at all would not — makes the window show the page in the content pane instead
+  (`MainWindow.openFromNowPlayingSidebar`), so a click can never be one that lands and does nothing.
+  The credits are **not** the column's own reading of the WebView's byline: the player asks YouTube
+  Music for the track's record (`getSong`, the `next` endpoint) once per track, as soon as it starts —
+  `PlayerService.enrichSongMetadataIfNeeded`, which every observed track goes through, so an autoplay or
+  radio track the app never queued gets its artist IDs, album, like status and library state from the
+  same call a song played from a page makes. The column looks nothing up itself; it draws the rows the
+  player holds. (It used to search the API by title and artist, which matched the wrong video often
+  enough to matter, and left the like and library state unknown.) `NowPlayingSidebarCreditNavigationTests`
+  clicks both paths in the real column inside a real page's stack, in the window's own shape (the column
+  as an AppKit split view's inspector pane, a hosting controller of its own), and with no stack on screen
+  at all. Those windows are fully transparent and never on screen: hosted tests press a real window, and
+  these used to put a solid one on the reader's desktop per test. Each credit row is its own view
+  (`NowPlayingSidebarTrackCredits`) so its hitboxes are testable: the title's button is the row's whole
+  width, and a 13pt artist name carries a few points of vertical padding, because a line of names is
+  otherwise a click target a couple of points tall. A title whose
+  album is not known (a radio track with no album) stays plain text.
 - **A three-line lyric window.** A section label with an expand chevron, then the *same*
   `SyncedLyricsDisplayView` the classic panel and the fullscreen player render, in a window
   116pt tall, faded at both edges. The sheet's own centering keeps the line being sung in the

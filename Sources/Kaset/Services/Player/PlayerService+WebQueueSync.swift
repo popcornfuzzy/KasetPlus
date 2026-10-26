@@ -1112,9 +1112,14 @@ extension PlayerService {
             ) ?? observedVideoId
         }
 
+        let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+        // Whatever this observation does with the page's words, the structured record of the track is
+        // asked for once — an autoplay or radio track has never been through `play(song:)`, so without
+        // this its artists, album, like status and library state were whatever the byline said
+        // (`enrichSongMetadataIfNeeded`).
+        defer { self.enrichSongMetadataIfNeeded(videoId: resolvedVideoId) }
         let displayArtist = Self.commaSeparatedArtistDisplay(artist)
         let artistObj = Artist(id: "unknown", name: displayArtist)
-        let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
 
         // Record the metadata the WebView just observed for this track, with the artist
         // separators normalized. The lyrics pipeline waits for this and searches with it,
@@ -1321,8 +1326,11 @@ extension PlayerService {
     ) {
         guard !self.isAdPlaying else { return }
 
-        let displayArtist = Self.commaSeparatedArtistDisplay(artist)
         let resolvedVideoId = self.resolvedObservedVideoId(observedVideoId)
+        // A restored session has never been through `play(song:)` either: ask for the record that states
+        // the track's like and library state (`enrichSongMetadataIfNeeded`).
+        defer { self.enrichSongMetadataIfNeeded(videoId: resolvedVideoId) }
+        let displayArtist = Self.commaSeparatedArtistDisplay(artist)
 
         guard let preloaded = self.currentTrack, preloaded.videoId == resolvedVideoId else {
             self.logger.debug(
@@ -1428,23 +1436,48 @@ extension PlayerService {
         return true
     }
 
-    /// The held track with the page's title and artist written over it and every other field left as the
-    /// queue has it.
+    /// The row the player holds, described the way the page renders it.
     ///
-    /// This is the one place a silent page is allowed to change what the bar shows, and it is bounded to
-    /// the two strings the player bar renders: the album, duration, like state, library membership and
-    /// feedback tokens of the queue's row are carried across untouched, so nothing the queue knows about
-    /// the song is lost to a page that is only being used for its byline.
+    /// This is the one place a page is allowed to change what the bar shows, and it is bounded to the two
+    /// strings the bar renders: the album, duration, like state, library membership and feedback tokens of
+    /// the queue's row are carried across untouched.
+    ///
+    /// The page's byline is the artist line: YouTube's own bar names the artists and leaves the album and
+    /// the year out of it, while a row can carry both as extra artist entries (ADR-0027). Adopting the
+    /// byline is therefore what has always removed them, and it stays the authority on *who* is credited.
+    /// What it cannot carry is the artist IDs, and those are the row's: each name the page credits is
+    /// matched to the row's artist of that name, so the line reads as the page spells it and every name
+    /// still opens its own page. A name the row does not know stays a credit with no page behind it,
+    /// instead of the whole line collapsing to one unopenable string.
     private func heldTrack(
         _ song: Song,
         describedAs title: String,
         by artistsDisplay: String,
         thumbnailUrl: String
     ) -> Song {
-        Song(
+        let names = artistsDisplay
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var seen: Set<String> = []
+        let artists: [Artist] = names.isEmpty ? song.artists : names.compactMap { name in
+            let known = song.artists.first { $0.name == name }
+                ?? song.artists.first { Self.artistsEquivalent($0.name, name) }
+            // A name the row does not know has no channel ID, but it still gets its own identity: two
+            // such names sharing one id would draw as a single credit.
+            let artist = known ?? Artist(
+                id: ParsingHelpers.stableId(title: "artist", components: name),
+                name: name
+            )
+            guard seen.insert(artist.id).inserted else { return nil }
+            return Artist(id: artist.id, name: artist.name, thumbnailURL: artist.thumbnailURL)
+        }
+
+        return Song(
             id: song.id,
             title: title,
-            artists: [Artist(id: "unknown", name: artistsDisplay)],
+            artists: artists.isEmpty ? song.artists : artists,
             album: song.album,
             duration: song.duration,
             thumbnailURL: song.thumbnailURL ?? self.normalizedThumbnailURL(thumbnailUrl),

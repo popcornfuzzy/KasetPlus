@@ -82,7 +82,9 @@ handlers that drive the queue are never fed from a silent page.
 
 The title and artist are the exception, and they are the reason the rung exists at all. Shelf rows carry
 the album and year as extra artist entries, so a row's display ("SXTN, Leben am Limit, 2017") can never
-equal the player-bar byline ("SXTN") — and a restored session showed the row. Pressing play corrected it,
+equal the player-bar byline ("SXTN") — and a restored session showed the row. Adopting that byline is
+what removes the album and the year from the artist line, while the names it still credits keep the
+row's channel IDs (`PlayerService.heldTrack`). Pressing play corrected it,
 by replacing the track with the page's own rendering; at rest nothing did. The preload *is* that page, so
 it makes the same correction before the first press. It only does so when the page also says *which video*
 it is describing and it is the held one: a shell, a page still settling or an ad reports a byline that can

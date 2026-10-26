@@ -428,6 +428,29 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrack?.likeStatus == .like)
     }
 
+    @Test("fetchSongMetadata replaces a byline artist with the API's structured ones")
+    func fetchSongMetadataAdoptsStructuredArtists() async {
+        // The WebView reports "One, Two" as a single artist with no channel ID, which is a credit
+        // nothing can open. The API names the same artists with the IDs their pages are browsed by.
+        let videoId = "byline-only-video"
+        self.playerService.currentTrack = Song(
+            id: videoId,
+            title: "A Song",
+            artists: [Artist(id: "unknown", name: "One, Two")],
+            videoId: videoId
+        )
+        self.mockClient.songResponses[videoId] = Song(
+            id: videoId,
+            title: "A Song",
+            artists: [Artist(id: "UCone", name: "One"), Artist(id: "UCtwo", name: "Two")],
+            videoId: videoId
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: videoId)
+
+        #expect(self.playerService.currentTrack?.artists.map(\.id) == ["UCone", "UCtwo"])
+    }
+
     @Test("fetchSongMetadata keeps the artwork URL already on screen")
     func fetchSongMetadataKeepsDisplayedArtwork() async {
         // The API returns the same picture under a rotated size/signature URL. Replacing the

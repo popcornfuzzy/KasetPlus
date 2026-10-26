@@ -648,7 +648,14 @@ struct PlayerServiceWebQueueSyncTests {
                     Artist(id: "album", name: "Leben am Limit"),
                     Artist(id: "year", name: "2017"),
                 ],
-                album: nil,
+                album: Album(
+                    id: "MPREb_limit",
+                    title: "Leben am Limit",
+                    artists: nil,
+                    thumbnailURL: nil,
+                    year: "2017",
+                    trackCount: 12
+                ),
                 duration: 180,
                 thumbnailURL: nil,
                 videoId: "v1"
@@ -669,15 +676,17 @@ struct PlayerServiceWebQueueSyncTests {
 
         #expect(self.playerService.currentTrack?.artistsDisplay == "SXTN")
 
-        // Stale/incomplete followed by the full byline keeps the artist name as sent.
+        // Stale/incomplete followed by the page's byline keeps the artist name exactly as YouTube
+        // spells it — and, because the page credits nobody else, the album and the year the *row* listed
+        // beside SXTN are gone with it.
         self.playerService.updateTrackMetadata(
             title: "Staender",
-            artist: "Terror Jr • 3 Strikes • 2016",
+            artist: "Terror Jr",
             thumbnailUrl: "",
             videoId: "v1",
             playerBarVideoId: "v1"
         )
-        #expect(self.playerService.currentTrack?.artistsDisplay == "Terror Jr, 3 Strikes, 2016")
+        #expect(self.playerService.currentTrack?.artistsDisplay == "Terror Jr")
     }
 
     @Test("Localized 'and' byline keeps structured artists and like status")
@@ -1300,5 +1309,192 @@ struct PlayerServiceWebQueueSyncTests {
 
         #expect(self.playerService.queue.count == 1)
         #expect(self.playerService.queue.first?.videoId == "lonely-video")
+    }
+
+    // MARK: - The record behind a byline
+
+    @Test("A track YouTube started itself takes its artists, album, like and library state from the API")
+    func observedTrackTakesItsRecordFromTheAPI() async throws {
+        // Autoplay after the queue and a radio station never go through `play(song:)`, so nothing asked
+        // YouTube Music about the video: the app had a byline (no artist IDs, no album) and no like or
+        // library state at all, which is what the transport drew. The record is asked for when such a
+        // track starts (`enrichSongMetadataIfNeeded`).
+        //
+        // The record is parsed from a `next` response's own shape rather than built as a `Song`: a
+        // hand-built record hides where YouTube really keeps each field, which is how the transport's
+        // like thumb lost its rating while every player test still passed.
+        let client = MockYTMusicClient()
+        client.songResponses["auto-video"] = try SongMetadataParser.parse(Self.recordPayload, videoId: "auto-video")
+        self.playerService.setYTMusicClient(client)
+        self.playerService.queue = []
+        self.playerService.currentTrack = Song(
+            id: "auto-video",
+            title: "Autoplay Song",
+            artists: [Artist(id: "unknown", name: "One, Two")],
+            videoId: "auto-video"
+        )
+
+        self.playerService.updateTrackMetadata(
+            title: "Autoplay Song",
+            artist: "One, Two",
+            thumbnailUrl: "",
+            videoId: "auto-video",
+            playerBarVideoId: "auto-video"
+        )
+
+        for _ in 0 ..< 40 where self.playerService.currentTrackLikeStatus != .like {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(client.getSongVideoIds == ["auto-video"], "the record is asked for once")
+        #expect(self.playerService.currentTrack?.artists.map(\.id) == ["UCone", "UCtwo"])
+        #expect(self.playerService.currentTrack?.album?.id == "MPREb_auto")
+        #expect(self.playerService.currentTrack?.album?.year == "2017")
+        #expect(self.playerService.currentTrackLikeStatus == .like, "a liked track's thumb is lit by the record")
+        #expect(self.playerService.currentTrackInLibrary == true)
+        #expect(self.playerService.currentTrack?.artistsDisplay == "One, Two", "the album and the year are not artists")
+    }
+
+    /// A `next` response for one track, with the fields where YouTube really keeps them: the byline's
+    /// runs, the menu's library toggle, and the player overlay's like button.
+    private static let recordPayload: [String: Any] = [
+        "contents": [
+            "singleColumnMusicWatchNextResultsRenderer": [
+                "tabbedRenderer": [
+                    "watchNextTabbedResultsRenderer": [
+                        "tabs": [
+                            [
+                                "tabRenderer": [
+                                    "content": [
+                                        "musicQueueRenderer": [
+                                            "content": [
+                                                "playlistPanelRenderer": [
+                                                    "contents": [
+                                                        [
+                                                            "playlistPanelVideoRenderer": [
+                                                                "videoId": "auto-video",
+                                                                "title": ["runs": [["text": "Autoplay Song"]]],
+                                                                "longBylineText": [
+                                                                    "runs": [
+                                                                        ["text": "One", "navigationEndpoint": ["browseEndpoint": ["browseId": "UCone"]]],
+                                                                        ["text": " & "],
+                                                                        ["text": "Two", "navigationEndpoint": ["browseEndpoint": ["browseId": "UCtwo"]]],
+                                                                        ["text": " • "],
+                                                                        ["text": "Autoplay Album", "navigationEndpoint": ["browseEndpoint": ["browseId": "MPREb_auto"]]],
+                                                                        ["text": " • "],
+                                                                        ["text": "2017"],
+                                                                    ],
+                                                                ],
+                                                                "lengthText": ["runs": [["text": "3:20"]]],
+                                                                "menu": [
+                                                                    "menuRenderer": [
+                                                                        "items": [
+                                                                            [
+                                                                                "toggleMenuServiceItemRenderer": [
+                                                                                    "defaultIcon": ["iconType": "LIBRARY_REMOVE"],
+                                                                                    "defaultServiceEndpoint": ["feedbackEndpoint": ["feedbackToken": "remove-token"]],
+                                                                                    "toggledServiceEndpoint": ["feedbackEndpoint": ["feedbackToken": "add-token"]],
+                                                                                ],
+                                                                            ],
+                                                                        ],
+                                                                    ],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+        "playerOverlays": [
+            "playerOverlayRenderer": [
+                "actions": [
+                    ["likeButtonRenderer": ["likeStatus": "LIKE", "target": ["videoId": "auto-video"]]],
+                ],
+            ],
+        ],
+    ]
+
+    @Test("A song played from a page is asked about when its row states no like or library state")
+    func playedRowWithoutStateIsAskedAbout() async {
+        let client = MockYTMusicClient()
+        client.songResponses["row-video"] = Song(
+            id: "row-video",
+            title: "A Song",
+            artists: [Artist(id: "UCone", name: "One")],
+            album: nil,
+            videoId: "row-video",
+            likeStatus: .like,
+            isInLibrary: true
+        )
+        self.playerService.setYTMusicClient(client)
+
+        // A row parsed from a page carries the artists but no like status and no library state — the
+        // list parser reads no per-track menus. Its `feedbackTokens` being absent was the only trigger
+        // before, so a row with tokens and no state was never asked about.
+        var row = Song(
+            id: "row-video",
+            title: "A Song",
+            artists: [Artist(id: "UCone", name: "One")],
+            videoId: "row-video"
+        )
+        row.feedbackTokens = FeedbackTokens(add: "add", remove: "remove")
+
+        await self.playerService.playQueue([row], startingAt: 0)
+
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+        #expect(self.playerService.currentTrackInLibrary == true)
+    }
+
+    // MARK: - What the page's byline replaces
+
+    @Test("The page's byline replaces the album and the year a row lists as artists, keeping their IDs")
+    func bylineReplacesRowsAlbumAndYearEntries() async {
+        // A shelf row lists the album and the year beside the artist (ADR-0027). The page's own byline
+        // names the artist alone, and adopting it is what has always removed them — while the artist's
+        // channel ID, which the byline cannot carry, comes from the row, so the name still opens a page.
+        let song = Song(
+            id: "limit",
+            title: "Leben am Limit",
+            artists: [
+                Artist(id: "UCsxtn", name: "SXTN"),
+                Artist(id: "MPREb_limit", name: "Leben am Limit"),
+                Artist(id: "year", name: "2017"),
+            ],
+            album: Album(
+                id: "MPREb_limit",
+                title: "Leben am Limit",
+                artists: nil,
+                thumbnailURL: nil,
+                year: "2017",
+                trackCount: 12
+            ),
+            duration: 200,
+            thumbnailURL: nil,
+            videoId: "limit-video"
+        )
+
+        await self.playerService.playQueue([song], startingAt: 0)
+        self.playerService.isKasetInitiatedPlayback = false
+
+        self.playerService.updateTrackMetadata(
+            title: "Leben am Limit (Remastered)",
+            artist: "SXTN",
+            thumbnailUrl: "",
+            videoId: "limit-video",
+            playerBarVideoId: "limit-video"
+        )
+
+        #expect(self.playerService.currentTrack?.artists.map(\.name) == ["SXTN"])
+        #expect(self.playerService.currentTrack?.artists.map(\.id) == ["UCsxtn"], "the row supplies the page's ID")
+        #expect(self.playerService.currentTrack?.artistsDisplay == "SXTN")
+        #expect(self.playerService.currentTrack?.album?.id == "MPREb_limit", "the row's album is kept: the title opens it")
     }
 }

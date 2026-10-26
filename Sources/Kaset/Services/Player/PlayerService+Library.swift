@@ -213,6 +213,32 @@ extension PlayerService {
         self.currentTrack = currentTrack
     }
 
+    /// Asks YouTube Music for the structured record of the playing track — once per video.
+    ///
+    /// The WebView's byline is a *rendering*, not a record: it names the track in one string, without
+    /// artist IDs, without the album, and with no like or library state. `getSong` asks the `next`
+    /// endpoint, which is what YouTube Music itself knows about the video — the same call a track played
+    /// from a page already makes. A track YouTube started on its own (autoplay after the queue, a radio
+    /// station, a restored session) never went through `play(song:)`, so nothing asked for it before and
+    /// the transport had no like or library state to show. That is the gap this closes.
+    ///
+    /// A track whose row already carries all of it costs no request: the guard is the data, not the
+    /// caller. One request per video, cached by `APICache.TTL.songMetadata`.
+    func enrichSongMetadataIfNeeded(videoId: String) {
+        guard self.currentTrack?.videoId == videoId else { return }
+        guard self.songMetadataRequestedVideoId != videoId else { return }
+
+        let track = self.currentTrack
+        let hasStructuredArtists = track?.artists.contains { $0.hasNavigableId } ?? false
+        let hasState = track?.likeStatus != nil && track?.isInLibrary != nil && track?.feedbackTokens != nil
+        guard !hasStructuredArtists || !hasState else { return }
+
+        self.songMetadataRequestedVideoId = videoId
+        Task { @MainActor [weak self] in
+            await self?.fetchSongMetadata(videoId: videoId)
+        }
+    }
+
     /// Fetches full song metadata including feedbackTokens from the API.
     func fetchSongMetadata(videoId: String) async {
         guard let client = ytMusicClient else {
@@ -240,7 +266,17 @@ extension PlayerService {
             if self.currentTrack?.videoId == videoId {
                 // Preserve the title/artist from WebView if they're better
                 let title = self.currentTrack?.title == "Loading..." ? songData.title : (self.currentTrack?.title ?? songData.title)
-                let artists = self.currentTrack?.artists.isEmpty == true ? songData.artists : (self.currentTrack?.artists ?? songData.artists)
+                // ...but not a byline that carries no identity: the WebView reports every name in one
+                // artist without a channel ID, while the API's artists are the ones that can be opened.
+                // The same rule turns an "Unknown Artist" placeholder into the real credit.
+                let currentArtists = self.currentTrack?.artists ?? []
+                let artists: [Artist] = if currentArtists.contains(where: { $0.hasNavigableId }) {
+                    currentArtists
+                } else if !songData.artists.isEmpty {
+                    songData.artists
+                } else {
+                    currentArtists
+                }
 
                 // The video variant of a matched song is the counterpart Kaset keeps for PiP.
                 if self.preferAudioVersions,

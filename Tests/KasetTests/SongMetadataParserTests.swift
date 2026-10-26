@@ -93,6 +93,69 @@ struct SongMetadataParserTests {
         #expect(artists.map(\.name) == ["Artist One", "Artist Two", "Artist Three"])
     }
 
+    @Test("A song's byline names the album and the year, and neither is an artist")
+    func parseArtistsDropsAlbumAndYear() throws {
+        // The shape YouTube sends for an art track, captured from the `next` endpoint: the artist is a
+        // link to an artist page, the album is a link to an album page, and the year is plain text.
+        let renderer: [String: Any] = [
+            "title": ["runs": [["text": "Staender"]]],
+            "longBylineText": [
+                "runs": [
+                    [
+                        "text": "SXTN",
+                        "navigationEndpoint": [
+                            "browseEndpoint": ["browseId": "UCFNSyezyK_1_f0nOrNaCdHQ"],
+                        ],
+                    ],
+                    ["text": " • "],
+                    [
+                        "text": "Leben am Limit",
+                        "navigationEndpoint": [
+                            "browseEndpoint": ["browseId": "MPREb_v1BJdlN5p5X"],
+                        ],
+                    ],
+                    ["text": " • "],
+                    ["text": "2017"],
+                ],
+            ],
+        ]
+
+        let album = SongMetadataParser.parseAlbum(from: renderer)
+        let artists = SongMetadataParser.parseArtists(from: renderer, albumTitle: album?.title)
+
+        #expect(artists.map(\.name) == ["SXTN"])
+        #expect(artists.map(\.id) == ["UCFNSyezyK_1_f0nOrNaCdHQ"], "the artist's page is what the credit opens")
+        #expect(album?.title == "Leben am Limit")
+        #expect(album?.id == "MPREb_v1BJdlN5p5X")
+        #expect(album?.year == "2017")
+    }
+
+    @Test("A video's byline names the audience, which is not an artist")
+    func parseArtistsDropsAudienceCounts() {
+        // The same endpoint, for a video: "Rick Astley • 1.8B views • 19M likes".
+        let renderer: [String: Any] = [
+            "longBylineText": [
+                "runs": [
+                    [
+                        "text": "Rick Astley",
+                        "navigationEndpoint": [
+                            "browseEndpoint": ["browseId": "UCwZEU0wAwIyZb4x5G_KJp2w"],
+                        ],
+                    ],
+                    ["text": " • "],
+                    ["text": "1.8B views"],
+                    ["text": " • "],
+                    ["text": "19M likes"],
+                ],
+            ],
+        ]
+
+        let artists = SongMetadataParser.parseArtists(from: renderer)
+
+        #expect(artists.map(\.name) == ["Rick Astley"])
+        #expect(artists.map(\.id) == ["UCwZEU0wAwIyZb4x5G_KJp2w"])
+    }
+
     @Test("parseArtists generates UUID for artist without ID")
     func parseArtistsGeneratesUUID() {
         let renderer: [String: Any] = [
@@ -204,85 +267,51 @@ struct SongMetadataParserTests {
 
     // MARK: - Parse Menu Data Tests
 
-    @Test("parseMenuData extracts like status")
-    func parseMenuDataExtractsLikeStatus() {
-        let renderer: [String: Any] = [
-            "menu": [
-                "menuRenderer": [
-                    "items": [] as [[String: Any]],
-                    "topLevelButtons": [
-                        [
-                            "likeButtonRenderer": [
-                                "likeStatus": "LIKE",
-                            ],
-                        ],
+    /// The like button of the video the player holds, exactly where a real `next` response keeps it:
+    /// `playerOverlays.playerOverlayRenderer.actions[].likeButtonRenderer.likeStatus`.
+    private static func overlayPayload(likeStatus: String?) -> [String: Any] {
+        guard let likeStatus else { return [:] }
+        return [
+            "playerOverlays": [
+                "playerOverlayRenderer": [
+                    "actions": [
+                        ["likeButtonRenderer": ["likeStatus": likeStatus, "target": ["videoId": "video-id"]]],
                     ],
                 ],
             ],
         ]
-
-        let result = SongMetadataParser.parseMenuData(from: renderer)
-
-        #expect(result.likeStatus == .like)
     }
 
-    @Test("parseMenuData extracts dislike status")
-    func parseMenuDataExtractsDislikeStatus() {
-        let renderer: [String: Any] = [
-            "menu": [
-                "menuRenderer": [
-                    "items": [] as [[String: Any]],
-                    "topLevelButtons": [
-                        [
-                            "likeButtonRenderer": [
-                                "likeStatus": "DISLIKE",
-                            ],
-                        ],
+    @Test("The like status comes from the player overlay, as a real `next` response states it")
+    func likeStatusComesFromPlayerOverlays() {
+        #expect(SongMetadataParser.parseLikeStatus(from: Self.overlayPayload(likeStatus: "LIKE")) == .like)
+        #expect(SongMetadataParser.parseLikeStatus(from: Self.overlayPayload(likeStatus: "DISLIKE")) == .dislike)
+        #expect(SongMetadataParser.parseLikeStatus(from: Self.overlayPayload(likeStatus: "INDIFFERENT")) == .indifferent)
+    }
+
+    @Test("No player overlay leaves the like status unknown")
+    func missingOverlayLeavesLikeStatusUnknown() {
+        #expect(SongMetadataParser.parseLikeStatus(from: [:]) == nil)
+    }
+
+    @Test("The record of a liked song carries its rating")
+    func recordCarriesTheRating() throws {
+        var data = Self.makeNextResponseWithRenderer([
+            "playlistPanelVideoRenderer": [
+                "videoId": "video-id",
+                "title": ["runs": [["text": "A Song"]]],
+                "longBylineText": [
+                    "runs": [
+                        ["text": "SXTN", "navigationEndpoint": ["browseEndpoint": ["browseId": "UCsxtn"]]],
                     ],
                 ],
             ],
-        ]
+        ])
+        for (key, value) in Self.overlayPayload(likeStatus: "LIKE") { data[key] = value }
 
-        let result = SongMetadataParser.parseMenuData(from: renderer)
+        let song = try SongMetadataParser.parse(data, videoId: "video-id")
 
-        #expect(result.likeStatus == .dislike)
-    }
-
-    @Test("parseMenuData preserves explicit indifferent status")
-    func parseMenuDataPreservesExplicitIndifferentStatus() {
-        let renderer: [String: Any] = [
-            "menu": [
-                "menuRenderer": [
-                    "items": [] as [[String: Any]],
-                    "topLevelButtons": [
-                        [
-                            "likeButtonRenderer": [
-                                "likeStatus": "INDIFFERENT",
-                            ],
-                        ],
-                    ],
-                ],
-            ],
-        ]
-
-        let result = SongMetadataParser.parseMenuData(from: renderer)
-
-        #expect(result.likeStatus == .indifferent)
-    }
-
-    @Test("parseMenuData leaves like status unknown when like button is missing")
-    func parseMenuDataLeavesLikeStatusUnknownWhenLikeButtonIsMissing() {
-        let renderer: [String: Any] = [
-            "menu": [
-                "menuRenderer": [
-                    "items": [] as [[String: Any]],
-                ],
-            ],
-        ]
-
-        let result = SongMetadataParser.parseMenuData(from: renderer)
-
-        #expect(result.likeStatus == nil)
+        #expect(song.likeStatus == .like, "a liked track's thumb comes from the record")
     }
 
     @Test("parseMenuData extracts library add token")
@@ -317,7 +346,6 @@ struct SongMetadataParserTests {
 
         let result = SongMetadataParser.parseMenuData(from: renderer)
 
-        #expect(result.likeStatus == nil)
         #expect(result.isInLibrary == false)
         #expect(result.feedbackTokens == nil)
     }
