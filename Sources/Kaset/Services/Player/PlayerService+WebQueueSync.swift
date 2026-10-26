@@ -303,7 +303,10 @@ extension PlayerService {
     /// upgrades the image. Adopting it would churn `currentTrack`'s URL and make the now-playing
     /// artwork reload the picture it is already showing (visible flicker), so the queue song's own
     /// thumbnail wins whenever it has one.
-    private func keepQueueSongVisible(_ song: Song, thumbnailUrl: String) {
+    func keepQueueSongVisible(_ song: Song, thumbnailUrl: String) {
+        self.logger.notice(
+            "TRACE queue row shown: '\(song.title, privacy: .public)' (\(song.videoId, privacy: .public))"
+        )
         let intendedThumbnailURL = song.thumbnailURL ?? self.normalizedThumbnailURL(thumbnailUrl)
         self.currentTrack = Song(
             id: song.id,
@@ -495,7 +498,8 @@ extension PlayerService {
         title: String,
         artist: String,
         thumbnailUrl: String,
-        trackChanged: Bool
+        trackChanged: Bool,
+        barDescribesAnotherTrack: Bool
     ) -> Bool {
         guard self.isKasetInitiatedPlayback, !self.queue.isEmpty else {
             return false
@@ -507,12 +511,36 @@ extension PlayerService {
         }
 
         let matchesObservedVideo = self.normalizedObservedVideoId(observedVideoId) == intendedSong.videoId
-        if matchesObservedVideo, self.shouldKeepQueueMetadata(title: title, artist: artist, song: intendedSong) {
+        if matchesObservedVideo {
             self.isKasetInitiatedPlayback = false
-            self.logger.debug(
-                "Confirmed intended videoId \(intendedSong.videoId) with incomplete metadata '\(title)'; keeping queue metadata"
-            )
-            self.keepQueueSongVisible(intendedSong, thumbnailUrl: thumbnailUrl)
+            let displayArtist = Self.commaSeparatedArtistDisplay(artist)
+
+            // Half a bar (still rendering, an empty byline) says nothing; the queue's row stays. A
+            // complete one is how the track is really spelled, and a row built from a card can be
+            // wrong about that — so the page's text replaces it, on the row's richer fields.
+            guard !title.isEmpty, !displayArtist.isEmpty else {
+                self.logger.debug(
+                    "Confirmed intended videoId \(intendedSong.videoId) with incomplete metadata '\(title)'; keeping queue metadata"
+                )
+                self.keepQueueSongVisible(intendedSong, thumbnailUrl: thumbnailUrl)
+                return true
+            }
+
+            if self.metadataMatchesSong(title: title, artist: displayArtist, song: intendedSong)
+                || barDescribesAnotherTrack
+            {
+                self.keepQueueSongVisible(intendedSong, thumbnailUrl: thumbnailUrl)
+            } else {
+                self.logger.info(
+                    "The page spells \(intendedSong.videoId) as '\(title)' - '\(displayArtist)'; correcting the row's text"
+                )
+                self.currentTrack = self.heldTrack(
+                    intendedSong,
+                    describedAs: title,
+                    by: displayArtist,
+                    thumbnailUrl: thumbnailUrl
+                )
+            }
             return true
         }
 
@@ -557,6 +585,17 @@ extension PlayerService {
         }
 
         self.songNearingEnd = false
+
+        // An observation of the row Kaset is already on is not a transition to another track: the page
+        // agrees with the queue. Advancing from here skipped the row after the one that had just
+        // started, which is what a natural track end looked like — the finished song's progress is
+        // still on screen when the next track is first reported, so this handler believed a track had
+        // changed near the end and pushed the queue one row further.
+        if self.observedVideoIsCurrentQueueRow(observedVideoId: observedVideoId) {
+            self.logger.debug("Near-end: observation is the row already playing; not a transition")
+            return false
+        }
+
         if let expectedNextIndex = self.expectedQueueIndexAfterCurrentTrack(),
            let expectedNextTrack = self.queue[safe: expectedNextIndex]
         {
@@ -576,10 +615,19 @@ extension PlayerService {
                     }
                     return true
                 }
-                self.logger.info("YouTube autoplay detected, overriding with queue track")
-                Task {
-                    await self.next()
+                // The same transition can be observed more than once (the page reports several times
+                // as it moves on). Advancing on each sighting skipped the row after the expected one.
+                if self.pendingPlayVideoId == expectedNextTrack.videoId,
+                   self.currentIndex == expectedNextIndex
+                {
+                    self.logger.debug(
+                        "Near-end: already advancing to \(expectedNextTrack.videoId); not advancing again"
+                    )
+                    return true
                 }
+
+                self.logger.info("YouTube autoplay detected, overriding with queue track")
+                self.advanceForNearEndTransition()
                 return true
             }
 
@@ -607,9 +655,7 @@ extension PlayerService {
                 return true
             }
             self.logger.info("Near-end track change detected, advancing native queue to enforce playback order")
-            Task {
-                await self.next()
-            }
+            self.advanceForNearEndTransition()
             return true
         }
 
@@ -626,6 +672,84 @@ extension PlayerService {
             trackChanged: trackChanged,
             fromNearEndTransition: true
         )
+    }
+
+    /// Treats a report of another track right after a start as the page's leftover advance.
+    ///
+    /// YouTube Music completes its own advance *after* it reports the previous track's end, so a track
+    /// started in that gap plays for a moment and is then moved past — the song that was skipped one
+    /// row too far. A row that started within ``PlayerService/trackStartGrace`` cannot have been skipped
+    /// by the user, so the row is put back into the page instead of following it.
+    ///
+    /// - Returns: `true` when the report was one of those and has been handled.
+    @discardableResult
+    func handleTrackSkippedRightAfterStart(
+        observedVideoId: String?,
+        trackChanged: Bool
+    ) -> Bool {
+        guard trackChanged,
+              self.isWithinTrackStartGrace,
+              let row = self.queue[safe: self.currentIndex],
+              let observed = self.normalizedObservedVideoId(observedVideoId),
+              observed != row.videoId
+        else {
+            return false
+        }
+
+        self.logger.info(
+            "The page moved to \(observed) right after \(row.videoId) started; putting the row back"
+        )
+        // That track's title and artwork are not the playing song's (lyrics read this).
+        self.observedWebMetadata = nil
+        self.reassertCurrentRowInPage()
+        return true
+    }
+
+    /// Whether the observation names the queue row Kaset is already on.
+    ///
+    /// The video id decides this, not the text: titles and bylines drift constantly (remaster labels,
+    /// joined credits, a bar that lags a beat), and reading that drift as a track change near the end
+    /// of a song pushed the queue past the track that had just started — the remembered "it skipped a
+    /// song by itself" bug.
+    private func observedVideoIsCurrentQueueRow(observedVideoId: String?) -> Bool {
+        guard let observedVideoId = self.normalizedObservedVideoId(observedVideoId) else {
+            return false
+        }
+        let currentVideoId = self.queue[safe: self.currentIndex]?.videoId ?? self.currentTrack?.videoId
+        return currentVideoId == observedVideoId
+    }
+
+    /// Advances the queue for a near-end track change, at most once per transition.
+    ///
+    /// Near the end of a song the WebView reports several times as the page moves on, and every report
+    /// of the same unexpected track used to advance the queue again — which is heard as a song being
+    /// skipped while the bar still shows the track Kaset had just started.
+    func advanceForNearEndTransition() {
+        let now = ContinuousClock.now
+        if let last = self.lastNearEndAdvanceInstant, now - last < .milliseconds(1500) {
+            self.logger.debug("Near-end: an advance is already in flight; not advancing again")
+            return
+        }
+        self.lastNearEndAdvanceInstant = now
+        Task {
+            await self.advanceQueueForObservedTrackEnd()
+        }
+    }
+
+    /// Advances the queue once for a track that ended, whichever signal noticed it first.
+    ///
+    /// The page's `ended` event and a metadata observation near the end of a song both report the same
+    /// end. `next()` moves the index before it awaits, so two calls that overlap skip a row — which is
+    /// heard as the song after the next one starting.
+    func advanceQueueForObservedTrackEnd() async {
+        guard !self.isAutomaticQueueAdvanceInFlight else {
+            self.logger.debug("A track end is already advancing the queue; not advancing again")
+            return
+        }
+        self.isAutomaticQueueAdvanceInFlight = true
+        self.noteTrackEndedAdvance()
+        defer { self.isAutomaticQueueAdvanceInFlight = false }
+        await self.next()
     }
 
     /// Last-line repeat-one enforcement: WebView metadata is lossy/out-of-order; earlier handlers can miss a frame.
@@ -795,6 +919,7 @@ extension PlayerService {
     /// Replays the currently playing song for repeat-one when no native queue is active.
     private func replayCurrentSongForRepeatOneWithoutQueueAfterTrackEnd() async {
         self.songNearingEnd = false
+        self.noteTrackEndedAdvance()
         if let currentTrack = self.currentTrack {
             self.logger.info("Track ended with repeat one and no queue; replaying current track")
             await self.play(song: currentTrack, webLoadStrategy: .preferInPlaceWhenSameVideoId)
@@ -809,12 +934,43 @@ extension PlayerService {
     }
 
     /// Handles a natural track completion reported directly by the WebView.
-    func handleTrackEnded(observedVideoId: String?) async {
+    ///
+    /// - Parameter progress: where the media stopped, when the page reports it.
+    /// - Parameter duration: the media's own length, when the page reports it. Together they are the
+    ///   proof that the track reached its end: a report from a load that kept the old position (or from
+    ///   media the page replaced) is not this track finishing, and advancing on it skipped a queue row.
+    func handleTrackEnded(
+        observedVideoId: String?,
+        progress: TimeInterval? = nil,
+        duration: TimeInterval? = nil
+    ) async {
         self.logger.debug("Track ended reported by WebView: \(observedVideoId ?? "unknown")")
+
+        if let progress, let duration, duration > 0, progress < duration - 3 {
+            self.logger.info(
+                "Ignoring track-ended for \(observedVideoId ?? "unknown"): it stopped at \(Int(progress))s of \(Int(duration))s"
+            )
+            return
+        }
+
         // A video-variant page ends the same track; fold it onto the song id so the queue
         // advances (or repeats) correctly rather than discarding the event as stale.
         let observedVideoId = self.canonicalPlaybackVideoId(for: observedVideoId)
         self.songNearingEnd = false
+
+        // A track that started moments ago has not finished: this is the page's leftover advance from
+        // the previous song ending (or from a swap made while it was still finishing), and advancing
+        // here skipped a queue row. The row is put back instead.
+        if self.isWithinTrackStartGrace,
+           self.normalizedObservedVideoId(observedVideoId) == self.queue[safe: self.currentIndex]?.videoId
+        {
+            self.logger.info(
+                "Ignoring track-ended for \(observedVideoId ?? "unknown"): it started moments ago; putting the row back"
+            )
+            self.reassertCurrentRowInPage()
+            return
+        }
+
         guard !self.queue.isEmpty else {
             if self.repeatMode == .one, self.currentTrack != nil || self.pendingPlayVideoId != nil {
                 await self.replayCurrentSongForRepeatOneWithoutQueueAfterTrackEnd()
@@ -859,21 +1015,86 @@ extension PlayerService {
         self.shouldSuppressAutoplayAfterQueueEnd = false
         self.isAwaitingYouTubeAutoplayAfterQueueEnd = false
         if self.repeatMode == .one {
+            self.noteTrackEndedAdvance()
             self.logger.info("Track ended with repeat one; replaying current queue song")
             await self.replayCurrentQueueSongForRepeatOneAfterTrackEnd()
             return
         }
         self.logger.info("Track ended in WebView, advancing native queue immediately")
-        await self.next()
+        await self.advanceQueueForObservedTrackEnd()
     }
 
     /// Updates track metadata and enforces Kaset's queue when YouTube tries to diverge.
-    func updateTrackMetadata(title: String, artist: String, thumbnailUrl: String, videoId observedVideoId: String?) {
-        self.logger.debug("Track metadata updated: \(title) - \(artist)")
+    func updateTrackMetadata(
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        videoId observedVideoId: String?
+    ) {
+        self.updateTrackMetadata(
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            videoId: observedVideoId,
+            playerBarVideoId: nil
+        )
+    }
+
+    /// Updates track metadata and enforces Kaset's queue when YouTube tries to diverge.
+    ///
+    /// - Parameter playerBarVideoId: the track the player bar itself is describing, when the page says.
+    ///   It lags an in-page track swap, so a bar naming another track is not a description of the
+    ///   track that is playing.
+    /// - Parameter metadataFromPlayer: whether the title and byline came from the page's *player API*
+    ///   rather than its bar. The player's own words describe the video it holds, so a bar that still
+    ///   names the previous track is no reason to doubt them — and the lyrics search waits on exactly
+    ///   this observation.
+    func updateTrackMetadata(
+        title: String,
+        artist: String,
+        thumbnailUrl: String,
+        videoId observedVideoId: String?,
+        playerBarVideoId: String?,
+        metadataFromPlayer: Bool = false
+    ) {
+        self.logger.debug(
+            "TRACE observation id=\(observedVideoId ?? "-", privacy: .public) title='\(title, privacy: .public)' artist='\(artist, privacy: .public)' bar=\(playerBarVideoId ?? "-", privacy: .public) fromPlayer=\(metadataFromPlayer, privacy: .public) current=\(self.currentTrack?.videoId ?? "-", privacy: .public)"
+        )
 
         if self.isAdPlaying {
             self.logger.debug("Ignoring metadata reconciliation while ad is active")
             return
+        }
+
+        // A page that was just told to play another track goes on reporting the one it is leaving for
+        // a moment — a poll that raced the swap, an update queued before it, the bar's last paint.
+        // That report is not the page moving back: believing it realigned the queue index to the row
+        // that had just been left and flashed its title in the now-playing surfaces, until the next
+        // report moved everything forward again. The row Kaset started is the one that is playing.
+        if self.isObservationOfDepartedTrack(self.normalizedObservedVideoId(observedVideoId), title: title) {
+            self.logger.notice(
+                "TRACE ignored departed-track report id=\(observedVideoId ?? "-", privacy: .public) title='\(title, privacy: .public)'"
+            )
+            return
+        }
+
+        // The player bar can still be describing the previous track while the player has already
+        // started the new one (an in-page swap does not reload the page). Believing that text would
+        // store another song's title, artist and artwork for the playing track — the lyrics and the
+        // byline would be the previous song's until something else corrected them. The bar's *text* is
+        // therefore not taken, but the track the player holds still is: reconciliation has to run on it,
+        // or the app would keep showing the previous row while the page plays the next one.
+        let barDescribesAnotherTrack: Bool = {
+            guard !metadataFromPlayer else { return false }
+            guard let playerBarVideoId, !playerBarVideoId.isEmpty,
+                  let observed = self.normalizedObservedVideoId(observedVideoId)
+            else { return false }
+            return self.canonicalPlaybackVideoId(for: playerBarVideoId) != observed
+        }()
+        if barDescribesAnotherTrack {
+            self.logger.debug(
+                "Player bar still shows \(playerBarVideoId ?? "nothing") while the player holds \(observedVideoId ?? "unknown"); keeping the queue's text"
+            )
         }
 
         // The PiP miniplayer can put the page on the video variant; fold that observation back
@@ -901,13 +1122,38 @@ extension PlayerService {
         // title/artist YouTube has since refined. Set before the divergence handlers
         // below, since any of them can reconcile or early-return; only a complete
         // observation counts, so a half-rendered player bar cannot satisfy the gate.
-        if !title.isEmpty, !displayArtist.isEmpty {
+        // Right after a start the page can still paint another song's words under the new video's id:
+        // a measured case reported the correct id with a two-tracks-old title 0.2 s after the advance
+        // and did not paint the real words until 1.4 s later. Text is therefore believed only when
+        // something anchors it to the playing video — the player API's own record, or a bar whose link
+        // names that video — and until then the row Kaset started keeps its words (and the lyrics gate
+        // stays closed). A bar naming another track is left to its own handling below.
+        if self.ignoresUnanchoredText(
+            title: title,
+            artist: displayArtist,
+            videoId: resolvedVideoId,
+            playerBarVideoId: playerBarVideoId,
+            metadataFromPlayer: metadataFromPlayer
+        ) {
+            self.logger.notice(
+                "TRACE ignored unanchored text for \(resolvedVideoId, privacy: .public): '\(title, privacy: .public)' - '\(displayArtist, privacy: .public)' (row says '\(self.currentTrack?.title ?? "-", privacy: .public)', bar=\(playerBarVideoId ?? "-", privacy: .public), fromPlayer=\(metadataFromPlayer, privacy: .public))"
+            )
+            // The page did name the video it holds; only its words are untrusted. The start is
+            // therefore confirmed, and a later report is not read as an intended-track mismatch.
+            if self.pendingPlayVideoId == resolvedVideoId {
+                self.isKasetInitiatedPlayback = false
+            }
+            return
+        }
+
+        if !barDescribesAnotherTrack, !title.isEmpty, !displayArtist.isEmpty {
             self.observedWebMetadata = ObservedWebMetadata(
                 videoId: resolvedVideoId,
                 title: title,
                 artist: displayArtist
             )
         }
+
         if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
             self.updateCurrentPlaybackKind(using: queuedSong)
         } else if self.currentTrack?.videoId == resolvedVideoId {
@@ -931,12 +1177,23 @@ extension PlayerService {
             return
         }
 
+        // A row that started a moment ago cannot have been skipped by the user: a different track here
+        // is the page finishing its own advance from the previous song, and following it skipped the
+        // track that had just started.
+        if self.handleTrackSkippedRightAfterStart(
+            observedVideoId: observedVideoId,
+            trackChanged: trackChanged
+        ) {
+            return
+        }
+
         if self.handleKasetInitiatedPlaybackMetadata(
             observedVideoId: observedVideoId,
             title: title,
             artist: artist,
             thumbnailUrl: thumbnailUrl,
-            trackChanged: trackChanged
+            trackChanged: trackChanged,
+            barDescribesAnotherTrack: barDescribesAnotherTrack
         ) {
             return
         }
@@ -983,6 +1240,13 @@ extension PlayerService {
             return
         }
 
+        // The bar is describing a track that is not playing: its title and artwork are not this
+        // song's, so the queue's row stays on screen until the bar catches up.
+        if barDescribesAnotherTrack, let current = self.currentTrack {
+            self.keepQueueSongVisible(current, thumbnailUrl: thumbnailUrl)
+            return
+        }
+
         // YouTube localizes the multi-artist separator in the player-bar byline
         // ("Artist A und Artist B"), which would otherwise replace our structured
         // artists and drop like-status/library fields on the current track. When the
@@ -993,6 +1257,17 @@ extension PlayerService {
 
         if observedMatchesCurrent, let current = self.currentTrack {
             self.keepQueueSongVisible(current, thumbnailUrl: thumbnailUrl)
+        } else if let queued = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
+            // Keep the row's album, duration, artwork and like state; take the page's text.
+            self.logger.notice(
+                "TRACE adopted page text for \(resolvedVideoId, privacy: .public): '\(title, privacy: .public)' - '\(displayArtist, privacy: .public)'"
+            )
+            self.currentTrack = self.heldTrack(
+                queued,
+                describedAs: title,
+                by: displayArtist,
+                thumbnailUrl: thumbnailUrl
+            )
         } else {
             self.currentTrack = Song(
                 id: resolvedVideoId,
@@ -1122,6 +1397,35 @@ extension PlayerService {
     private func keepPreloadedArtworkIfMissing(_ song: Song, thumbnailUrl: String) {
         guard song.thumbnailURL == nil, self.normalizedThumbnailURL(thumbnailUrl) != nil else { return }
         self.keepQueueSongVisible(song, thumbnailUrl: thumbnailUrl)
+    }
+
+    /// Whether a page description of the just-started track is too unattached to it to be believed.
+    ///
+    /// A title is anchored when the player API is the one reporting it (that record is for the video
+    /// the player holds), or when the player bar's own link names the playing video (the bar's text is
+    /// then that video's rendering). Anything else in the first moments after a start is the page still
+    /// painting its previous state — the wrong song's words under the right id.
+    private func ignoresUnanchoredText(
+        title: String,
+        artist: String,
+        videoId: String,
+        playerBarVideoId: String?,
+        metadataFromPlayer: Bool
+    ) -> Bool {
+        guard self.isWithinStartedTrackTextGrace(videoId),
+              !title.isEmpty, !artist.isEmpty,
+              let current = self.currentTrack, current.videoId == videoId,
+              !current.title.isEmpty, !current.artistsDisplay.isEmpty,
+              !self.metadataMatchesSong(title: title, artist: artist, song: current)
+        else { return false }
+
+        if metadataFromPlayer { return false }
+        if let bar = playerBarVideoId, !bar.isEmpty,
+           (self.canonicalPlaybackVideoId(for: bar) ?? bar) == videoId
+        {
+            return false
+        }
+        return true
     }
 
     /// The held track with the page's title and artist written over it and every other field left as the

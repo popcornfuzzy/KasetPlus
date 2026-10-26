@@ -757,6 +757,52 @@ struct SyncedLyricsServiceTests {
         #expect(await provider.callCount() == 2)
     }
 
+    @Test("Refined metadata re-runs a search instead of keeping lyrics found with the old words")
+    func refinedMetadataReplacesTheSearch() async {
+        let correct = Self.makeSyncedLyrics(source: "Correct Source", lineText: "Correct line")
+        let provider = MockLyricsProvider(name: "RefiningProvider", capability: .line) { info in
+            // Only the search that used the right words finds the right song.
+            info.title == "Real Title" ? .synced(correct) : .unavailable
+        }
+        let service = SyncedLyricsService(providers: [provider])
+
+        // A search that ran before the title was corrected finds nothing, and the miss is cached for
+        // the track — the failure mode behind wrong (or missing) lyrics after a start from a card.
+        await service.fetchLyrics(for: LyricsSearchInfo(
+            title: "Song, Artist",
+            artist: "Song, Artist",
+            album: nil,
+            duration: 180,
+            videoId: "video-refined"
+        ))
+        #expect(service.currentLyrics == .unavailable)
+
+        // The page reports how the track is really spelled; the same video id is searched again.
+        await service.fetchLyrics(for: LyricsSearchInfo(
+            title: "Real Title",
+            artist: "Real Artist",
+            album: nil,
+            duration: 180,
+            videoId: "video-refined"
+        ))
+
+        #expect(service.currentLyrics == .synced(correct))
+        #expect(await provider.callCount() == 2)
+    }
+
+    @Test("An unchanged title is served from the cache without searching again")
+    func unchangedTextDoesNotResearch() async {
+        let synced = Self.makeSyncedLyrics(source: "Same Source", lineText: "Same line")
+        let provider = MockLyricsProvider(name: "SameTextProvider", result: .synced(synced))
+        let service = SyncedLyricsService(providers: [provider])
+
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-same"))
+        await service.fetchLyrics(for: Self.makeSearchInfo(videoId: "video-same"))
+
+        #expect(service.currentLyrics == .synced(synced))
+        #expect(await provider.callCount() == 1)
+    }
+
     private static func makeSearchInfo(videoId: String) -> LyricsSearchInfo {
         LyricsSearchInfo(
             title: "Test Song",

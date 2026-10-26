@@ -119,31 +119,45 @@ enum ParsingHelpers {
     }
 
     /// Extracts artists from subtitle data.
+    ///
+    /// A card's subtitle is not a byline alone: it is the card's whole second line — its content type
+    /// ("Song", "Album"), the separators, sometimes the duration, the year or the view count. Taking
+    /// every run made the card's own word for what it is an artist name, which is where a byline like
+    /// "Song, Artist" came from. Runs that carry a browse endpoint are the artists; when none does (an
+    /// uploaded track exposes its artist as plain text), the remaining text runs are used instead.
     static func extractArtists(from data: [String: Any]) -> [Artist] {
-        var artists: [Artist] = []
-
-        if let subtitleData = data["subtitle"] as? [String: Any],
-            let runs = subtitleData["runs"] as? [[String: Any]]
-        {
-            for run in runs {
-                if let text = run["text"] as? String,
-                    text != " • ", text != " & ", text != ", "
-                {
-                    if let endpoint = run["navigationEndpoint"] as? [String: Any],
-                        let browseEndpoint = endpoint["browseEndpoint"] as? [String: Any],
-                        let artistId = browseEndpoint["browseId"] as? String
-                    {
-                        artists.append(Artist(id: artistId, name: text))
-                    } else if !text.isEmpty {
-                        // Generate stable ID from artist name when no browse ID available
-                        let stableArtistId = Self.stableId(title: "artist", components: text)
-                        artists.append(Artist(id: stableArtistId, name: text))
-                    }
-                }
-            }
+        guard let subtitleData = data["subtitle"] as? [String: Any],
+              let runs = subtitleData["runs"] as? [[String: Any]]
+        else {
+            return []
         }
 
-        return artists
+        var named: [(text: String, id: String?)] = []
+        for (index, run) in runs.enumerated() {
+            guard let text = run["text"] as? String,
+                  !text.isEmpty,
+                  !Self.isArtistSeparator(text),
+                  // The card's content type heads the subtitle; an artist can be called "Artist"
+                  // too, so only the leading run is read that way.
+                  !Self.isMetadataText(text, includingContentType: index == 0)
+            else { continue }
+            let browseId = ((run["navigationEndpoint"] as? [String: Any])?["browseEndpoint"]
+                as? [String: Any])?["browseId"] as? String
+            named.append((text, browseId.flatMap { Artist.isNavigableId($0) ? $0 : nil }))
+        }
+
+        let navigable = named.compactMap { entry in
+            entry.id.map { Artist(id: $0, name: entry.text) }
+        }
+        if !navigable.isEmpty {
+            return navigable
+        }
+
+        // Uploaded tracks expose the artist as plain text with no browse endpoint; the remaining runs
+        // are still the best byline there is.
+        return named.map { entry in
+            Artist(id: Self.stableId(title: "artist", components: entry.text), name: entry.text)
+        }
     }
 
     /// Extracts subtitle text from data.
@@ -476,8 +490,8 @@ enum ParsingHelpers {
 
     /// Returns true for byline runs that carry metadata rather than an artist name
     /// (content type labels, durations, view/play counts, song counts, years, etc.).
-    private static func isMetadataText(_ text: String) -> Bool {
-        if Self.contentTypeKeywords.contains(text)
+    private static func isMetadataText(_ text: String, includingContentType: Bool = true) -> Bool {
+        if (includingContentType && Self.contentTypeKeywords.contains(text))
             || Self.parseDuration(text) != nil
             || Self.extractSongCount(from: text) != nil
             || Self.isStandaloneYear(text)

@@ -76,7 +76,26 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     var webViewLoadingLingerDuration: TimeInterval = PlayerBarLoadingLinger.tail
 
     /// Currently playing track.
-    var currentTrack: Song?
+    ///
+    /// Every change of its title or video id is logged (`NOWPLAYING`), together with the code that
+    /// wrote it, because a wrong title in any now-playing surface is a write to this one value: the
+    /// player bar, the Now Playing column and the fullscreen player all render it.
+    var currentTrack: Song? {
+        didSet {
+            let previous = oldValue
+            guard previous?.title != currentTrack?.title || previous?.videoId != currentTrack?.videoId else {
+                return
+            }
+            DiagnosticsLogger.player.notice(
+                "NOWPLAYING '\(previous?.title ?? "nil", privacy: .public)' (\(previous?.videoId ?? "-", privacy: .public)) -> '\(self.currentTrack?.title ?? "nil", privacy: .public)' (\(self.currentTrack?.videoId ?? "-", privacy: .public))"
+            )
+            let frames = Thread.callStackSymbols.dropFirst().prefix(8).map { frame -> String in
+                let parts = frame.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+                return parts.count == 4 ? String(parts[3]) : String(frame)
+            }.joined(separator: " <- ")
+            DiagnosticsLogger.player.debug("NOWPLAYING writer: \(frames, privacy: .public)")
+        }
+    }
 
     /// The title and (separator-normalized) artist the WebView last observed for the
     /// playing track.
@@ -184,6 +203,58 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// The video ID that needs to be played in the mini player.
     var pendingPlayVideoId: String?
+
+    // MARK: - In-Page Playback State
+
+    /// What this document's player can do (see ``WebPagePlaybackCapability``).
+    @ObservationIgnored var pagePlaybackCapability: WebPagePlaybackCapability = .unknown
+
+    /// Watchdog for a track the page was asked to start without a document load.
+    @ObservationIgnored var inPagePlayWatchdog: Task<Void, Never>?
+
+    /// The track Kaset is still waiting for the page to prove it is playing (see ``WebQueueSettleRules``).
+    @ObservationIgnored var pageSettleVideoId: String?
+    /// How many in-place corrections the settle check may still make for ``pageSettleVideoId``.
+    @ObservationIgnored var pageSettleReassertionsLeft: Int = 0
+    /// The pending settle check.
+    @ObservationIgnored var pageSettleTask: Task<Void, Never>?
+
+    /// When the near-end handler last advanced the queue.
+    ///
+    /// Near the end of a track the WebView reports several times as the page moves on, so an
+    /// unexpected track can be seen twice in a row. Advancing on each sighting skipped a queue row.
+    @ObservationIgnored var lastNearEndAdvanceInstant: ContinuousClock.Instant?
+
+    /// When Kaset last started a row *because the previous track ended*.
+    ///
+    /// The page finishes its own advance after reporting that end, so a row started in that gap cannot
+    /// have been skipped by the user: a report of another track is that leftover advance (see
+    /// ``isWithinTrackStartGrace``).
+    @ObservationIgnored var currentRowStartedAt: ContinuousClock.Instant?
+
+    /// Set where a track ending advances the queue, and consumed by the start that follows it.
+    @ObservationIgnored var pendingStartGrace: ContinuousClock.Instant?
+
+    /// The track Kaset most recently started, and when.
+    ///
+    /// Right after a start the page's player bar can still paint the previous state under the new
+    /// video's id; see ``isWithinStartedTrackTextGrace(_:)``.
+    @ObservationIgnored var lastStartedTrack: (videoId: String, at: ContinuousClock.Instant)?
+
+    /// Tracks playback has left recently, their text, and when it left them.
+    ///
+    /// The page goes on reporting the track it is replacing for a moment after a start (a poll that
+    /// raced the swap, an update queued before it). Believing such a report moved the queue pointer
+    /// back a row and flashed the previous song's title in the now-playing surfaces — see
+    /// ``isObservationOfDepartedTrack(_:title:)``.
+    @ObservationIgnored var departedTracks: [(videoId: String, titles: Set<String>, at: ContinuousClock.Instant)] = []
+
+    /// Whether an advance caused by a track ending is running.
+    ///
+    /// Two signals can report the same end (the page's `ended` event and a metadata observation near
+    /// the end of the song), and `next()` is not re-entrant: it moves the index before it awaits, so a
+    /// second call lands one row further. Only one automatic advance may run at a time.
+    @ObservationIgnored var isAutomaticQueueAdvanceInFlight = false
 
     /// Whether the user has successfully interacted at least once this session.
     /// After first successful playback, we can auto-play without showing the popup.
@@ -801,6 +872,9 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
+        // Playback is being decided here now: an in-place start or settle check still in flight for
+        // the previous track must not act on a queue that has moved on.
+        self.cancelPagePlaybackWatchdogs()
 
         // See `play(song:webLoadStrategy:episode:)`: release the previous video's per-track state.
         // Compare against the last loaded video so callers that update `currentTrack` before
@@ -815,6 +889,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         // artwork until `fetchSongMetadata` happened to answer.
         let knownThumbnailURL = (self.currentTrack?.videoId == videoId ? self.currentTrack?.thumbnailURL : nil)
             ?? self.queue.first(where: { $0.videoId == videoId })?.thumbnailURL
+        let previousTrack = self.currentTrack
         self.currentTrack = Song(
             id: videoId,
             title: "Loading...",
@@ -833,6 +908,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
 
         self.pendingPlayVideoId = videoId
+        self.applyPendingStartGrace()
+        self.noteTrackStart(from: previousTrack, to: videoId)
+
+        // The position and the length belong to the track that just ended. Keeping them would leave the
+        // player bar at the old song's position, make the *next* observation look like the end of a song
+        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time — and hand the
+        // lyrics search another track's length, which is what its version matching uses.
+        self.progress = 0
+        self.duration = 0
 
         self.applyPlaybackKindForPlayback(videoId: videoId, isPodcast: false)
         SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
@@ -874,7 +958,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.state = .loading
         self.songNearingEnd = false
         self.shouldSuppressAutoplayAfterQueueEnd = false
-        let previousVideoId = self.currentTrack?.videoId
+        // Playback is being decided here now: an in-place start or settle check still in flight for
+        // the previous track must not act on a queue that has moved on.
+        self.cancelPagePlaybackWatchdogs()
+        let previousTrack = self.currentTrack
         self.currentTrack = song
         // A paired music video is a video surface for the sidebar toggle even though the song plays.
         self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
@@ -883,7 +970,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         // WebView metadata change, so `updateTrackMetadata`'s `trackChanged` reconciliation never
         // runs. Reset the outgoing song's like/library state here so it cannot stick to the
         // incoming song.
-        if previousVideoId != song.videoId {
+        if previousTrack?.videoId != song.videoId {
             self.resetTrackStatus()
         }
 
@@ -916,6 +1003,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         // it). `fetchSongMetadata` below, and the WebView's own observation, fill an unknown status in.
 
         self.pendingPlayVideoId = song.videoId
+        self.applyPendingStartGrace()
+        self.noteTrackStart(from: previousTrack, to: song.videoId)
+
+        // The position and the length belong to the track that just ended. Keeping them would leave the
+        // player bar at the old song's position, make the *next* observation look like the end of a song
+        // (see `isInsideNearEndTransitionWindow`) — which advanced the queue a second time — and hand the
+        // lyrics search another track's length, which is what its version matching uses.
+        self.progress = 0
+        self.duration = 0
 
         self.applyPlaybackKindForPlayback(
             videoId: song.videoId, isPodcast: self.isPodcastTrack(song))

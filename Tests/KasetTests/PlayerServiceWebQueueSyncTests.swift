@@ -328,11 +328,14 @@ struct PlayerServiceWebQueueSyncTests {
 
         await self.playerService.playQueue(songs, startingAt: 0)
 
+        // The bar is still rendering the previous song while v1 loads: its text is not v1's, and only
+        // the bar's own track id can say so (a title alone cannot: see the card-adoption test).
         self.playerService.updateTrackMetadata(
             title: "Private Eyes",
             artist: "Daryl Hall & John Oates",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v0"
         )
 
         #expect(self.playerService.currentTrack?.videoId == "v1")
@@ -655,11 +658,13 @@ struct PlayerServiceWebQueueSyncTests {
         await self.playerService.playQueue(songs, startingAt: 0)
         self.playerService.isKasetInitiatedPlayback = false
 
+        // The bar's link names the playing video, which is what anchors its words to this start.
         self.playerService.updateTrackMetadata(
             title: "Staender",
             artist: "SXTN",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v1"
         )
 
         #expect(self.playerService.currentTrack?.artistsDisplay == "SXTN")
@@ -669,7 +674,8 @@ struct PlayerServiceWebQueueSyncTests {
             title: "Staender",
             artist: "Terror Jr • 3 Strikes • 2016",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v1"
         )
         #expect(self.playerService.currentTrack?.artistsDisplay == "Terror Jr, 3 Strikes, 2016")
     }

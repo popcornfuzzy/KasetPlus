@@ -16,6 +16,12 @@ extension SingletonPlayerWebView {
             let lastAdState = null;
             const UPDATE_THROTTLE_MS = 500; // Throttle updates to max 2/sec
             const POLL_INTERVAL_MS = 1000; // Poll at 1Hz during playback (reduced from 250ms)
+            const TAIL_POLL_INTERVAL_MS = 1000;
+            // How long the observer keeps watching after a track ends. Playback can continue into a
+            // track the app did not start (the page's own advance, autoplay), and polling that
+            // stopped with the ended video left the app showing the song that had finished.
+            const TAIL_POLL_TICKS = 12;
+            let tailPollId = null;
 
             // Volume enforcement: track target volume set by Swift
             // Don't set a default - only enforce when explicitly set by Swift
@@ -80,8 +86,11 @@ extension SingletonPlayerWebView {
                     // (auto-advance, SPA navigation, button clicks)
                     video.addEventListener('playing', () => enforceVolumeNow());
                     video.addEventListener('pause', stopPolling);
-                    video.addEventListener('ended', () => {
-                        sendTrackEnded();
+                    video.addEventListener('ended', (event) => {
+                        sendTrackEnded(event);
+                        // Keep reporting for a beat: the page may advance its own queue into the next
+                        // track, and that transition is exactly what the app has to see.
+                        startTailPolling();
                         stopPolling();
                     });
                     video.addEventListener('waiting', () => sendUpdate()); // Buffer state
@@ -234,7 +243,24 @@ extension SingletonPlayerWebView {
                 }
             };
 
+            function stopTailPolling() {
+                if (tailPollId) {
+                    clearInterval(tailPollId);
+                    tailPollId = null;
+                }
+            }
+
+            function startTailPolling() {
+                if (tailPollId) return;
+                let remaining = TAIL_POLL_TICKS;
+                tailPollId = setInterval(() => {
+                    sendUpdate();
+                    if (--remaining <= 0) { stopTailPolling(); }
+                }, TAIL_POLL_INTERVAL_MS);
+            }
+
             function startPolling() {
+                stopTailPolling();
                 if (isPollingActive) return;
                 isPollingActive = true;
 
@@ -273,11 +299,37 @@ extension SingletonPlayerWebView {
                 sendUpdate();
             }
 
-            function sendTrackEnded() {
-                const endedVideoId = lastVideoId || currentVideoId();
+            let lastEndedVideoId = '';
+            let lastEndedAt = 0;
+            function sendTrackEnded(event) {
+                // The track that ended is the one the player still holds when the event fires; reporting
+                // `lastVideoId` could name the next track if a state update won the race.
+                const endedVideoId = currentVideoId() || lastVideoId;
+                const now = Date.now();
+                // One end per track: a second report for the same track within seconds would advance
+                // Kaset's queue one row too far.
+                if (endedVideoId && endedVideoId === lastEndedVideoId && now - lastEndedAt < 4000) {
+                    return;
+                }
+                lastEndedVideoId = endedVideoId;
+                lastEndedAt = now;
+
+                // Where the media actually stopped. An end at the very start of the track is a load
+                // the player did not honour (it kept the old position), not this track finishing, and
+                // Kaset must not advance on it.
+                let endedAt = 0;
+                let endedDuration = 0;
+                try {
+                    const video = event && event.target ? event.target : document.querySelector('video');
+                    endedAt = video && isFinite(video.currentTime) ? video.currentTime : 0;
+                    endedDuration = video && isFinite(video.duration) ? video.duration : 0;
+                } catch (error) {}
+
                 bridge.postMessage({
                     type: 'TRACK_ENDED',
-                    videoId: endedVideoId
+                    videoId: endedVideoId,
+                    progress: endedAt,
+                    duration: endedDuration
                 });
             }
 
@@ -300,6 +352,21 @@ extension SingletonPlayerWebView {
 
                     const progressBar = document.querySelector('#progress-bar');
 
+                    // The track the player bar itself is describing. It lags an in-page track swap:
+                    // its text then belongs to the previous track while the player already plays the
+                    // new one, and Swift must not record another song's title and artist for this one.
+                    function playerBarVideoId() {
+                        try {
+                            const bar = document.querySelector('ytmusic-player-bar');
+                            if (!bar) return '';
+                            const link = bar.querySelector('a[href*="v="]');
+                            if (!link) return '';
+                            return new URL(link.href, window.location.href).searchParams.get('v') || '';
+                        } catch (error) {
+                            return '';
+                        }
+                    }
+
                     // Extract track metadata
                     const titleEl = document.querySelector('.ytmusic-player-bar.title');
                     const artistEl = document.querySelector('.ytmusic-player-bar.byline');
@@ -319,12 +386,23 @@ extension SingletonPlayerWebView {
                     let thumbnailUrl = '';
 
                     // Prefer player API metadata when the DOM appears to be lagging behind the actual video.
+                    //
+                    // The player API describes the video it holds, so its text is the freshest thing the
+                    // page has after an in-page swap — unlike the bar's DOM, which can still be showing
+                    // the previous song. The bar's *link* is not proof that its text caught up: it can name
+                    // the new video while its title still reads as the old one, which left the previous
+                    // song's title on screen for good when the text was trusted. `metadataFromPlayer`
+                    // says which source won, so Swift can tell "a stale bar" (keep what it has) from
+                    // "the player's own words" (believe them).
+                    const barVideoId = playerBarVideoId();
+                    let metadataFromPlayer = false;
                     if (playerTitle && title && playerTitle !== title) {
                         title = playerTitle;
                         if (playerArtist) artist = playerArtist;
+                        metadataFromPlayer = true;
                     } else {
-                        if (!title && playerTitle) title = playerTitle;
-                        if (!artist && playerArtist) artist = playerArtist;
+                        if (!title && playerTitle) { title = playerTitle; metadataFromPlayer = true; }
+                        if (!artist && playerArtist) { artist = playerArtist; metadataFromPlayer = true; }
                     }
 
                     // Get the thumbnail URL from the image element
@@ -374,14 +452,28 @@ extension SingletonPlayerWebView {
                         }
                     }
 
+                    // The media element is the authority on the track that is loaded and on how long it
+                    // is; the progress bar's DOM attributes lag an in-page swap and would hand Kaset the
+                    // previous track's length (which the lyrics search uses to tell versions apart).
+                    const mediaDuration = video && isFinite(video.duration) && video.duration > 0
+                        ? Math.round(video.duration)
+                        : 0;
+                    const mediaProgress = video && isFinite(video.currentTime)
+                        ? Math.round(video.currentTime)
+                        : 0;
+                    const barProgress = progressBar ? parseInt(progressBar.getAttribute('value') || '0') : 0;
+                    const barDuration = progressBar ? parseInt(progressBar.getAttribute('aria-valuemax') || '0') : 0;
+
                     bridge.postMessage({
                         type: 'STATE_UPDATE',
                         isPlaying: isPlaying,
-                        progress: progressBar ? parseInt(progressBar.getAttribute('value') || '0') : 0,
-                        duration: progressBar ? parseInt(progressBar.getAttribute('aria-valuemax') || '0') : 0,
+                        progress: mediaDuration > 0 ? mediaProgress : barProgress,
+                        duration: mediaDuration > 0 ? mediaDuration : barDuration,
+                        metadataFromPlayer: metadataFromPlayer,
                         title: title,
                         artist: artist,
                         videoId: videoId,
+                        barVideoId: barVideoId,
                         thumbnailUrl: thumbnailUrl,
                         trackChanged: trackChanged,
                         likeStatus: likeStatus,

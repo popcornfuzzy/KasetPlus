@@ -35,6 +35,14 @@ final class SyncedLyricsService {
     private var fetchGeneration = 0
     private var inFlightSearches: [String: InFlightSearch] = [:]
 
+    /// The title and byline each result was searched with.
+    ///
+    /// A result is only as good as the words it was found with: a search that ran against a card's or
+    /// an earlier track's text can return another song's lyrics, and serving that result forever because
+    /// it is keyed by video id is how wrong lyrics stay on screen. Remembering the words is what lets a
+    /// refined title re-run the search instead of keeping the miss.
+    private var searchedTexts: [String: String] = [:]
+
     init(providers: [LyricsProvider]? = nil, cacheStore: LyricsCacheStore? = nil) {
         self.providers = providers ?? Self.providersForCurrentSettings()
         self.cacheStore = cacheStore
@@ -69,6 +77,7 @@ final class SyncedLyricsService {
         self.errorMessage = nil
         self.isLoading = false
         self.searchingForBetterLyrics = false
+        self.searchedTexts.removeAll()
         self.resetVariants()
     }
 
@@ -86,6 +95,7 @@ final class SyncedLyricsService {
             self.currentLyricsVideoId = nil
             self.isLoading = false
             self.searchingForBetterLyrics = false
+            self.searchedTexts.removeAll()
             self.resetVariants()
         }
     }
@@ -103,10 +113,19 @@ final class SyncedLyricsService {
             return
         }
 
+        let searchText = Self.searchText(for: info)
+        // The words a result was found with changed (a card's byline replaced by the page's, an artist
+        // YouTube refined): the result on screen or in the cache may be another song's.
+        let textChanged = self.searchedTexts[info.videoId].map { $0 != searchText } ?? false
+
         // A presentation transition can make fullscreen and sidebar request the
         // same track at nearly the same time. Share that search rather than
-        // letting one view invalidate the other with a second request.
-        if !forceRefresh, let inFlight = self.inFlightSearches[info.videoId] {
+        // letting one view invalidate the other with a second request — unless the
+        // search in flight was started with other words, whose result would be another song's.
+        if !forceRefresh,
+           let inFlight = self.inFlightSearches[info.videoId],
+           self.searchedTexts[info.videoId] == searchText
+        {
             self.isLoading = true
             self.loadingProvider = self.providers.first?.name
             let resolved = await inFlight.flight.value()
@@ -114,10 +133,11 @@ final class SyncedLyricsService {
             return
         }
 
-        // Lyrics are already loaded for this track. Serve them immediately
-        // instead of searching again — opening fullscreen (or re-opening the
-        // sidebar) must not re-run the provider pipeline.
+        // Lyrics are already loaded for this track, from these same words. Serve them immediately
+        // instead of searching again — opening fullscreen (or re-opening the sidebar) must not re-run
+        // the provider pipeline.
         if !forceRefresh,
+           !textChanged,
            self.currentLyricsVideoId == info.videoId,
            self.currentLyrics.isAvailable
         {
@@ -129,9 +149,10 @@ final class SyncedLyricsService {
 
         self.fetchGeneration += 1
         let requestID = self.fetchGeneration
-        let cached = forceRefresh ? nil : self.cachedResult(for: info.videoId)
+        let cached = forceRefresh || textChanged ? nil : self.cachedResult(for: info.videoId)
 
         if let cached {
+            self.searchedTexts[info.videoId] = self.searchedTexts[info.videoId] ?? searchText
             self.apply(cached, provider: Self.source(of: cached), videoId: info.videoId, requestID: requestID)
             await self.loadVariants(for: info)
             return
@@ -155,6 +176,7 @@ final class SyncedLyricsService {
         let flightID = UUID()
         let flight = SearchFlight()
         let providers = self.providers
+        self.searchedTexts[info.videoId] = searchText
         self.inFlightSearches[info.videoId] = InFlightSearch(id: flightID, flight: flight)
 
         // The search runs directly in the caller's task; the shared flight lets
@@ -317,6 +339,13 @@ final class SyncedLyricsService {
         guard let result else { return nil }
         self.cache[videoId] = result
         return result
+    }
+
+    /// The identity of the text a search would run with, normalized the way the providers match.
+    private static func searchText(for info: LyricsSearchInfo) -> String {
+        let title = LyricsArtistNormalizer.normalizeTitleForSearch(info.title)
+        let artist = LyricsArtistNormalizer.normalizeForSearch(info.artist)
+        return "\(title)|\(artist)"
     }
 
     private func store(_ result: LyricResult, for videoId: String) {
