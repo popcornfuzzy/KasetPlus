@@ -123,7 +123,12 @@ struct NowPlayingSidebarView: View {
             .onChange(of: self.playerService.observedWebMetadata) { _, _ in
                 self.retryLyricsLoadIfMetadataImproved()
             }
-            .onChange(of: self.playerService.currentTrack?.title) { _, _ in
+            .onChange(of: self.playerService.currentTrack?.title) { _, newTitle in
+                // What this column was handed, next to what the service holds: a mismatch here is the
+                // column rendering a value the player bar never saw.
+                DiagnosticsLogger.ui.notice(
+                    "TRACE sidebar title -> '\(newTitle ?? "nil", privacy: .public)' (service: '\(self.playerService.currentTrack?.title ?? "-", privacy: .public)' / \(self.playerService.currentTrack?.videoId ?? "-", privacy: .public))"
+                )
                 self.startLyricsLoad(for: self.playerService.currentTrack?.videoId)
             }
             .onChange(of: self.playerService.duration) { _, newDuration in

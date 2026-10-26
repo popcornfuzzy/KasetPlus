@@ -47,6 +47,80 @@ extension PlayerService {
         return ContinuousClock.now - startedAt < Self.trackStartGrace
     }
 
+    /// How long a report of the track playback has just left is treated as a stale report.
+    ///
+    /// The page keeps reporting the outgoing track for a moment after it is told to play another one: a
+    /// poll that raced the swap, an update queued before it, the bar's last paint. That is not the page
+    /// moving anywhere, so it may not move the queue or the now-playing text.
+    static let departedTrackWindow: Duration = .seconds(3)
+
+    /// How long after a start the page's own unanchored description of the new track is not believed.
+    ///
+    /// YouTube Music paints the player bar from its previous state for a moment after a track change:
+    /// a measured case reported the new video's id with another song's title 0.2 s after the start and
+    /// did not paint the real one until 1.4 s later. The bar's text is only trusted when the bar's own
+    /// link names the playing video; otherwise the player API is the anchor, and until it has the words
+    /// the row Kaset started keeps its own.
+    static let startedTrackTextGrace: Duration = .seconds(2.5)
+
+    /// Remembers that Kaset started `videoId`, and that it left `previous` to do so.
+    ///
+    /// A start is the only moment a track becomes *left*: the track that was playing is still in the
+    /// page for a beat afterwards, and its reports must not be believed over the row Kaset just started.
+    /// Starting a track that was left moments ago (Previous, a queue row picked again) takes it off the
+    /// list, because it is live again — otherwise its own reports would be ignored.
+    ///
+    /// The track's *text* is remembered as well as its id: a page mid-swap can pair the new video's id
+    /// with the outgoing song's words, and those words are the only way to tell that report from a
+    /// genuine correction of the row.
+    func noteTrackStart(from previous: Song?, to videoId: String) {
+        let now = ContinuousClock.now
+        self.lastStartedTrack = (videoId: videoId, at: now)
+        self.departedTracks.removeAll { now - $0.at >= Self.departedTrackWindow }
+        self.departedTracks.removeAll { $0.videoId == videoId }
+        guard let previous, previous.videoId != videoId else { return }
+        var titles = Set([Self.foldedMetadataText(previous.title)].filter { !$0.isEmpty })
+        if let observed = self.observedWebMetadata, observed.videoId == previous.videoId, !observed.title.isEmpty {
+            titles.insert(Self.foldedMetadataText(observed.title))
+        }
+        self.departedTracks.append((videoId: previous.videoId, titles: titles, at: now))
+    }
+
+    /// Whether `videoId` was started recently enough that the page may still be painting its predecessor.
+    func isWithinStartedTrackTextGrace(_ videoId: String) -> Bool {
+        guard let started = self.lastStartedTrack, started.videoId == videoId else { return false }
+        return ContinuousClock.now - started.at < Self.startedTrackTextGrace
+    }
+
+    /// Whether an observation describes a track playback has left within ``departedTrackWindow``.
+    ///
+    /// The id and the words are both checked. The id catches a report of the outgoing video; the words
+    /// catch the page pairing the new video's id with the outgoing song's title, which is what flashed
+    /// that title in the now-playing column right after a skip.
+    func isObservationOfDepartedTrack(_ observedVideoId: String?, title: String = "") -> Bool {
+        let now = ContinuousClock.now
+        let recent = self.departedTracks.filter { now - $0.at < Self.departedTrackWindow }
+        guard !recent.isEmpty else { return false }
+
+        if let observedVideoId, !observedVideoId.isEmpty {
+            let canonical = self.canonicalPlaybackVideoId(for: observedVideoId) ?? observedVideoId
+            if recent.contains(where: { $0.videoId == canonical }) { return true }
+        }
+
+        let folded = Self.foldedMetadataText(title)
+        guard !folded.isEmpty else { return false }
+        // The playing track's own words are never stale, even when another row shares its title (a
+        // live/studio pair, a replay): this only decides about text the page reports *for this start*.
+        if let current = self.currentTrack, Self.foldedMetadataText(current.title) == folded { return false }
+        return recent.contains { $0.titles.contains(folded) }
+    }
+
+    /// Case- and diacritic-insensitive form of a reported title, for telling one song's words from another's.
+    static func foldedMetadataText(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Puts the row Kaset is on back into the page after the page skipped it on its own.
     ///
     /// The page is the player, so this is the only way to undo its advance; a bar that merely returned

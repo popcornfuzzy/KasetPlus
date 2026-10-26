@@ -304,6 +304,9 @@ extension PlayerService {
     /// artwork reload the picture it is already showing (visible flicker), so the queue song's own
     /// thumbnail wins whenever it has one.
     func keepQueueSongVisible(_ song: Song, thumbnailUrl: String) {
+        self.logger.notice(
+            "TRACE queue row shown: '\(song.title, privacy: .public)' (\(song.videoId, privacy: .public))"
+        )
         let intendedThumbnailURL = song.thumbnailURL ?? self.normalizedThumbnailURL(thumbnailUrl)
         self.currentTrack = Song(
             id: song.id,
@@ -1054,10 +1057,24 @@ extension PlayerService {
         playerBarVideoId: String?,
         metadataFromPlayer: Bool = false
     ) {
-        self.logger.debug("Track metadata updated: \(title) - \(artist)")
+        self.logger.debug(
+            "TRACE observation id=\(observedVideoId ?? "-", privacy: .public) title='\(title, privacy: .public)' artist='\(artist, privacy: .public)' bar=\(playerBarVideoId ?? "-", privacy: .public) fromPlayer=\(metadataFromPlayer, privacy: .public) current=\(self.currentTrack?.videoId ?? "-", privacy: .public)"
+        )
 
         if self.isAdPlaying {
             self.logger.debug("Ignoring metadata reconciliation while ad is active")
+            return
+        }
+
+        // A page that was just told to play another track goes on reporting the one it is leaving for
+        // a moment — a poll that raced the swap, an update queued before it, the bar's last paint.
+        // That report is not the page moving back: believing it realigned the queue index to the row
+        // that had just been left and flashed its title in the now-playing surfaces, until the next
+        // report moved everything forward again. The row Kaset started is the one that is playing.
+        if self.isObservationOfDepartedTrack(self.normalizedObservedVideoId(observedVideoId), title: title) {
+            self.logger.notice(
+                "TRACE ignored departed-track report id=\(observedVideoId ?? "-", privacy: .public) title='\(title, privacy: .public)'"
+            )
             return
         }
 
@@ -1105,6 +1122,30 @@ extension PlayerService {
         // title/artist YouTube has since refined. Set before the divergence handlers
         // below, since any of them can reconcile or early-return; only a complete
         // observation counts, so a half-rendered player bar cannot satisfy the gate.
+        // Right after a start the page can still paint another song's words under the new video's id:
+        // a measured case reported the correct id with a two-tracks-old title 0.2 s after the advance
+        // and did not paint the real words until 1.4 s later. Text is therefore believed only when
+        // something anchors it to the playing video — the player API's own record, or a bar whose link
+        // names that video — and until then the row Kaset started keeps its words (and the lyrics gate
+        // stays closed). A bar naming another track is left to its own handling below.
+        if self.ignoresUnanchoredText(
+            title: title,
+            artist: displayArtist,
+            videoId: resolvedVideoId,
+            playerBarVideoId: playerBarVideoId,
+            metadataFromPlayer: metadataFromPlayer
+        ) {
+            self.logger.notice(
+                "TRACE ignored unanchored text for \(resolvedVideoId, privacy: .public): '\(title, privacy: .public)' - '\(displayArtist, privacy: .public)' (row says '\(self.currentTrack?.title ?? "-", privacy: .public)', bar=\(playerBarVideoId ?? "-", privacy: .public), fromPlayer=\(metadataFromPlayer, privacy: .public))"
+            )
+            // The page did name the video it holds; only its words are untrusted. The start is
+            // therefore confirmed, and a later report is not read as an intended-track mismatch.
+            if self.pendingPlayVideoId == resolvedVideoId {
+                self.isKasetInitiatedPlayback = false
+            }
+            return
+        }
+
         if !barDescribesAnotherTrack, !title.isEmpty, !displayArtist.isEmpty {
             self.observedWebMetadata = ObservedWebMetadata(
                 videoId: resolvedVideoId,
@@ -1112,6 +1153,7 @@ extension PlayerService {
                 artist: displayArtist
             )
         }
+
         if let queuedSong = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
             self.updateCurrentPlaybackKind(using: queuedSong)
         } else if self.currentTrack?.videoId == resolvedVideoId {
@@ -1217,6 +1259,9 @@ extension PlayerService {
             self.keepQueueSongVisible(current, thumbnailUrl: thumbnailUrl)
         } else if let queued = self.queue.first(where: { $0.videoId == resolvedVideoId }) {
             // Keep the row's album, duration, artwork and like state; take the page's text.
+            self.logger.notice(
+                "TRACE adopted page text for \(resolvedVideoId, privacy: .public): '\(title, privacy: .public)' - '\(displayArtist, privacy: .public)'"
+            )
             self.currentTrack = self.heldTrack(
                 queued,
                 describedAs: title,
@@ -1352,6 +1397,35 @@ extension PlayerService {
     private func keepPreloadedArtworkIfMissing(_ song: Song, thumbnailUrl: String) {
         guard song.thumbnailURL == nil, self.normalizedThumbnailURL(thumbnailUrl) != nil else { return }
         self.keepQueueSongVisible(song, thumbnailUrl: thumbnailUrl)
+    }
+
+    /// Whether a page description of the just-started track is too unattached to it to be believed.
+    ///
+    /// A title is anchored when the player API is the one reporting it (that record is for the video
+    /// the player holds), or when the player bar's own link names the playing video (the bar's text is
+    /// then that video's rendering). Anything else in the first moments after a start is the page still
+    /// painting its previous state — the wrong song's words under the right id.
+    private func ignoresUnanchoredText(
+        title: String,
+        artist: String,
+        videoId: String,
+        playerBarVideoId: String?,
+        metadataFromPlayer: Bool
+    ) -> Bool {
+        guard self.isWithinStartedTrackTextGrace(videoId),
+              !title.isEmpty, !artist.isEmpty,
+              let current = self.currentTrack, current.videoId == videoId,
+              !current.title.isEmpty, !current.artistsDisplay.isEmpty,
+              !self.metadataMatchesSong(title: title, artist: artist, song: current)
+        else { return false }
+
+        if metadataFromPlayer { return false }
+        if let bar = playerBarVideoId, !bar.isEmpty,
+           (self.canonicalPlaybackVideoId(for: bar) ?? bar) == videoId
+        {
+            return false
+        }
+        return true
     }
 
     /// The held track with the page's title and artist written over it and every other field left as the

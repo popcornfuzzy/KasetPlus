@@ -61,6 +61,29 @@ track for a moment. The observer now reports the track the bar itself names (`ba
 not a description of the playing track, and recording it would give the lyrics and byline another
 song's metadata. The queue row stays on screen until the page catches up.
 
+The opposite direction needs the same care: a start does not stop the page reporting the track it is
+leaving. Those late reports are the previous song, and believing them realigned the queue index *back*
+to the row that had just been left and flashed its title on screen until the next report corrected it.
+`updateTrackMetadata` therefore ignores an observation of a track left within 3 s
+(`PlayerService.departedTrackWindow`), and takes that track off the list if a start lands on it again.
+
+The id alone is not enough: mid-swap the page can pair the new video's id with the outgoing song's
+words, which by id looks exactly like a correction of the row. The departed track's text is remembered
+with it, and a report carrying those words is ignored as well — except when they are the playing row's
+own title, in which case there is nothing to correct and nothing to drop.
+
+A description of the *playing* video is a third case: it can carry the right id with another song's
+words, which no id-based rule can see. A trace of the real page showed it plainly — 0.2 s after a
+natural advance the page reported the correct new id with a two-tracks-old title, from the bar's DOM,
+with no bar link and nothing from the player API, and its real words arrived 1.4 s later. Adopting that
+is what briefly put another title on the Now Playing column, a column and a player bar that both render
+`currentTrack` and therefore cannot diverge.
+
+So for `startedTrackTextGrace` (2.5 s) after a start, contradicting text is taken only when it is
+anchored to the playing video: from the player API's record for it, or from a bar whose link names it.
+Otherwise the row Kaset started keeps its words and the lyrics gate stays closed. After the window the
+page's words may correct the row again.
+
 ### Seeing the next track
 
 The observer used to stop polling the moment a track ended, so whatever played next — the page's own

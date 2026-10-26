@@ -389,8 +389,12 @@ extension SingletonPlayerWebView {
                     //
                     // The player API describes the video it holds, so its text is the freshest thing the
                     // page has after an in-page swap — unlike the bar's DOM, which can still be showing
-                    // the previous song. `metadataFromPlayer` says which source won, so Swift can tell
-                    // "a stale bar" (keep what it has) from "the player's own words" (believe them).
+                    // the previous song. The bar's *link* is not proof that its text caught up: it can name
+                    // the new video while its title still reads as the old one, which left the previous
+                    // song's title on screen for good when the text was trusted. `metadataFromPlayer`
+                    // says which source won, so Swift can tell "a stale bar" (keep what it has) from
+                    // "the player's own words" (believe them).
+                    const barVideoId = playerBarVideoId();
                     let metadataFromPlayer = false;
                     if (playerTitle && title && playerTitle !== title) {
                         title = playerTitle;
@@ -469,7 +473,7 @@ extension SingletonPlayerWebView {
                         title: title,
                         artist: artist,
                         videoId: videoId,
-                        barVideoId: playerBarVideoId(),
+                        barVideoId: barVideoId,
                         thumbnailUrl: thumbnailUrl,
                         trackChanged: trackChanged,
                         likeStatus: likeStatus,

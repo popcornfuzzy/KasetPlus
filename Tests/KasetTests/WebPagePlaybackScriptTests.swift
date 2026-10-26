@@ -264,6 +264,81 @@ struct WebPagePlaybackScriptTests {
         #expect(state["progress"] as? Int == 13)
     }
 
+    @Test("The observer takes the API's words when the bar's own link has moved on but its text has not")
+    func observerTakesThePlayerApiTextWhenTheBarTextLags() throws {
+        let context = try #require(JSContext())
+        self.evaluate(
+            """
+            var postedMessages = [];
+            var videoListeners = {};
+            var setTimeout = function() { return 1; };
+            var setInterval = function() { return 1; };
+            var clearInterval = function() {};
+            function URL(href, base) {
+                this.searchParams = { get: function(name) { return 'b'; } };
+            }
+            function MutationObserver(callback) { this.callback = callback; }
+            MutationObserver.prototype.observe = function() {};
+            var video = {
+                paused: false,
+                currentTime: 5,
+                duration: 200,
+                addEventListener: function(name, handler) { videoListeners[name] = handler; }
+            };
+            var bar = {
+                querySelector: function() { return { href: 'https://music.youtube.com/watch?v=b' }; },
+                getAttribute: function() { return null; }
+            };
+            var document = {
+                readyState: 'complete',
+                body: {},
+                documentElement: {},
+                querySelector: function(selector) {
+                    if (selector === 'ytmusic-player-bar') { return bar; }
+                    if (selector === 'ytmusic-player') {
+                        return {
+                            playerApi: {
+                                getVideoData: function() {
+                                    return { video_id: 'b', title: 'New Song', author: 'New Artist' };
+                                }
+                            }
+                        };
+                    }
+                    if (selector === '.ytmusic-player-bar.title') { return { textContent: 'Old Song' }; }
+                    if (selector === '.ytmusic-player-bar.byline') { return { textContent: 'Old Artist' }; }
+                    if (selector === 'video') { return video; }
+                    return null;
+                },
+                querySelectorAll: function() { return []; },
+                getElementById: function() { return null; },
+                addEventListener: function() {}
+            };
+            var window = {
+                location: { href: 'https://music.youtube.com/watch?v=a' },
+                webkit: {
+                    messageHandlers: {
+                        singletonPlayer: {
+                            postMessage: function(message) { postedMessages.push(message); }
+                        }
+                    }
+                }
+            };
+            """,
+            in: context
+        )
+
+        self.evaluate(SingletonPlayerWebView.observerScript, in: context)
+
+        let state = try #require(self.messages("STATE_UPDATE", in: context).last)
+        // The bar's link already names the new video, but its text still renders the outgoing song.
+        // Trusting the link as proof that the text caught up left the old title on screen for good.
+        #expect(state["barVideoId"] as? String == "b")
+        #expect(state["videoId"] as? String == "b")
+        #expect(state["title"] as? String == "New Song")
+        #expect(state["artist"] as? String == "New Artist")
+        #expect(state["metadataFromPlayer"] as? Bool == true)
+    }
+
     // MARK: - Harness
 
     private func messages(_ type: String, in context: JSContext) -> [[String: Any]] {

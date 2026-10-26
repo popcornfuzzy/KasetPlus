@@ -262,7 +262,8 @@ struct WebPagePlaybackRulesTests {
         // the card's words.
         #expect(service.hasObservedWebMetadata(for: "v1") == false)
 
-        // The player reports the new track; the bar's link still points at the outgoing one.
+        // The player reports the new track; the bar's link still points at the outgoing one. The
+        // player API's own words are anchored to the video it holds, so they are taken at once.
         service.updateTrackMetadata(
             title: "Real Title",
             artist: "Real Artist",
@@ -294,11 +295,13 @@ struct WebPagePlaybackRulesTests {
         )
         await service.playQueue([cardRow, self.song("v2")], startingAt: 0)
 
+        // The bar's link names the playing video, which anchors its words to this start.
         service.updateTrackMetadata(
             title: "Real Title",
             artist: "Real Artist",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v1"
         )
 
         #expect(service.currentTrack?.title == "Real Title")
@@ -349,6 +352,210 @@ struct WebPagePlaybackRulesTests {
         #expect(service.currentIndex == 1)
         #expect(service.currentTrack?.videoId == "v2")
         #expect(service.currentTrack?.title == "Song v2")
+    }
+
+    @Test("A report of the track playback just left does not move the queue back")
+    func staleReportOfTheLeftTrackIsIgnored() async {
+        let service = PlayerService()
+        await service.playQueue(
+            [self.song("v1"), self.song("v2"), self.song("v3")],
+            startingAt: 0
+        )
+        // Kaset skips forward; the page confirms the new row a beat later.
+        await service.next()
+        service.isKasetInitiatedPlayback = false
+        #expect(service.currentIndex == 1)
+
+        // A poll that raced the swap still describes the track that was left behind, while the bar
+        // already names the new one. Believing it realigned the queue to the previous row and flashed
+        // its title in the now-playing surfaces until the next report corrected it.
+        service.updateTrackMetadata(
+            title: "Song v1",
+            artist: "Someone",
+            thumbnailUrl: "",
+            videoId: "v1",
+            playerBarVideoId: "v2"
+        )
+
+        #expect(service.currentIndex == 1)
+        #expect(service.currentTrack?.videoId == "v2")
+        #expect(service.currentTrack?.title == "Song v2")
+        // The stale report does not seed the lyrics gate either: the search still waits for the new
+        // track's own observation, never for the outgoing song's words.
+        #expect(service.observedWebMetadata == nil)
+        #expect(service.hasObservedWebMetadata(for: "v2") == false)
+    }
+
+    /// A queue row that already carries a title *and* a byline, so the page has something to contradict.
+    private func row(_ videoId: String) -> Song {
+        Song(
+            id: videoId,
+            title: "Song \(videoId)",
+            artists: [Artist(id: "artist-\(videoId)", name: "Artist \(videoId)")],
+            album: nil,
+            duration: 180,
+            thumbnailURL: nil,
+            videoId: videoId
+        )
+    }
+
+    @Test("Words with nothing tying them to the just-started track do not rename the row")
+    func unanchoredTextRightAfterAStartIsIgnored() async {
+        let service = PlayerService()
+        await service.playQueue([self.row("v1"), self.row("v2"), self.row("v3")], startingAt: 0)
+        await service.next()
+        #expect(service.currentTrack?.title == "Song v2")
+
+        // Measured on the real page: 0.2 s after a natural advance it reported the correct new video
+        // id with another song's title, from the bar's DOM, with no bar link and nothing from the
+        // player API. That is the page still painting its previous state, so it is not believed.
+        service.updateTrackMetadata(
+            title: "Hello (triple j Like A Version)",
+            artist: "daine",
+            thumbnailUrl: "",
+            videoId: "v2",
+            playerBarVideoId: "",
+            metadataFromPlayer: false
+        )
+
+        #expect(service.currentTrack?.title == "Song v2")
+        #expect(service.currentTrack?.artistsDisplay == "Artist v2")
+        #expect(service.observedWebMetadata == nil)
+    }
+
+    @Test("The player API's words are anchored to the track it holds")
+    func playerApiTextIsAdoptedRightAfterAStart() async {
+        let service = PlayerService()
+        await service.playQueue([self.row("v1"), self.row("v2")], startingAt: 0)
+        await service.next()
+
+        service.updateTrackMetadata(
+            title: "Real Title",
+            artist: "Real Artist",
+            thumbnailUrl: "",
+            videoId: "v2",
+            playerBarVideoId: "",
+            metadataFromPlayer: true
+        )
+
+        #expect(service.currentTrack?.title == "Real Title")
+        #expect(service.currentTrack?.artistsDisplay == "Real Artist")
+        #expect(service.hasObservedWebMetadata(for: "v2"))
+        #expect(service.observedWebMetadata?.artist == "Real Artist")
+    }
+
+    @Test("A bar whose link names the playing video anchors its words")
+    func barNamingThePlayingVideoIsAdoptedRightAfterAStart() async {
+        let service = PlayerService()
+        await service.playQueue([self.row("v1"), self.row("v2")], startingAt: 0)
+        await service.next()
+
+        service.updateTrackMetadata(
+            title: "Real Title",
+            artist: "Real Artist",
+            thumbnailUrl: "",
+            videoId: "v2",
+            playerBarVideoId: "v2",
+            metadataFromPlayer: false
+        )
+
+        #expect(service.currentTrack?.title == "Real Title")
+        #expect(service.observedWebMetadata?.title == "Real Title")
+    }
+
+    @Test("Once the start is no longer recent, the page's words may correct the row")
+    func unanchoredTextIsAdoptedAfterTheStartGrace() async {
+        let service = PlayerService()
+        await service.playQueue([self.row("v1"), self.row("v2")], startingAt: 0)
+        await service.next()
+        // The start is long past: whatever the page says now is not a leftover paint of the previous one.
+        service.lastStartedTrack = (videoId: "v2", at: ContinuousClock.now - .seconds(10))
+
+        service.updateTrackMetadata(
+            title: "Refined Title",
+            artist: "Refined Artist",
+            thumbnailUrl: "",
+            videoId: "v2",
+            playerBarVideoId: "",
+            metadataFromPlayer: false
+        )
+
+        #expect(service.currentTrack?.title == "Refined Title")
+        #expect(service.observedWebMetadata?.title == "Refined Title")
+    }
+
+    @Test("The outgoing song's words do not replace the row even under the new video's id")
+    func staleTextUnderTheNewVideoIdIsIgnored() async {
+        let service = PlayerService()
+        await service.playQueue(
+            [self.song("v1"), self.song("v2"), self.song("v3")],
+            startingAt: 0
+        )
+        await service.next()
+        service.isKasetInitiatedPlayback = false
+        #expect(service.currentTrack?.title == "Song v2")
+
+        // Mid-swap the page can pair the new video's id with the outgoing song's words. There is no way
+        // to tell that from a correction by id alone, and adopting it flashed the previous title in the
+        // now-playing column until the next report.
+        service.updateTrackMetadata(
+            title: "Song v1",
+            artist: "Someone",
+            thumbnailUrl: "",
+            videoId: "v2",
+            playerBarVideoId: "v2",
+            metadataFromPlayer: true
+        )
+
+        #expect(service.currentTrack?.videoId == "v2")
+        #expect(service.currentTrack?.title == "Song v2")
+        #expect(service.observedWebMetadata == nil)
+    }
+
+    @Test("The same report is believed once it is no longer a stale one")
+    func reportAfterTheDepartedWindowIsBelieved() async {
+        let service = PlayerService()
+        await service.playQueue(
+            [self.song("v1"), self.song("v2"), self.song("v3")],
+            startingAt: 0
+        )
+        await service.next()
+        service.isKasetInitiatedPlayback = false
+        // The page moving back to the previous row is a real move once it is not the report of a
+        // swap in flight; the guard is a window, not a ban on the track.
+        service.departedTracks = [
+            (videoId: "v1", titles: ["song v1"], at: ContinuousClock.now - .seconds(10)),
+        ]
+
+        service.updateTrackMetadata(
+            title: "Song v1",
+            artist: "Someone",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(service.currentIndex == 0)
+        #expect(service.currentTrack?.videoId == "v1")
+    }
+
+    @Test("Starting a track again makes its own reports believable")
+    func startingALeftTrackAgainClearsTheStaleWindow() async {
+        let service = PlayerService()
+        let songs = [self.song("v1"), self.song("v2")]
+        await service.playQueue(songs, startingAt: 0)
+        await service.next()
+
+        // Previous, or picking the row again, makes v1 the playing track rather than the left one.
+        await service.play(song: songs[0])
+        service.updateTrackMetadata(
+            title: "Song v1",
+            artist: "Someone",
+            thumbnailUrl: "",
+            videoId: "v1"
+        )
+
+        #expect(service.observedWebMetadata?.videoId == "v1")
+        #expect(service.observedWebMetadata?.title == "Song v1")
     }
 
     @Test("A player bar describing another track cannot rewrite the playing row")

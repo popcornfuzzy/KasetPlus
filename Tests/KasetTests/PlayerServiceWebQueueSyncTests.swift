@@ -658,11 +658,13 @@ struct PlayerServiceWebQueueSyncTests {
         await self.playerService.playQueue(songs, startingAt: 0)
         self.playerService.isKasetInitiatedPlayback = false
 
+        // The bar's link names the playing video, which is what anchors its words to this start.
         self.playerService.updateTrackMetadata(
             title: "Staender",
             artist: "SXTN",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v1"
         )
 
         #expect(self.playerService.currentTrack?.artistsDisplay == "SXTN")
@@ -672,7 +674,8 @@ struct PlayerServiceWebQueueSyncTests {
             title: "Staender",
             artist: "Terror Jr • 3 Strikes • 2016",
             thumbnailUrl: "",
-            videoId: "v1"
+            videoId: "v1",
+            playerBarVideoId: "v1"
         )
         #expect(self.playerService.currentTrack?.artistsDisplay == "Terror Jr, 3 Strikes, 2016")
     }

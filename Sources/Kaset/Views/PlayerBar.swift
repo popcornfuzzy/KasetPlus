@@ -459,6 +459,13 @@ struct PlayerBar: View {
                 .frame(maxWidth: 200, alignment: .leading)
             }
         }
+        // What this bar was handed, next to what the service holds: the Now Playing column renders the
+        // same value, so the two lines together say whether a wrong title is the value or a surface.
+        .onChange(of: self.playerService.currentTrack?.title) { _, newTitle in
+            DiagnosticsLogger.player.notice(
+                "TRACE bar title -> '\(newTitle ?? "nil", privacy: .public)' (service: '\(self.playerService.currentTrack?.title ?? "-", privacy: .public)' / \(self.playerService.currentTrack?.videoId ?? "-", privacy: .public))"
+            )
+        }
     }
 
     // MARK: - Seek Bar View (the expanded seek bar's row)

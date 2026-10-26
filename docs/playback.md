@@ -265,6 +265,42 @@ When the WebView reports a new `videoId`, Kaset treats that as authoritative
 even if the DOM title/artist are still stale. This avoids a race where YouTube
 switches tracks before the player bar text catches up.
 
+### Reports of the track just left
+
+A start does not silence the page's reporting for the track it is replacing. For a moment it still
+sends that track — a poll that raced the swap, an update queued before it, the bar's last paint — and
+believing one of those reports moved the queue pointer *back* a row and flashed the previous song's
+title in the now-playing surfaces until the next report moved it forward again.
+
+Every start therefore records where playback came from (`PlayerService.noteTrackStart(from:to:)`), and
+`updateTrackMetadata` ignores an observation of a track left within `departedTrackWindow` (3 s). The
+window is not a ban: once it passes, a page that really is on that row is followed. Starting a departed
+track again (Previous, a queue row picked again) takes it off the list, so its own reports are believed
+at once.
+
+The **words** are checked as well as the id. Mid-swap the page can pair the new video's id with the
+outgoing song's title, and by id alone that is indistinguishable from a genuine correction of the row —
+which is what flashed the previous title in the Now Playing column after a skip. A report whose title
+matches a departed track's (as Kaset displayed it, or as the page last described it) is therefore
+ignored too. Text that matches the playing row's own title is never treated as stale: the row already
+says it, so dropping it would only delay a row that is already right.
+
+### Text has to be anchored to the track it describes
+
+The Now Playing column and the player bar both render `currentTrack`, so they cannot disagree with
+each other — when the column showed another song's title for a moment, `currentTrack` itself had been
+rewritten. A trace of the real page showed who wrote it: 0.2 s after a natural advance the page
+reported the **correct new video id with a two-tracks-old title**, taken from the bar's DOM, with no
+bar link and nothing from the player API; its real words arrived 1.4 s after the start.
+
+So in the first `startedTrackTextGrace` (2.5 s) after a start, a description that contradicts the row
+is believed only when it is *anchored* to the playing video (`PlayerService.ignoresUnanchoredText`):
+the words came from the player API's own record, or the player bar's link names that video. Anything
+else is the page still painting its previous state. It is dropped whole — no display change, and no
+`observedWebMetadata`, so the lyrics search never runs against another song's words. Once the start is
+no longer recent the page's words may correct the row again, and a row that has no title or byline yet
+is filled at once either way.
+
 ### Which text is believed
 
 The observer reports whether the title and byline it sent came from the page's **player API**
@@ -273,6 +309,11 @@ actually holds, so after an in-page swap it is the freshest text on the page —
 be rendering the outgoing song. A bar that names another track is therefore not evidence against
 player-API text (`updateTrackMetadata(..., metadataFromPlayer:)`), and a start Kaset asked for can adopt
 and publish it at once instead of waiting for the bar to catch up.
+
+The API's text wins whenever it differs from the bar's, even when the bar's link already names the new
+video: a link that has moved on is not proof that the text has, and trusting the text there left the
+outgoing song's title on screen for good. What keeps that from flashing the *previous* song is the
+departed-track rule above — its id *and* its words — not a guess about which source is fresher.
 
 This matters beyond the now-playing bar: `PlayerService.observedWebMetadata` is the observation the
 lyrics pipeline gates on ("only search once metadata is updated") and searches with. When the gate could
