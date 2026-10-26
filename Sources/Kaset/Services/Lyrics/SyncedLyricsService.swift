@@ -149,7 +149,7 @@ final class SyncedLyricsService {
 
         self.fetchGeneration += 1
         let requestID = self.fetchGeneration
-        let cached = forceRefresh || textChanged ? nil : self.cachedResult(for: info.videoId)
+        let cached = forceRefresh || textChanged ? nil : self.cachedResult(for: info.videoId, searchText: searchText)
 
         if let cached {
             self.searchedTexts[info.videoId] = self.searchedTexts[info.videoId] ?? searchText
@@ -250,6 +250,10 @@ final class SyncedLyricsService {
         }
 
         guard requestID == self.fetchGeneration else { return }
+        // A cancelled search was cut short by a track change or by a caller that moved on; the
+        // providers were cancelled with it, so what came back is not the answer. Storing it would
+        // cache a miss that the next play reads as "this song has no lyrics".
+        guard !Task.isCancelled else { return }
         if !resolved.result.isAvailable {
             self.errorMessage = "No lyrics were found from the selected sources."
         }
@@ -334,8 +338,8 @@ final class SyncedLyricsService {
         self.apply(result, provider: lyrics.source, videoId: videoId, requestID: self.fetchGeneration)
     }
 
-    private func cachedResult(for videoId: String) -> LyricResult? {
-        let result = self.cache[videoId] ?? self.cacheStore?.load(for: videoId)
+    private func cachedResult(for videoId: String, searchText: String) -> LyricResult? {
+        let result = self.cache[videoId] ?? self.cacheStore?.load(for: videoId, searchText: searchText)
         guard let result else { return nil }
         self.cache[videoId] = result
         return result
@@ -350,7 +354,7 @@ final class SyncedLyricsService {
 
     private func store(_ result: LyricResult, for videoId: String) {
         self.cache[videoId] = result
-        self.cacheStore?.save(result, for: videoId)
+        self.cacheStore?.save(result, for: videoId, searchText: self.searchedTexts[videoId])
     }
 
     private func apply(_ result: LyricResult, provider: String?, videoId: String, requestID: Int) {

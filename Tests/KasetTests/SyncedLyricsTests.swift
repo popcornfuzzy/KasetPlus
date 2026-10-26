@@ -576,6 +576,63 @@ struct SyncedLyricsServiceTests {
         #expect(service.searchingForBetterLyrics == false)
     }
 
+    @Test("a cached result is dropped when the words a search runs with change")
+    func cachedResultIsDroppedWhenWordsChange() async throws {
+        let dir = try FileManager.default.temporaryDirectory
+            .appendingPathComponent("SyncedLyricsWordsTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = LyricsCacheStore(directory: dir, legacyFileURL: dir.appendingPathComponent("legacy.json"))
+        let lyrics = Self.makeSyncedLyrics(source: "LRCLIB", lineText: "A line")
+        let provider = MockLyricsProvider(name: "LRCLIB", result: .synced(lyrics))
+
+        // One play searched with the card's words and cached what it found under the video.
+        let first = SyncedLyricsService(providers: [provider], cacheStore: store)
+        await first.fetchLyrics(for: LyricsSearchInfo(
+            title: "Card Title", artist: "An Artist", album: nil, duration: 180, videoId: "video-words"
+        ))
+        #expect(await provider.callCount() == 1)
+        #expect(store.load(for: "video-words") != nil)
+
+        // A later play has the page's words for the same video. Serving that entry would put another
+        // song's lyrics under the right id.
+        let second = SyncedLyricsService(providers: [provider], cacheStore: store)
+        await second.fetchLyrics(for: LyricsSearchInfo(
+            title: "Page Title", artist: "An Artist", album: nil, duration: 180, videoId: "video-words"
+        ))
+
+        #expect(await provider.callCount() == 2, "the words changed, so the search runs again")
+        #expect(second.currentLyrics == .synced(lyrics))
+    }
+
+    @Test("a cancelled search does not cache its miss")
+    func cancelledSearchCachesNothing() async throws {
+        let dir = try FileManager.default.temporaryDirectory
+            .appendingPathComponent("SyncedLyricsCancelTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = LyricsCacheStore(directory: dir, legacyFileURL: dir.appendingPathComponent("legacy.json"))
+        // A provider that is still thinking when the caller is cancelled, and answers "nothing" because
+        // its own work was cancelled — which is not an answer about the song.
+        let provider = MockLyricsProvider(name: "Slow", capability: .plain) { _ in
+            try? await Task.sleep(for: .seconds(5))
+            return .unavailable
+        }
+        let service = SyncedLyricsService(providers: [provider], cacheStore: store)
+        let info = LyricsSearchInfo(
+            title: "Test Song", artist: "Test Artist", album: nil, duration: 180, videoId: "video-cancelled"
+        )
+
+        let search = Task { @MainActor in await service.fetchLyrics(for: info) }
+        while await provider.callCount() == 0 { await Task.yield() }
+        search.cancel()
+        await search.value
+
+        #expect(store.load(for: "video-cancelled") == nil, "a cancelled search is not a miss to remember")
+    }
+
     @Test("a single provider never shows the still-searching shimmer")
     func singleProviderHasNoShimmer() async {
         let synced = Self.makeSyncedLyrics(source: "Only Source", lineText: "Only line")

@@ -661,15 +661,22 @@ struct FullscreenNowPlayingView: View {
     /// previous track's metadata so a stale result can never land in the panel.
     @MainActor
     private func startLyricsLoad(for videoId: String?, forceRefresh: Bool = false) {
-        self.loadTask?.cancel()
-        self.loadTask = nil
-        guard let videoId else { return }
+        guard let videoId else {
+            self.loadTask?.cancel()
+            self.loadTask = nil
+            return
+        }
         // A new track, a refined metadata signature, or an explicit refresh all warrant a
-        // rerun; an unchanged track and metadata do not.
+        // rerun; an unchanged track and metadata do not. Deciding that *before* cancelling matters:
+        // these callers are `onChange`s that fire while a search is still in flight (playback
+        // starting, the title settling), and cancelling one of those left the track with no search
+        // at all until a refresh.
         guard forceRefresh
             || videoId != self.lastLoadedVideoId
             || self.lyricsSignature(for: videoId) != self.lastLoadedSignature
         else { return }
+
+        self.loadTask?.cancel()
         self.loadTask = Task { await self.loadLyricsWhenReady(for: videoId, forceRefresh: forceRefresh) }
     }
 

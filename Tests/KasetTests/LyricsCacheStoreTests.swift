@@ -19,6 +19,20 @@ struct LyricsCacheStoreTests {
         #expect(Self.jsonFiles(in: dir).count == 1)
     }
 
+    @Test("a result is not served for words it was not found with")
+    func cachedResultBelongsToItsWords() throws {
+        let dir = try Self.makeTempDirectory()
+        let store = LyricsCacheStore(directory: dir, legacyFileURL: dir.appendingPathComponent("legacy.json"))
+        let videoId = "video-words"
+        let result = LyricResult.plain(Lyrics(text: "Found with a card's words", source: "Test"))
+
+        #expect(store.save(result, for: videoId, searchText: "card title|artist"))
+        #expect(store.load(for: videoId, searchText: "card title|artist") == result)
+        #expect(store.load(for: videoId, searchText: "page title|artist") == nil, "the words changed: the entry is another song's")
+        // A caller with nothing to compare still reads it.
+        #expect(store.load(for: videoId) == result)
+    }
+
     @Test("cache files record the schema version that wrote them")
     func writesSchemaVersion() throws {
         let dir = try Self.makeTempDirectory()

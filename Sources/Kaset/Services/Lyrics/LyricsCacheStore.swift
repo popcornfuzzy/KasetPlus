@@ -12,15 +12,18 @@ import Foundation
 /// actor for quick reads/writes as well as from detached tasks for background
 /// migration work.
 struct LyricsCacheStore: Sendable {
-    /// Bumped whenever a change to parsing or to the lyrics model would make a
-    /// previously cached result wrong.
+    /// Bumped whenever a change to parsing, to the lyrics model, or to the words a search runs with
+    /// would make a previously cached result wrong.
     ///
     /// A stale payload still decodes cleanly — the model is the same, only the
     /// parse that produced it changed (backing vocals were once folded into the
     /// lead line, for example, and instrumental-gap paragraphs were once dropped,
     /// which hid the pause dots from word-synced lyrics) — so the version, not the
     /// schema, is the only signal that a cache file must be discarded and re-fetched.
-    static let schemaVersion = 3
+    ///
+    /// Version 4 records the words each result was found with (see ``save(_:for:searchText:)``),
+    /// and entries written before that carry none.
+    static let schemaVersion = 4
 
     /// Directory that holds one file per cached song.
     let directoryURL: URL
@@ -55,7 +58,11 @@ struct LyricsCacheStore: Sendable {
     /// Files written by an older `schemaVersion` are treated as a miss, so a
     /// change to how lyrics are parsed takes effect on the next play instead of
     /// leaving stale text on screen until the user clears the cache by hand.
-    func load(for videoId: String) -> LyricResult? {
+    ///
+    /// - Parameter searchText: the words a search would run with now. A result found with other words
+    ///   is a miss: the title or artist the player refined since would otherwise serve another song's
+    ///   lyrics under the right video id.
+    func load(for videoId: String, searchText: String? = nil) -> LyricResult? {
         let url = self.fileURL(for: videoId)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
@@ -63,6 +70,7 @@ struct LyricsCacheStore: Sendable {
             let data = try Data(contentsOf: url)
             let file = try JSONDecoder().decode(CacheFile.self, from: data)
             guard file.version == Self.schemaVersion else { return nil }
+            if let searchText, file.searchText != searchText { return nil }
             return file.result
         } catch {
             // A readable file in the pre-versioned format is also stale.
@@ -76,11 +84,11 @@ struct LyricsCacheStore: Sendable {
         }
     }
 
-    /// Writes cached lyrics for a song to its own file.
+    /// Writes cached lyrics for a song to its own file, with the words that found it.
     @discardableResult
-    func save(_ result: LyricResult, for videoId: String) -> Bool {
+    func save(_ result: LyricResult, for videoId: String, searchText: String? = nil) -> Bool {
         do {
-            let file = CacheFile(version: Self.schemaVersion, result: result)
+            let file = CacheFile(version: Self.schemaVersion, result: result, searchText: searchText)
             let data = try JSONEncoder().encode(file)
             try data.write(to: self.fileURL(for: videoId), options: .atomic)
             return true
@@ -225,10 +233,12 @@ struct LyricsCacheStore: Sendable {
 
 // MARK: - Per-song cache file
 
-/// One song's cache file: the schema version that wrote it plus the result.
+/// One song's cache file: the schema version that wrote it, the result, and the words it was found with.
 private struct CacheFile: Codable {
     let version: Int
     let result: LyricResult
+    /// The title and artist the search ran with, normalized the way the providers match.
+    let searchText: String?
 }
 
 // MARK: - Legacy single-file cache format

@@ -362,7 +362,18 @@ right video id.
 
 The search is also keyed by the words it used, not only by video id
 (`SyncedLyricsService.searchedTexts`): a result found with a card's or an earlier track's text is stale
-by definition, so a refined title re-runs the search instead of serving the wrong lyrics forever.
+by definition, so a refined title re-runs the search instead of serving the wrong lyrics forever. The
+on-disk cache records those words too (`LyricsCacheStore`, schema 4) and treats an entry found with
+other words as a miss, because `searchedTexts` is memory only: without it the first play after a
+metadata fix served the previous match — or its miss — for the life of the file.
+
+A cancelled search is not a miss. The lyrics loaders in all three surfaces
+(`LyricsView`, `NowPlayingSidebarView`, `FullscreenNowPlayingView`) start a task from `onChange`s that
+fire while one is running (playback starting, the title settling), so the loader decides whether a
+rerun is warranted *before* it cancels: cancelling first threw the search away and the guard then
+declined to start another, which left the track with no lyrics at all until a refresh. And a search
+whose task was cancelled records nothing — the providers were cancelled with it, so "nothing found"
+is an artefact of the cancellation, not an answer about the song.
 
 `STATE_UPDATE`'s `progress` and `duration` come from the media element when it has them, because the
 progress bar's DOM attributes lag a swap and would otherwise hand the lyrics search the previous
