@@ -201,9 +201,15 @@ Remote command center integration for media key support, and owner of the system
 - Routes commands to `PlayerService` → `SingletonPlayerWebView`
 - Pushes `currentTrack`'s title, byline, album and artwork into the WebView's media session, and pins
   that session's metadata so the page cannot replace it
+- Pins the session's `nexttrack`/`previoustrack` actions to Kaset's queue at the point the page registers
+  them, so the system's Next/Previous always reach `PlayerService` (no frame loop, so a closed window
+  cannot stale them)
+- Publishes no `MPNowPlayingInfoCenter` entry of its own: the WebView's card is a separate Now Playing
+  client, and a second publisher showed up as a second row in the panel
 
-**Note**: Now Playing is displayed from WKWebView's Media Session API, which is why the metadata is
-pushed there rather than through `MPNowPlayingInfoCenter`; see `docs/playback.md`.
+**Note**: Now Playing is displayed from WKWebView's Media Session API, which is why the metadata and the
+transport actions are pushed there rather than through `MPNowPlayingInfoCenter`. See `docs/playback.md`
+and [ADR-0038](adr/0038-pinned-media-session-actions.md).
 
 ### HapticService
 

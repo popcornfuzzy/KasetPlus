@@ -388,10 +388,12 @@ final class SingletonPlayerWebView {
             configuration.userContentController.addUserScript(adPruningScript)
         }
 
-        // Inject mediaSession override at document end without allowing duplicate RAF loops.
+        // The system's Next/Previous must reach Kaset's queue, not the page's own player. Written at
+        // document start so the page's registrations go through the pinned setter from its first
+        // script (see `mediaControlOverrideScript`).
         let mediaOverrideScript = WKUserScript(
             source: Self.mediaControlOverrideScript,
-            injectionTime: .atDocumentEnd,
+            injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(mediaOverrideScript)
@@ -1799,73 +1801,153 @@ extension SingletonPlayerWebView {
         """
     }
 
+    /// Pins the media session's Next/Previous actions to Kaset's queue.
+    ///
+    /// The page registers its own handlers — again on every playback event — and a page handler
+    /// advances *YouTube's* player, not Kaset's queue. Taking the four actions Kaset owns at the
+    /// registration point is what makes the system's buttons belong to the queue. It also removed the
+    /// reason this used to be re-applied from a `requestAnimationFrame` loop: WebKit stops producing
+    /// frames for a page whose only window was closed, so the loop went stale in exactly the state
+    /// background playback leaves the app in, and the page's handler won again.
+    ///
+    /// Installed at document start so the property is wrapped before the page's own scripts run, the
+    /// same way `nowPlayingMetadataScript` pins the session's metadata.
     static var mediaControlOverrideScript: String {
         """
         (function() {
-            if (typeof window.__kasetUseNextPrev !== 'boolean') {
-                try {
-                    window.__kasetUseNextPrev =
-                        localStorage.getItem('kasetUseNextPrev') === 'true';
-                } catch (e) {
-                    window.__kasetUseNextPrev = false;
-                }
+            if (window.__kasetMediaHandlers) { return; }
+
+            var state = { owner: null, original: null };
+
+            function mediaSession() {
+                try { return navigator.mediaSession || null; } catch (error) { return null; }
             }
 
-            var overrideFrameId = null;
-
-            function applyOverride() {
-                if (!window.__kasetUseNextPrev) {
-                    return;
-                }
+            // Whether the Now Playing widget shows next/previous rather than ±15s.
+            function wantsTrackButtons() {
                 try {
-                    var ms = navigator.mediaSession;
-                    ms.setActionHandler('seekforward', null);
-                    ms.setActionHandler('seekbackward', null);
-                    ms.setActionHandler('nexttrack', function() {
-                        window.webkit.messageHandlers.singletonPlayer
-                            .postMessage({ type: 'REMOTE_NEXT' });
-                    });
-                    ms.setActionHandler('previoustrack', function() {
-                        window.webkit.messageHandlers.singletonPlayer
-                            .postMessage({ type: 'REMOTE_PREVIOUS' });
-                    });
-                } catch (e) {}
-            }
-
-            function scheduleOverrideLoop() {
-                if (overrideFrameId !== null || !window.__kasetUseNextPrev) {
-                    return;
-                }
-
-                overrideFrameId = requestAnimationFrame(function() {
-                    overrideFrameId = null;
-                    if (!window.__kasetUseNextPrev) {
-                        return;
+                    if (typeof window.__kasetUseNextPrev === 'boolean') {
+                        return window.__kasetUseNextPrev;
                     }
-                    applyOverride();
-                    scheduleOverrideLoop();
-                });
+                    return localStorage.getItem('kasetUseNextPrev') === 'true';
+                } catch (error) { return false; }
             }
 
-            window.__kasetRefreshMediaControlStyle = function() {
-                applyOverride();
-                scheduleOverrideLoop();
+            function forward(type) {
+                try {
+                    window.webkit.messageHandlers.singletonPlayer.postMessage({ type: type });
+                } catch (error) {}
+            }
+
+            var handlers = {
+                nexttrack: function() { forward('REMOTE_NEXT'); },
+                previoustrack: function() { forward('REMOTE_PREVIOUS'); }
             };
 
-            window.__kasetRefreshMediaControlStyle();
-
-            // Re-apply on video events where YouTube re-registers handlers.
-            function attachVideoOverride() {
-                var v = document.querySelector('video');
-                if (!v || v.__kasetOverrideAttached) return;
-                v.__kasetOverrideAttached = true;
-                ['playing','loadedmetadata','loadeddata','canplay','seeked']
-                    .forEach(function(e) { v.addEventListener(e, applyOverride); });
+            function seekBy(direction) {
+                return function(details) {
+                    var video = document.querySelector('video');
+                    if (!video) { return; }
+                    var offset = (details && details.seekOffset) || 15;
+                    video.currentTime = direction > 0
+                        ? Math.min(video.duration, video.currentTime + offset)
+                        : Math.max(0, video.currentTime - offset);
+                };
             }
 
-            attachVideoOverride();
-            new MutationObserver(attachVideoOverride)
-                .observe(document.documentElement, {childList:true, subtree:true});
+            // Wraps the session's `setActionHandler` so the page cannot take the actions back.
+            function wrapRegistrations(session) {
+                if (state.owner === session) { return true; }
+
+                // WebKit exposes the method on the prototype; an engine that defines it on the
+                // instance is handled the same way by walking the chain.
+                var owner = session;
+                var descriptor = null;
+                while (owner) {
+                    descriptor = Object.getOwnPropertyDescriptor(owner, 'setActionHandler');
+                    if (descriptor) { break; }
+                    owner = Object.getPrototypeOf(owner);
+                }
+                if (!descriptor || typeof descriptor.value !== 'function') { return false; }
+
+                var original = descriptor.value;
+                var pinned = function(name, handler) {
+                    if (wantsTrackButtons()) {
+                        if (name === 'nexttrack' || name === 'previoustrack') {
+                            return original.call(this, name, handlers[name]);
+                        }
+                        if (name === 'seekforward' || name === 'seekbackward') {
+                            return original.call(this, name, null);
+                        }
+                    } else if (name === 'nexttrack' || name === 'previoustrack') {
+                        // The ±15s style owns the same slot; a page-registered track button would
+                        // replace it.
+                        return original.call(this, name, null);
+                    }
+                    return original.call(this, name, handler);
+                };
+
+                try {
+                    Object.defineProperty(owner, 'setActionHandler', {
+                        configurable: true,
+                        enumerable: descriptor.enumerable,
+                        writable: true,
+                        value: pinned
+                    });
+                } catch (error) {
+                    return false;
+                }
+
+                state.original = original;
+                state.owner = session;
+                return true;
+            }
+
+            // (Re)applies the style the setting asks for. Called at document start and again by
+            // `mediaControlStyleSyncScript` when the setting changes.
+            function applyStyle() {
+                var session = mediaSession();
+                if (!session) { return 'no-session'; }
+                wrapRegistrations(session);
+                if (state.owner !== session) { return 'not-installed'; }
+
+                var set = session.setActionHandler;
+                try {
+                    if (wantsTrackButtons()) {
+                        set.call(session, 'nexttrack', handlers.nexttrack);
+                        set.call(session, 'previoustrack', handlers.previoustrack);
+                        set.call(session, 'seekforward', null);
+                        set.call(session, 'seekbackward', null);
+                        return 'tracks';
+                    }
+                    set.call(session, 'nexttrack', null);
+                    set.call(session, 'previoustrack', null);
+                    set.call(session, 'seekforward', seekBy(1));
+                    set.call(session, 'seekbackward', seekBy(-1));
+                    return 'seek';
+                } catch (error) {
+                    return 'error';
+                }
+            }
+
+            window.__kasetMediaHandlers = {
+                refresh: applyStyle,
+                isPinned: function() { return state.owner !== null; }
+            };
+            window.__kasetRefreshMediaControlStyle = applyStyle;
+
+            applyStyle();
+
+            // A document whose media session is not there yet gets another chance as it settles; these
+            // fire once, so nothing here depends on the page rendering frames.
+            try {
+                if (document && typeof document.addEventListener === 'function') {
+                    document.addEventListener('DOMContentLoaded', applyStyle);
+                }
+                if (window && typeof window.addEventListener === 'function') {
+                    window.addEventListener('load', applyStyle);
+                }
+            } catch (error) {}
         })();
         """
     }

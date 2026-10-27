@@ -7,11 +7,13 @@ import os
 /// Manages remote command center integration for media key support, and keeps the system's Now
 /// Playing panel on the track Kaset is playing.
 ///
-/// The panel itself is fed by WKWebView's media session, not by `MPNowPlayingInfoCenter`: macOS reads
-/// the WebView as the app's player. YouTube Music writes that session from its own state, which is
-/// exactly what the panel must not show while the page plays Kaset's queue, so the session's metadata
-/// is pinned to `currentTrack` (see `nowPlayingMetadataScript`). Remote media keys are routed to
-/// `PlayerService`.
+/// macOS reads WKWebView's media session as the app's player, so the panel is WebKit's — YouTube Music
+/// writes that session from its own state, which is exactly what the panel must not show while the page
+/// plays Kaset's queue. Two things are therefore pinned at document start: the session's metadata to
+/// `currentTrack` (see `nowPlayingMetadataScript`) and its Next/Previous actions to Kaset's queue (see
+/// `mediaControlOverrideScript`), so the system's buttons belong to the queue with or without a window
+/// on screen. Kaset deliberately publishes no `MPNowPlayingInfoCenter` entry of its own: WebKit's card
+/// is a separate Now Playing client, and a second publisher is a second row in the panel (ADR-0038).
 @MainActor
 @Observable
 final class NowPlayingManager {
@@ -41,7 +43,7 @@ final class NowPlayingManager {
         self.observeNowPlayingMetadata()
     }
 
-    /// Keeps the system's Now Playing panel on the track Kaset is playing.
+    /// Keeps WebKit's Now Playing card on the track Kaset is playing.
     ///
     /// Every change of `currentTrack` — a start, an advance, the page's refined byline, or the album
     /// art arriving with fetched metadata — is pushed to the media session; the session's pin drops

@@ -74,3 +74,4 @@ What becomes easier or more difficult because of this change?
 | [0035](0035-standard-window-chrome.md) | System-Owned Window Chrome (Opaque Window, Transparent Titlebar) | Accepted |
 | [0036](0036-lyrics-word-animation-styles.md) | Selectable Word-by-Word Lyrics Animations | Accepted |
 | [0037](0037-in-page-track-changes.md) | In-Page Track Changes Instead of Watch-Page Navigations | Accepted |
+| [0038](0038-pinned-media-session-actions.md) | Pinned Media Session Actions (and No Native Now Playing Claim) | Accepted |

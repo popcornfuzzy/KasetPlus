@@ -4,11 +4,10 @@ import Foundation
 
 /// What the system's Now Playing panel describes.
 ///
-/// macOS takes that panel from the WebView's media session — Kaset sets no `MPNowPlayingInfoCenter`
-/// of its own — so without this the panel shows whatever YouTube Music last wrote there. With the
-/// page playing Kaset's tracks that is the page's own idea of the song, which lags a track change and
-/// can carry another item's artwork; the panel was wrong for the whole song and correct only for the
-/// moment it changed.
+/// macOS takes that panel from the WebView's media session — Kaset publishes no entry of its own (see
+/// ADR-0038) — so without this the panel shows whatever YouTube Music last wrote there. With the page playing Kaset's tracks that is the page's own idea of
+/// the song, which lags a track change and can carry another item's artwork; the panel was wrong for
+/// the whole song and correct only for the moment it changed.
 struct WebNowPlayingMetadata: Equatable {
     let title: String
     let artist: String

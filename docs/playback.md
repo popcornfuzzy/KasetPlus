@@ -696,9 +696,9 @@ For floating video window functionality, see [docs/video.md](video.md).
 
 ## The system's Now Playing panel
 
-macOS shows this app's Now Playing entry from the **WebView's media session**, not from
-`MPNowPlayingInfoCenter` — Kaset never writes that. So with the page playing Kaset's tracks, the panel
-was describing the page's own idea of the song: a title and byline that lagged the track change, and an
+While the app is on screen, macOS shows this app's Now Playing entry from the **WebView's media
+session**, not from `MPNowPlayingInfoCenter`. So with the page playing Kaset's tracks, the panel was
+describing the page's own idea of the song: a title and byline that lagged the track change, and an
 artwork URL belonging to another item, with the panel right only for the moment the track changed.
 
 Kaset therefore owns that metadata. `nowPlayingMetadataScript` is injected at document start — before
@@ -713,6 +713,26 @@ YouTube Music's own scripts — and wraps `MediaSession.prototype.metadata`, so:
 A page load replaces the session, so `didFinish` pushes the track again. Clearing the track clears the
 entry and unpins the property, returning the panel to the page; the "Loading..." placeholder is never
 published, so the previous description stays until the new track has one.
+
+### The panel's buttons belong to the queue
+
+The system's Next/Previous reach the page's media session, so the page's own `nexttrack` handler would
+advance **YouTube's** player. `mediaControlOverrideScript` is injected at document start — before
+YouTube Music's scripts — and wraps `setActionHandler`: with the Next/Previous style on, any
+registration of `nexttrack`/`previoustrack` becomes Kaset's forwarder (`REMOTE_NEXT`/
+`REMOTE_PREVIOUS` → `PlayerService.nextFromRemoteControl()`), and the seek actions are dropped so only
+track buttons appear; with the ±15s style the seek actions own the slot instead. Because the handlers
+are pinned where the page registers them, nothing has to be re-applied — which matters when the window
+is closed: WebKit stops producing frames for a hidden page, and this used to be a
+`requestAnimationFrame` loop that went stale exactly then, leaving the page's own Next in charge.
+
+### When nothing is playing
+
+Kaset publishes no Now Playing entry of its own. WebKit's card is a separate Now Playing client, so an
+`MPNowPlayingInfoCenter` claim is a *second* row in Control Center rather than one card with two writers —
+which is what a claim made while the window was closed actually looked like. One publisher, one row: the
+metadata pin keeps that card describing `currentTrack`, and the action pin keeps its buttons on Kaset's
+queue. See [ADR-0038](adr/0038-pinned-media-session-actions.md).
 
 ## Future Improvements
 
