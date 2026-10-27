@@ -50,7 +50,27 @@
 
 "Cast to" = "Cast to";
 
+"Connected" = "Connected";
+
+"Connecting…" = "Connecting…";
+
+"Couldn't reach Discord: %@" = "Couldn't reach Discord: %@";
+
+"Discord" = "Discord";
+
+"Discord didn't answer." = "Discord didn't answer.";
+
+"Discord isn't running" = "Discord isn't running";
+
+"Discord isn't running." = "Discord isn't running.";
+
+"Discord refused the activity: %@" = "Discord refused the activity: %@";
+
 "Fullscreen Podcast" = "Fullscreen Podcast";
+
+"Kaset hands the card to the Discord app running on this Mac, and Discord publishes it like any other activity. Kaset itself sends nothing and needs no Discord account or password." = "Kaset hands the card to the Discord app running on this Mac, and Discord publishes it like any other activity. Kaset itself sends nothing and needs no Discord account or password.";
+
+"Listen on YouTube Music" = "Listen on YouTube Music";
 
 "Loading…" = "Loading…";
 
@@ -63,6 +83,8 @@
 "Episode Options" = "Episode Options";
 
 "No transcript is available for this episode." = "No transcript is available for this episode.";
+
+"Show what I'm listening to on Discord" = "Show what I'm listening to on Discord";
 
 "Sleep Timer" = "Sleep Timer";
 
@@ -378,6 +400,10 @@
 "Switch between community lyric versions" = "Switch between community lyric versions";
 
 "Lyric versions" = "Lyric versions";
+
+"The Discord connection closed: %@" = "The Discord connection closed: %@";
+
+"The presence helper isn't available" = "The presence helper isn't available";
 
 "Word Animation" = "Word Animation";
 

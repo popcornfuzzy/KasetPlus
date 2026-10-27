@@ -74,6 +74,8 @@ struct KasetApp: App {
     let likeStatusManager = SongLikeStatusManager.shared
     let accountService: AccountService
     let scrobblingCoordinator: ScrobblingCoordinator
+    let discordPresenceService: DiscordPresenceService
+    let discordPresenceCoordinator: DiscordPresenceCoordinator
     let syncedLyricsService = SyncedLyricsService(cacheStore: LyricsCacheStore())
     let podcastTranscriptService: PodcastTranscriptService
     let canvasService = CanvasService()
@@ -122,6 +124,15 @@ struct KasetApp: App {
         scrobblingCoordinator.restoreAuthState()
         scrobblingCoordinator.startMonitoring()
 
+        // Create the Discord Rich Presence coordinator. It needs no credentials: the card is set on
+        // the Discord client running on this Mac, and the coordinator simply polls the player.
+        let discordPresence = DiscordPresenceService()
+        let discordPresenceCoordinator = DiscordPresenceCoordinator(
+            playerService: player,
+            presence: discordPresence
+        )
+        discordPresenceCoordinator.startMonitoring()
+
         self.authService = auth
         self.webKitManager = webkit
         self.playerService = player
@@ -129,6 +140,8 @@ struct KasetApp: App {
         self.notificationService = NotificationService(playerService: player)
         self.accountService = account
         self.scrobblingCoordinator = scrobblingCoordinator
+        self.discordPresenceService = discordPresence
+        self.discordPresenceCoordinator = discordPresenceCoordinator
         self.podcastTranscriptService = PodcastTranscriptService(client: client)
 
         // Wire up PlayerService to AppDelegate immediately (not in onAppear)
@@ -174,6 +187,7 @@ struct KasetApp: App {
             .environment(self.likeStatusManager)
             .environment(self.accountService)
             .environment(self.scrobblingCoordinator)
+            .environment(self.discordPresenceService)
             .environment(self.syncedLyricsService)
             .environment(self.podcastTranscriptService)
             .environment(self.canvasService)
@@ -219,6 +233,7 @@ struct KasetApp: App {
                 .environment(self.authService)
                 .environment(self.updaterService)
                 .environment(self.scrobblingCoordinator)
+                .environment(self.discordPresenceService)
                 .environment(self.syncedLyricsService)
                 .environment(self.podcastTranscriptService)
                 .environment(self.canvasService)
@@ -450,6 +465,11 @@ struct SettingsView: View {
                             .frame(height: 12)
                             .accessibilityHidden(true)
                     }
+                }
+
+            DiscordSettingsView()
+                .tabItem {
+                    Label("Discord", systemImage: "gamecontroller")
                 }
 
             AboutSettingsView(updaterService: self.updaterService)

@@ -18,16 +18,40 @@ let package = Package(
             name: "api-explorer",
             targets: ["APIExplorer"]
         ),
+        // The non-sandboxed helper the app talks to for Discord Rich Presence. See
+        // docs/adr/0039-discord-rich-presence.md.
+        .executable(
+            name: "KasetPresenceBridge",
+            targets: ["KasetPresenceBridge"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.1"),
     ],
     targets: [
+        // Wire format shared by the app and its Discord presence helper.
+        .target(
+            name: "DiscordBridge",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        // The helper itself. Signed without the App Sandbox: it is the one process that may
+        // talk to the Discord client's IPC socket.
+        .executableTarget(
+            name: "KasetPresenceBridge",
+            dependencies: ["DiscordBridge"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
+        ),
         // Main app executable
         .executableTarget(
             name: "Kaset",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle"),
+                "DiscordBridge",
             ],
             resources: [
                 // Resources ships .lproj/Localizable.strings files. Do not add a
@@ -52,7 +76,7 @@ let package = Package(
         // Unit tests
         .testTarget(
             name: "KasetTests",
-            dependencies: ["Kaset"],
+            dependencies: ["Kaset", "DiscordBridge"],
             resources: [
                 .process("Fixtures"),
             ],
