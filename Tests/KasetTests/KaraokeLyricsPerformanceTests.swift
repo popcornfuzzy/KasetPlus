@@ -17,8 +17,22 @@ import Testing
 /// Because of that, structure is asserted as **ratios** measured in the same run, not as an
 /// absolute time: one GitHub runner priced every scenario about 1.6× higher than a laptop, all of
 /// them together, which says the machine is slower and nothing about the row.
+///
+/// That is also why the suite is **opt-in** (`IntegrationTestGate`): a frame's cost is the machine's,
+/// not the app's, and a loaded machine prices contention into every scenario — the same duet row that
+/// measures 8.17 ms on a quiet runner measured 16 ms beside the rest of the suite, over the 12 ms
+/// ceiling. A wall-clock number taken next to two thousand other tests says
+/// little and reds a run that has not changed, so it does not gate a merge. Run it deliberately, on a
+/// quiet machine:
+/// ```bash
+/// KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter KaraokeLyricsPerformanceTests
+/// ```
 @MainActor
-@Suite(.tags(.model, .slow))
+@Suite(
+    .tags(.model, .slow, .integration),
+    .enabled(if: IntegrationTestGate.isEnabled, IntegrationTestGate.requirement),
+    .timeLimit(.minutes(3))
+)
 struct KaraokeLyricsPerformanceTests {
     /// Ceiling for one frame of one line, and a coarse one: it catches a row that has become
     /// catastrophically expensive, not one that has drifted. The slowest machine this suite has run on

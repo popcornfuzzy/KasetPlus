@@ -6,10 +6,12 @@ This document covers testing strategies, commands, and best practices for Kaset.
 
 ### Unit Tests
 
-The full unit suite is held to **two minutes**. Measured on a 10-core Mac: **~107s** for 2076 tests,
-serial, with the two opt-in environment suites skipped. A run that takes longer is a bug in a test, not
-a slow machine. Both ways this budget was lost are worth knowing, because each one reads as "the suite
-is slow" rather than as a failing test:
+The full unit suite is held to **two minutes**. Measured on a 10-core Mac: **~105s** for 2097 tests,
+serial, with the three opt-in environment suites skipped. Past that, the problem is a test waiting on
+something it should have been told, not the machine. There is one rule behind the budget: **a test whose
+result depends on the machine is opt-in.**
+The ways this went wrong are worth knowing, because each one reads as "the suite is slow" rather than as
+a test that needs a gate or a fix:
 
 - **A test that waits on a gate that never opens.** `CanvasServiceTests` used to read the animated-canvas
   setting from `SettingsManager`, which persists in `UserDefaults` across runs: with it off, a test that
@@ -18,6 +20,11 @@ is slow" rather than as a failing test:
 - **An environment-dependent suite paying its real-world timeout in a plain run.**
   `CanvasVideoViewTests` drives real AVFoundation; when the decode pipeline does not start, each test
   waits out its 60s readiness deadline. It is behind the same opt-in gate as the on-device model suite.
+- **A benchmark measuring the machine and calling it a regression.** `KaraokeLyricsPerformanceTests`
+  times real frame rasterization against an absolute 12 ms budget. Run beside two thousand other tests
+  on a busy laptop, the same duet row that costs 8 ms on a quiet runner cost 16 ms and failed a run in
+  which no karaoke code had changed. Wall-clock budgets are the machine's answer, so the suite is opt-in
+  too, and the nightly job runs it on an idle runner where the number means something.
 
 Run the suites a change touches while iterating — names are suite/test IDs, not tags:
 
@@ -25,13 +32,13 @@ Run the suites a change touches while iterating — names are suite/test IDs, no
 # while iterating: only what the change touches
 swift test --skip KasetUITests --filter "WindowShellTitleTests|PageNavigationOpenTests"
 
-# the full unit suite, the way CI runs it: serial, without the opt-in environment suites
-swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
+# the full unit suite: serial; the environment-dependent suites skip themselves (IntegrationTestGate)
+swift test -q --no-parallel --skip KasetUITests
 ```
 
-The parallel run (`swift test --skip KasetUITests`) is faster (~79s) but the timing-sensitive suites
-flake under its load, which is why CI and the budget use the serial command. The build is a separate
-cost: a warm build is a few seconds, a cold one is minutes.
+The parallel run is faster (~79s) but the timing-sensitive suites flake under its load, which is why CI
+and the budget use the serial command. The build is a separate cost: a warm build is a few seconds, a
+cold one is minutes.
 
 ### Build Only
 
@@ -436,8 +443,9 @@ LLM outputs are inherently non-deterministic. These tests mitigate flakiness by:
 Non-deterministic or environment-dependent tests never gate a pull request or a release. `.github/workflows/tests.yml` and `release.yml` run:
 
 ```bash
-# Stable unit tests: serial execution, without the LLM suite
-swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
+# Stable unit tests: serial, without the environment-dependent suites (spelled out so a suite that
+# lost its gate still cannot gate a merge)
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests|CanvasVideoViewTests|KaraokeLyricsPerformanceTests"
 ```
 
 The Apple Intelligence suite runs in the scheduled `macos_integration_tests` job (nightly and on `workflow_dispatch`), where a failure is a signal to investigate rather than a blocked merge. The job sets the gate, since the suite is opt-in:
@@ -451,7 +459,11 @@ Other environment-dependent suites to keep out of the merge gate:
 | Suite | Depends on |
 |-------|------------|
 | `MusicIntentIntegrationTests` | Apple Intelligence; non-deterministic output |
-| `CanvasVideoViewTests` | Real AVFoundation playback; the first item in a process can take many seconds to start on a busy or paravirtualized runner, so its readiness wait is generous. Opt-in behind `KASET_INTEGRATION_TESTS=1` (`IntegrationTestGate`), skipped by a plain run |
+| `CanvasVideoViewTests` | Real AVFoundation playback; the first item in a process can take many seconds to start on a busy or paravirtualized runner, so its readiness wait is generous |
+| `KaraokeLyricsPerformanceTests` | The machine's frame rate; an absolute 12 ms/frame budget that a loaded machine misses. Run nightly on an idle runner, where the number means something |
+
+All three are opt-in behind `KASET_INTEGRATION_TESTS=1` (`IntegrationTestGate`), so a plain `swift test`
+skips them with that as the stated reason.
 
 #### What's Tested
 
@@ -476,8 +488,11 @@ KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "MusicIntentIn
 # Run ONLY the canvas player tests (real AVFoundation playback)
 KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "CanvasVideoViewTests"
 
-# Run the full unit suite the way CI does
-swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
+# Run ONLY the karaoke frame budget, on a quiet machine
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "KaraokeLyricsPerformanceTests"
+
+# Run the full unit suite: serial, environment-dependent suites skip themselves
+swift test -q --no-parallel --skip KasetUITests
 ```
 
 #### Test Characteristics

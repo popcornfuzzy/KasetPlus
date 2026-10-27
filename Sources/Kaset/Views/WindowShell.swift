@@ -273,6 +273,13 @@ final class WindowShellController: NSSplitViewController {
     /// Set while this controller writes the panes' own state, so the resulting KVO notification is not
     /// read back as a reader's action.
     private var isApplyingState = false
+    /// The app's last visibility value the Now Playing pane was told, so a repeat of it is not applied
+    /// over a reader's click (see `applyInspectorVisibility`).
+    private var appliedShowsInspector: Bool?
+    /// How many reader presses the column has had, and which of them the app's current state was stated
+    /// after. A state from an earlier press is behind the pane and must not move it.
+    private var readerToggleCount = 0
+    private var stateReaderToggleCount = 0
     private var needsStateApply = true
     private var hasSeededDivider = false
     private var pendingToolbarInstall: Task<Void, Never>?
@@ -403,6 +410,8 @@ final class WindowShellController: NSSplitViewController {
         let layoutChanged = layout != self.layout
         self.layout = layout
         self.state = state
+        // Which press this visibility belongs to: a state stated before the reader's last one is stale.
+        self.stateReaderToggleCount = self.readerToggleCount
 
         guard self.isViewLoaded else { return }
         self.needsStateApply = true
@@ -511,7 +520,18 @@ final class WindowShellController: NSSplitViewController {
     /// split view out is how a constraint pass is entered re-entrantly.
     private func applyInspectorVisibility(animated: Bool = false) {
         guard let inspectorItem = self.inspectorItem else { return }
-        let shouldCollapse = !self.state.showsInspector
+        let showsInspector = self.state.showsInspector
+        // Only a **new** app value is the shell's to state. The reader's press moves the pane first and
+        // the app's state reaches the shell a turn later, so re-stating a value the shell has already
+        // stated answers a press that opened the column with a closure: the app's log shows
+        // `collapsed=false` followed by `collapsed=true` 33 ms later, on every press. A layout pass still
+        // holding the previous value is exactly that repeat, and it must not undo a newer click.
+        guard self.appliedShowsInspector != showsInspector else { return }
+        // A state stated before the reader's last press is behind the pane, not a request to move it: the
+        // app has not caught up with the click yet, and applying this value would undo it.
+        guard self.stateReaderToggleCount == self.readerToggleCount else { return }
+
+        let shouldCollapse = !showsInspector
         if inspectorItem.isCollapsed != shouldCollapse {
             MainThreadStallReporter.shared.note(
                 shouldCollapse ? "the Now Playing column is being collapsed" : "the Now Playing column is being opened"
@@ -524,6 +544,12 @@ final class WindowShellController: NSSplitViewController {
             }
             self.isApplyingState = false
             MainThreadStallReporter.shared.note("the Now Playing column's collapse was applied")
+        }
+        // Recorded only once the pane is in the state asked for: an app-driven open that AppKit refused
+        // (no room for the column at this window width) is left unrecorded, so it is tried again when
+        // there is room rather than silently abandoned.
+        if inspectorItem.isCollapsed == shouldCollapse {
+            self.appliedShowsInspector = showsInspector
         }
         // All three follow every change to the column: the window's minimum is restated for the panes that
         // are now open, the window is made wide enough to hold them rather than left to squeeze the page,
@@ -682,6 +708,7 @@ final class WindowShellController: NSSplitViewController {
         // when it is needed.
         self.logger.notice("Now Playing column collapsed=\(collapsed, privacy: .public) source=\(source, privacy: .public)")
         guard !self.isApplyingState else { return }
+        self.readerToggleCount += 1
         self.onInspectorCollapsedChange?(collapsed)
     }
 

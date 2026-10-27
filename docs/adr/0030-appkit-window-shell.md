@@ -172,7 +172,12 @@ hand-rolled:
   button's action. The same toggle animates a change the app asks for from outside a layout pass (the
   transport's lyrics/queue buttons, ⌘L, the Settings switch). A collapse the reader performs is observed on
   the item's `isCollapsed` and fed back through `onInspectorCollapsedChange`, and the app's own writes are
-  flagged so they are not read back as a reader's action. **With the setting on, the column is open at
+  flagged so they are not read back as a reader's action. **A visibility the app states is only applied
+  when it is not behind the reader's last press:** the reader's click moves the pane first and the app's
+  state reaches the shell a turn later, so a layout pass still holding the old value used to answer a
+  press that opened the column by closing it again — the app's log showed `collapsed=false` followed by
+  `collapsed=true` 33 ms later, on every press. Each stated state is tagged with the reader-toggle count
+  it was stated after, and an older one is ignored (`WindowShellSidebarToggleTests` drives the race). **With the setting on, the column is open at
   launch**, so the choice of design is also the choice of what the window opens with: `PlayerService.init`
   states it before the window is created from it.
 - **The window's minimum is the panes' again, and the page is no longer the pane that gives way.** This

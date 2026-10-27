@@ -49,24 +49,25 @@ swift build
 # While iterating: only the suites the change touches (names, not tags)
 swift test --skip KasetUITests --filter "WindowShellTitleTests|PageNavigationOpenTests"
 
-# The full unit suite (never combine with UI tests). CI's command: serial, environment suites skipped
-swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
+# The full unit suite (never combine with UI tests). Serial; the environment-dependent suites skip themselves
+swift test -q --no-parallel --skip KasetUITests
 
-# Environment-dependent tests (opt-in: on-device model, real AVFoundation playback)
+# Environment-dependent tests (opt-in: on-device model, real AVFoundation playback, frame-cost benchmark)
 KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter MusicIntentIntegrationTests
 KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter CanvasVideoViewTests
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter KaraokeLyricsPerformanceTests
 ```
 
-**The full unit suite must finish within two minutes** (~107s for 2076 tests on a 10-core Mac). A slower
-run is a test waiting on something it should have been told — a persisted setting, a real-world
-readiness timeout — not a slow machine. See [docs/testing.md](docs/testing.md#unit-tests). Run the
-affected suites while iterating; run the full suite for a cross-cutting change, or as the last check
-before handing work over.
+**The full unit suite must finish within two minutes** (~105s for 2097 tests on a 10-core Mac, the three
+opt-in machine suites skipped). Past that, a run is a test waiting on something it should have been told —
+a persisted setting, a real-world readiness timeout — not a slow machine. See
+[docs/testing.md](docs/testing.md#unit-tests). Run the affected suites while iterating; run the full
+suite for a cross-cutting change, or as the last check before handing work over.
 
-The on-device model suite parses commands with the machine's own language model and asserts what it produced,
-so it costs seconds per test and its result depends on the model's phrasing rather than on the app's logic.
-It is gated behind `KASET_INTEGRATION_TESTS` for that reason (`IntegrationTestGate`) — run it deliberately, on
-its own.
+A test whose result depends on the machine is opt-in (`IntegrationTestGate`, `KASET_INTEGRATION_TESTS`),
+never part of the merge gate: the on-device model parses with the machine's own language model, the
+canvas player needs real AVFoundation playback, and the karaoke budget times the machine's frame rate
+against an absolute 12 ms ceiling that a loaded machine misses. Run those deliberately, on their own.
 
 ## API Discovery
 
