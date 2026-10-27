@@ -505,6 +505,11 @@ requires the work to be `Sendable`; when it is not, move it into a `nonisolated`
       window controller answers by replacing the window's toolbar out from under the app. State the
       window's title with `.pageTitle(id:title:)` instead — see
       [adr/0034](adr/0034-shell-owned-window-title.md)
+- [ ] A page's stack hides SwiftUI's back button (`.navigationBarBackButtonHidden(true)`, stated once
+      in `PageNavigationStack`): the app draws the back control, and SwiftUI's own is what installs its
+      one-item toolbar on every push and takes the window's toolbar away on every pop. A window without
+      a toolbar loses its 52pt top inset, so the page jumps up for a turn — the flicker on navigation.
+      No `.navigationTitle` is not enough — see [adr/0034](adr/0034-shell-owned-window-title.md)
 - [ ] A view that is itself a destination registers no `navigationDestination` of its own: a second
       destination on the same stack freezes the app, and a hosted test does not reproduce it — see
       [adr/0023](adr/0023-playlist-search-and-sort.md)

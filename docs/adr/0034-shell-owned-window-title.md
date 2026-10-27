@@ -73,3 +73,22 @@ window-owned `PageTitleModel`, and the shell writes it to `window.title` itself.
 - SwiftUI previews and snapshot tests cannot cover the shell; as before, this is verified by running
   the app (`PageTitleModelTests`, `WindowShellTitleTests` and the toolbar-order tests cover the
   models and the item list, not the window).
+
+## Revision — the Back Button, Not the Title, Installs SwiftUI's Toolbar
+
+The decision above stopped a pushed page's *title* from handing the window's toolbar to SwiftUI, but
+not the replacement itself. SwiftUI installs a toolbar for everything its navigation bar carries, and
+what a `NavigationStack` carries in a windowed macOS app is the **back button**. Driven in a real
+window, a push still swapped the window's toolbar for SwiftUI's one-item one, and a pop still set
+`window.toolbar = nil`. A window without a toolbar loses its 52pt top inset, so the page moved up for
+the turn the takeover observer needs to re-take the toolbar — reported as "the toolbar or the app
+layout flickers a little bit and shifts up for a fraction of a second" when opening an artist or album
+page, and when going back.
+
+The app draws its own back control (`WindowToolbarItem.back`, from `PageNavigationModel`), so the
+control SwiftUI would draw is never wanted. `PageNavigationStack` therefore states
+`.navigationBarBackButtonHidden(true)` on the stack's content — one statement, and every page inside
+the shell's stacks inherits it, destinations included. With it, the window's toolbar is never replaced
+at all (`WindowToolbarTakeoverTests` drives the real shell through a push and a pop and asserts the
+toolbar object does not change). The takeover observer stays as the defence for anything else that
+still tries.

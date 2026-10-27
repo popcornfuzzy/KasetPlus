@@ -46,12 +46,22 @@ Kaset is a native macOS YouTube Music client (Swift/SwiftUI) using a hidden WebV
 # Build
 swift build
 
-# Unit Tests (never combine with UI tests)
-swift test --skip KasetUITests
+# While iterating: only the suites the change touches (names, not tags)
+swift test --skip KasetUITests --filter "WindowShellTitleTests|PageNavigationOpenTests"
 
-# On-device model tests (opt-in: ~4s per test, so they are skipped by a plain `swift test`)
+# The full unit suite (never combine with UI tests). CI's command: serial, environment suites skipped
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
+
+# Environment-dependent tests (opt-in: on-device model, real AVFoundation playback)
 KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter MusicIntentIntegrationTests
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter CanvasVideoViewTests
 ```
+
+**The full unit suite must finish within two minutes** (~107s for 2076 tests on a 10-core Mac). A slower
+run is a test waiting on something it should have been told — a persisted setting, a real-world
+readiness timeout — not a slow machine. See [docs/testing.md](docs/testing.md#unit-tests). Run the
+affected suites while iterating; run the full suite for a cross-cutting change, or as the last check
+before handing work over.
 
 The on-device model suite parses commands with the machine's own language model and asserts what it produced,
 so it costs seconds per test and its result depends on the model's phrasing rather than on the app's logic.

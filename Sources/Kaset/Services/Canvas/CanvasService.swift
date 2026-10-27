@@ -30,14 +30,22 @@ final class CanvasService {
     private let providers: [any CanvasProvider]
     private let lookupCache: CanvasCache
     private let videoFileCache: CanvasVideoFileCache
+    /// Whether animated canvases are on. Injected rather than read from Settings inside `loadCanvas`: the
+    /// setting outlives a process (UserDefaults), so a suite that wants canvases had to hope no other
+    /// suite had switched the setting off at that moment — and one that waited on a provider gate while
+    /// they were off hung for good. Tests state the answer instead.
+    private let isEnabled: () -> Bool
     private var fetchGeneration = 0
 
     /// - Parameter providers: Preference-ordered; the first one to return a canvas
     ///   wins. Defaults to Tidal (primary) with Apple Music as the fallback.
+    /// - Parameter isEnabled: The reader's setting. Defaults to reading it, which is what the app wants;
+    ///   tests hand in an answer so they do not depend on persisted state.
     init(
         providers: [any CanvasProvider]? = nil,
         lookupCache: CanvasCache = .shared,
-        videoFileCache: CanvasVideoFileCache = .shared
+        videoFileCache: CanvasVideoFileCache = .shared,
+        isEnabled: @escaping () -> Bool = { SettingsManager.shared.animatedCanvasEnabled }
     ) {
         // Order is the preference order, so Tidal must stay first: it is the
         // album-level source and matches the fullscreen artwork far more often than
@@ -45,6 +53,7 @@ final class CanvasService {
         self.providers = providers ?? [TidalCanvasProvider(), AppleMusicCanvasProvider()]
         self.lookupCache = lookupCache
         self.videoFileCache = videoFileCache
+        self.isEnabled = isEnabled
     }
 
     // MARK: - Lookup
@@ -52,7 +61,7 @@ final class CanvasService {
     /// Looks up an animated canvas for the given track and prepares it for
     /// playback. No-op when animated canvases are disabled in Settings.
     func loadCanvas(for info: CanvasSearchInfo) async {
-        guard SettingsManager.shared.animatedCanvasEnabled else {
+        guard self.isEnabled() else {
             self.resetState()
             return
         }

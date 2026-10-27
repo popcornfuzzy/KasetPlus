@@ -6,9 +6,32 @@ This document covers testing strategies, commands, and best practices for Kaset.
 
 ### Unit Tests
 
+The full unit suite is held to **two minutes**. Measured on a 10-core Mac: **~107s** for 2076 tests,
+serial, with the two opt-in environment suites skipped. A run that takes longer is a bug in a test, not
+a slow machine. Both ways this budget was lost are worth knowing, because each one reads as "the suite
+is slow" rather than as a failing test:
+
+- **A test that waits on a gate that never opens.** `CanvasServiceTests` used to read the animated-canvas
+  setting from `SettingsManager`, which persists in `UserDefaults` across runs: with it off, a test that
+  waited for a provider never resumed and the suite hung for good. The setting is injected now
+  (`CanvasService(isEnabled:)`), so tests state it instead of inheriting it.
+- **An environment-dependent suite paying its real-world timeout in a plain run.**
+  `CanvasVideoViewTests` drives real AVFoundation; when the decode pipeline does not start, each test
+  waits out its 60s readiness deadline. It is behind the same opt-in gate as the on-device model suite.
+
+Run the suites a change touches while iterating — names are suite/test IDs, not tags:
+
 ```bash
-swift test
+# while iterating: only what the change touches
+swift test --skip KasetUITests --filter "WindowShellTitleTests|PageNavigationOpenTests"
+
+# the full unit suite, the way CI runs it: serial, without the opt-in environment suites
+swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"
 ```
+
+The parallel run (`swift test --skip KasetUITests`) is faster (~79s) but the timing-sensitive suites
+flake under its load, which is why CI and the budget use the serial command. The build is a separate
+cost: a warm build is a few seconds, a cold one is minutes.
 
 ### Build Only
 
@@ -167,8 +190,8 @@ Available tags: `.api`, `.parser`, `.viewModel`, `.service`, `.model`, `.slow`, 
 `swift test --filter`/`--skip` match against test IDs (target, suite and test names), **not** tags, so `swift test --skip integration` selects nothing. Use the suite names in the pattern, and the `--test-tag` / `--skip-test-tag` flags when driving the suite through `xcodebuild`:
 
 ```bash
-# SwiftPM: select / exclude by name
-swift test --filter "CanvasVideoViewTests|MusicIntentIntegrationTests"
+# SwiftPM: select / exclude by name (the environment suites need the opt-in gate)
+KASET_INTEGRATION_TESTS=1 swift test --filter "CanvasVideoViewTests|MusicIntentIntegrationTests"
 swift test --skip "KasetUITests|MusicIntentIntegrationTests"
 
 # xcodebuild: select / exclude by tag
@@ -387,8 +410,9 @@ The `MusicIntentIntegrationTests` suite validates LLM parsing of natural languag
 
 - macOS 26+ with Apple Intelligence enabled
 - **Opt-in**: `KASET_INTEGRATION_TESTS=1`, because each test costs seconds of on-device model calls. A plain
-  `swift test` skips the suite with that as its stated reason (`IntegrationTestGate`), which is what keeps the
-  default run at ~36s instead of ~87s — and the model load itself is what used to make timing-sensitive suites
+  `swift test` skips the suite with that as its stated reason (`IntegrationTestGate`), which is part of what
+  keeps the full unit suite under its two-minute budget (see [Unit Tests](#unit-tests)) — and the model load
+  itself is what used to make timing-sensitive suites
   elsewhere in the same run flake (the local Cast stream server, the artist library reconciliation)
 - Tests also skip themselves when AI is unavailable (`.enabled(if: SystemLanguageModel.default.availability == .available, ...)`)
 
@@ -427,7 +451,7 @@ Other environment-dependent suites to keep out of the merge gate:
 | Suite | Depends on |
 |-------|------------|
 | `MusicIntentIntegrationTests` | Apple Intelligence; non-deterministic output |
-| `CanvasVideoViewTests` | Real AVFoundation playback; the first item in a process can take many seconds to start on a busy or paravirtualized runner, so its readiness wait is generous |
+| `CanvasVideoViewTests` | Real AVFoundation playback; the first item in a process can take many seconds to start on a busy or paravirtualized runner, so its readiness wait is generous. Opt-in behind `KASET_INTEGRATION_TESTS=1` (`IntegrationTestGate`), skipped by a plain run |
 
 #### What's Tested
 
@@ -448,6 +472,9 @@ Other environment-dependent suites to keep out of the merge gate:
 ```bash
 # Run ONLY integration tests (requires Apple Intelligence)
 KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "MusicIntentIntegrationTests"
+
+# Run ONLY the canvas player tests (real AVFoundation playback)
+KASET_INTEGRATION_TESTS=1 swift test --skip KasetUITests --filter "CanvasVideoViewTests"
 
 # Run the full unit suite the way CI does
 swift test -q --no-parallel --skip "KasetUITests|MusicIntentIntegrationTests"

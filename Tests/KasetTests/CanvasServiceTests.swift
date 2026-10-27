@@ -4,7 +4,7 @@ import Testing
 
 // MARK: - CanvasServiceTests
 
-@Suite(.serialized, .tags(.service))
+@Suite(.serialized, .tags(.service), .timeLimit(.minutes(1)))
 @MainActor
 struct CanvasServiceTests {
     // MARK: - Lookup orchestration
@@ -140,7 +140,8 @@ struct CanvasServiceTests {
         let first = CanvasService(
             providers: [MockCanvasProvider(name: "Tidal", result: artwork)],
             lookupCache: lookupCache,
-            videoFileCache: videoCache
+            videoFileCache: videoCache,
+            isEnabled: { true }
         )
         await first.loadCanvas(for: info)
         #expect(first.currentCanvas == artwork)
@@ -151,7 +152,8 @@ struct CanvasServiceTests {
         let second = CanvasService(
             providers: [secondProvider],
             lookupCache: lookupCache,
-            videoFileCache: videoCache
+            videoFileCache: videoCache,
+            isEnabled: { true }
         )
         await second.loadCanvas(for: info)
         #expect(await secondProvider.callCount() == 0)
@@ -187,12 +189,8 @@ struct CanvasServiceTests {
 
     @Test("disabled animated canvas setting short-circuits lookups")
     func disabledSettingShortCircuits() async {
-        let previous = SettingsManager.shared.animatedCanvasEnabled
-        SettingsManager.shared.animatedCanvasEnabled = false
-        defer { SettingsManager.shared.animatedCanvasEnabled = previous }
-
         let provider = MockCanvasProvider(name: "Tidal", result: Self.makeArtwork())
-        let service = Self.makeService(providers: [provider])
+        let service = Self.makeService(providers: [provider], isEnabled: false)
 
         await service.loadCanvas(for: Self.makeInfo(videoId: "video-off"))
 
@@ -204,8 +202,11 @@ struct CanvasServiceTests {
 
     // MARK: - Helpers
 
+    /// - Parameter isEnabled: Stated rather than read from the app's settings: those persist across a
+    ///   process, so a suite that needs canvases on must not inherit what another run left behind.
     private static func makeService(
-        providers: [any CanvasProvider]
+        providers: [any CanvasProvider],
+        isEnabled: Bool = true
     ) -> CanvasService {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("CanvasServiceTests-\(UUID().uuidString)", isDirectory: true)
@@ -215,7 +216,8 @@ struct CanvasServiceTests {
         return CanvasService(
             providers: providers,
             lookupCache: CanvasCache(directory: dir.appendingPathComponent("lookup")),
-            videoFileCache: CanvasVideoFileCache(directory: dir.appendingPathComponent("video"))
+            videoFileCache: CanvasVideoFileCache(directory: dir.appendingPathComponent("video")),
+            isEnabled: { isEnabled }
         )
     }
 

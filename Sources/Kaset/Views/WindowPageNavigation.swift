@@ -120,6 +120,14 @@ struct PageNavigationStack<Content: View>: View {
     var body: some View {
         NavigationStack(path: self.$path) {
             self.content()
+                // The back control is the app's (`PageNavigationModel`), so no screen in this stack asks
+                // SwiftUI for one. Left to itself SwiftUI answers a push by replacing the window's toolbar
+                // with its own one-item one, and a pop by taking the toolbar away entirely
+                // (`window.toolbar = nil`). A window without a toolbar loses its 52pt top inset, so the
+                // whole page jumps up until the shell re-takes the toolbar a turn later — the flash on
+                // every push into, and pop out of, a page. Stated on the stack's content, which is what
+                // the stack's screens read it from; a page view cannot state it for the stack.
+                .navigationBarBackButtonHidden(true)
         }
         .onAppear { self.publish() }
         // The depth is the whole of the answer, and it changes for every push and pop — whether they came

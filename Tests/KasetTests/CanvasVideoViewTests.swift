@@ -18,7 +18,12 @@ import Testing
 /// because an item's `status == .readyToPlay` says nothing about whether frames
 /// are being produced: streaming HLS reports it as soon as its playlist has
 /// been read.
-@Suite(.serialized, .tags(.integration))
+@Suite(
+    .serialized,
+    .tags(.integration, .slow),
+    .enabled(if: IntegrationTestGate.isEnabled, IntegrationTestGate.requirement),
+    .timeLimit(.minutes(2))
+)
 @MainActor
 struct CanvasVideoViewTests {
     @Test("the canvas player reports readiness once playback starts")
