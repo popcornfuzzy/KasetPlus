@@ -51,9 +51,15 @@ Use the local RPC only, and split it the way the scrobbling pipeline is split:
   commands by nonce.
 - **`DiscordPresenceService`** — `@MainActor @Observable`; owns the connection, remembers the card for the
   next reconnect, and reports a `DiscordPresenceStatus` for the settings row.
-- **`DiscordPresenceCoordinator`** — polls `PlayerService` every 500 ms (the `ScrobblingCoordinator`
-  cadence) and publishes when the card actually changes: a new track, play/pause, a seek, a duration that
-  arrived late. Nothing is re-sent for progress alone.
+- **`DiscordPresenceCoordinator`** — watches `PlayerService` and publishes when the card actually
+  changes: a new track, play/pause, a seek, a duration that arrived late. Nothing is re-sent for progress
+  alone.
+
+  Its clock is not a fixed cadence. The loop rests entirely while the feature is switched off, and while
+  nothing is playing it ticks once every five seconds — the reconnect interval, which is the only thing
+  that tick is for. A pause, a resume or a new track is read through `withObservationTracking` and
+  published at once, so the slow idle tick is invisible; the fast 500 ms tick exists only while a track
+  plays, where a seek has to be caught by sampling the position.
 
 Two details follow from how Discord draws a card:
 

@@ -169,6 +169,60 @@ struct DiscordPresenceCoordinatorTests {
         #expect(presence.ensureConnectedCalls == 1)
     }
 
+    @Test("The poll runs at full rate only while the player is moving")
+    func pollIntervalFollowsPlayback() {
+        let player = PlayerService()
+        let coordinator = self.makeCoordinator(player: player, presence: FakePresence())
+
+        player.state = .paused
+        #expect(coordinator.nextPollInterval() == DiscordPresenceCoordinator.idlePollInterval)
+
+        player.state = .playing
+        #expect(coordinator.nextPollInterval() == DiscordPresenceCoordinator.pollInterval)
+    }
+
+    @Test("A pause reaches Discord at once, not on the next tick")
+    func pausePublishesImmediately() async throws {
+        try await self.withPresenceEnabled {
+            let player = PlayerService()
+            let presence = FakePresence()
+            let coordinator = self.makeCoordinator(player: player, presence: presence)
+
+            player.currentTrack = self.makeSong()
+            player.progress = 30
+            player.state = .playing
+            coordinator.startMonitoring()
+            defer { coordinator.stopMonitoring() }
+
+            try await Task.sleep(for: .milliseconds(900))
+            #expect(presence.lastActivity?.timestamps != nil)
+
+            // Paused: the card must lose its timer without waiting for the slow idle tick.
+            player.state = .paused
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(presence.lastActivity?.timestamps == nil)
+        }
+    }
+
+    @Test("A feature that is switched off starts no polling")
+    func disabledDoesNotPoll() async throws {
+        let previous = SettingsManager.shared.discordRichPresenceEnabled
+        SettingsManager.shared.discordRichPresenceEnabled = false
+        defer { SettingsManager.shared.discordRichPresenceEnabled = previous }
+
+        let player = PlayerService()
+        let presence = FakePresence()
+        let coordinator = self.makeCoordinator(player: player, presence: presence)
+
+        player.currentTrack = self.makeSong()
+        player.state = .playing
+        coordinator.startMonitoring()
+        defer { coordinator.stopMonitoring() }
+
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(presence.published.isEmpty)
+    }
+
     @Test("A Discord client that is not running is retried, not hammered")
     func reconnectIsThrottled() async throws {
         try await self.withPresenceEnabled {

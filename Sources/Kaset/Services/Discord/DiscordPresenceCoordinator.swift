@@ -15,8 +15,18 @@ import Observation
 @MainActor
 @Observable
 final class DiscordPresenceCoordinator {
-    /// How often the player is read. Matches the scrobbling coordinator and `NotificationService`.
+    /// How often the player is read while it is playing.
+    ///
+    /// Only a seek has to be caught by the clock: the card's progress bar is anchored, so the
+    /// position is read to notice it jumped, not to refresh it. Everything else — a pause, a
+    /// resume, a new track — arrives through ``observePlayer()`` and is published at once.
     static let pollInterval: Duration = .milliseconds(500)
+
+    /// How often the player is read while nothing is playing.
+    ///
+    /// A paused player does not change on its own, so this tick exists only to retry a Discord
+    /// client that is not there yet — hence ``reconnectInterval`` rather than the fast rate.
+    static let idlePollInterval: Duration = .seconds(5)
 
     /// How long to wait before trying a Discord client that isn't there yet.
     static let reconnectInterval: TimeInterval = 5
@@ -36,6 +46,9 @@ final class DiscordPresenceCoordinator {
     private(set) var isMonitoring = false
 
     nonisolated(unsafe) private var pollingTask: Task<Void, Never>?
+
+    /// Guards against an observation waking a poll on top of the one already running.
+    private var isPolling = false
 
     // MARK: - Tracking State
 
@@ -78,21 +91,92 @@ final class DiscordPresenceCoordinator {
         self.isMonitoring = true
         self.logger.info("Discord presence coordinator started monitoring")
 
-        self.pollingTask?.cancel()
-        self.pollingTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                await self?.poll()
-                try? await Task.sleep(for: Self.pollInterval)
-            }
+        self.observeSetting()
+        self.observePlayer()
+        if self.settings.discordRichPresenceEnabled {
+            self.startPolling()
         }
     }
 
     func stopMonitoring() {
-        self.pollingTask?.cancel()
-        self.pollingTask = nil
+        self.stopPolling()
         self.isMonitoring = false
         self.resetTracking()
         self.logger.info("Discord presence coordinator stopped monitoring")
+    }
+
+    /// How long the loop should rest before the next poll.
+    func nextPollInterval() -> Duration {
+        self.playerService.isPlaying ? Self.pollInterval : Self.idlePollInterval
+    }
+
+    /// Starts the poll loop, at most once.
+    private func startPolling() {
+        guard self.pollingTask == nil else { return }
+        self.pollingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                await self?.pollOnce()
+                guard let self else { return }
+                try? await Task.sleep(for: self.nextPollInterval())
+            }
+        }
+    }
+
+    private func stopPolling() {
+        self.pollingTask?.cancel()
+        self.pollingTask = nil
+    }
+
+    /// Runs or rests the loop to match the setting: a feature nobody switched on costs no wake-ups.
+    private func applySetting() async {
+        guard self.settings.discordRichPresenceEnabled else {
+            // One last pass hands Discord the card back, then the loop rests.
+            await self.poll()
+            self.stopPolling()
+            return
+        }
+        // Switching on publishes the track already playing, rather than waiting for the next tick.
+        await self.pollOnce()
+        self.startPolling()
+    }
+
+    /// Polls the moment the feature is switched, so turning it on or off does not wait for a tick.
+    private func observeSetting() {
+        withObservationTracking {
+            _ = self.settings.discordRichPresenceEnabled
+        } onChange: {
+            Task { @MainActor [weak self] in
+                guard let self, self.isMonitoring else { return }
+                await self.applySetting()
+                self.observeSetting()
+            }
+        }
+    }
+
+    /// Polls the moment the player changes.
+    ///
+    /// A pause, a resume or a new track is a state change, not something to discover on the next
+    /// tick: this is what lets the loop rest for seconds while paused and still feel instant.
+    private func observePlayer() {
+        withObservationTracking {
+            _ = self.playerService.currentTrack
+            _ = self.playerService.isPlaying
+        } onChange: {
+            Task { @MainActor [weak self] in
+                guard let self, self.isMonitoring else { return }
+                self.observePlayer()
+                guard self.settings.discordRichPresenceEnabled else { return }
+                await self.pollOnce()
+            }
+        }
+    }
+
+    /// One poll at a time: a clock tick and an observation can land together.
+    private func pollOnce() async {
+        guard !self.isPolling else { return }
+        self.isPolling = true
+        defer { self.isPolling = false }
+        await self.poll()
     }
 
     // MARK: - Polling
