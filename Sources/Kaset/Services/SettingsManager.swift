@@ -18,6 +18,7 @@ final class SettingsManager {
         static let enabledServices = "settings.enabledServices"
         static let scrobblePercentThreshold = "settings.scrobblePercentThreshold"
         static let scrobbleMinSeconds = "settings.scrobbleMinSeconds"
+        static let discordRichPresenceEnabled = "settings.discordRichPresenceEnabled"
         static let mediaControlStyle = "settings.mediaControlStyle"
         static let syncedLyricsEnabled = "settings.syncedLyricsEnabled"
         static let lyricsAnimationStyle = "settings.lyricsAnimationStyle"
@@ -220,6 +221,14 @@ final class SettingsManager {
         }
     }
 
+    /// Whether Kaset's Discord card is set on the Discord client running on this Mac.
+    /// Off by default: the card says what the reader is listening to, which is theirs to publish.
+    var discordRichPresenceEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.discordRichPresenceEnabled, forKey: Keys.discordRichPresenceEnabled)
+        }
+    }
+
     /// The last page the user was on (for "Last Used" option).
     var lastUsedPage: LaunchPage = .home
 
@@ -416,6 +425,7 @@ final class SettingsManager {
         }
         self.scrobblePercentThreshold = UserDefaults.standard.object(forKey: Keys.scrobblePercentThreshold) as? Double ?? 0.5
         self.scrobbleMinSeconds = UserDefaults.standard.object(forKey: Keys.scrobbleMinSeconds) as? Double ?? 240
+        self.discordRichPresenceEnabled = UserDefaults.standard.object(forKey: Keys.discordRichPresenceEnabled) as? Bool ?? false
         self.syncedLyricsEnabled = UserDefaults.standard.object(forKey: Keys.syncedLyricsEnabled) as? Bool ?? true
         self.lyricsAnimationStyle = UserDefaults.standard.string(forKey: Keys.lyricsAnimationStyle)
             .flatMap(LyricsAnimationStyle.init(rawValue:)) ?? .standard

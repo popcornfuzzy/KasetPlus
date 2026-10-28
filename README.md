@@ -14,6 +14,7 @@ This is a fork of [Kaset made by sozercan](https://github.com/sozercan/kaset) th
 - ⏯️ **Add Songs to Playlist** – Easily add songs to your playlists from the player bar 
 - 🎵 **Native macOS Experience** — Apple Music-style UI with Liquid Glass player bar and clean sidebar navigation
 - 🎛️ **System Integration** — Now Playing in Control Center, media key support
+- 🎧 **Discord Rich Presence** — Show what you're listening to on your Discord profile: the track, the artists, artwork, a progress bar, and buttons for the song and Kaset on GitHub
 - 📳 **Trackpad Support** — Tactile feedback on Force Touch trackpads for player controls and navigation
 - 📺 **Google Cast** — Send audio to Chromecast and other Cast devices from the player bar
 - 🔊 **Background Audio** — Music continues playing when the window is closed; stops on quit

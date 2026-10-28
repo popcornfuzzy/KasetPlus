@@ -159,6 +159,38 @@ install_binary() {
 # Copy executable
 install_binary "$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
+# The Discord Rich Presence helper. It is a separate app bundle rather than a child process because
+# a child inherits Kaset's sandbox and could not reach the Discord client's socket. Kaset launches
+# this bundle itself with NSWorkspace: a sandboxed app may not register a launch agent, and the items
+# it may register are sandboxed ones. See docs/adr/0039-discord-rich-presence.md.
+BRIDGE_HELPER_NAME="KasetPresenceBridge"
+BRIDGE_HELPER_APP="$APP_BUNDLE/Contents/Helpers/$BRIDGE_HELPER_NAME.app"
+mkdir -p "$BRIDGE_HELPER_APP/Contents/MacOS"
+install_binary "$BRIDGE_HELPER_NAME" "$BRIDGE_HELPER_APP/Contents/MacOS/$BRIDGE_HELPER_NAME"
+
+cat > "$BRIDGE_HELPER_APP/Contents/Info.plist" <<BRIDGEHELPERPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>${BRIDGE_HELPER_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>${BUNDLE_ID}.PresenceBridge</string>
+    <key>CFBundleName</key>
+    <string>Kaset Presence Helper</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MARKETING_VERSION}</string>
+    <key>CFBundleVersion</key>
+    <string>${BUILD_NUMBER}</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+BRIDGEHELPERPLIST
+
 # Refuse to package a binary that predates the sources: a stale product from another
 # build system is worse than a failed build, because the app silently runs old code.
 STALE_SOURCE=$(find Sources -name '*.swift' -newer "$APP_BUNDLE/Contents/MacOS/$APP_NAME" -print -quit)
@@ -475,6 +507,14 @@ if [[ -d "$SPARKLE" ]]; then
     sign_sparkle_component "$SPARKLE/Versions/B/Updater.app"
   fi
   sign_sparkle_component "$SPARKLE"
+fi
+
+# The helper is signed before the app, and deliberately without entitlements: signing it with
+# Kaset.entitlements would put it inside the App Sandbox too, which is the one thing it must escape.
+# It stays a nested bundle in Contents/Helpers, so the app's own signature covers its seal.
+if [[ -d "$BRIDGE_HELPER_APP" ]]; then
+  echo "  → Signing the Discord presence helper..."
+  codesign "${APP_CODESIGN_ARGS[@]}" "$BRIDGE_HELPER_APP"
 fi
 
 # Sign the app bundle with entitlements. The bundled entitlements file uses

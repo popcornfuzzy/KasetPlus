@@ -51,4 +51,7 @@ enum DiagnosticsLogger {
 
     /// Logger for listening history-related events.
     static let history = Logger(subsystem: kasetLogSubsystem, category: "History")
+
+    /// Logger for Discord Rich Presence events (the local Discord client connection).
+    static let discord = Logger(subsystem: kasetLogSubsystem, category: "Discord")
 }

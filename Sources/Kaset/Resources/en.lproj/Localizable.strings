@@ -50,7 +50,45 @@
 
 "Cast to" = "Cast to";
 
+"Connected" = "Connected";
+
+"Connecting…" = "Connecting…";
+
+"Couldn't reach Discord: %@" = "Couldn't reach Discord: %@";
+
+"Discord" = "Discord";
+
+"Discord didn't answer." = "Discord didn't answer.";
+
+"Discord isn't running." = "Discord isn't running.";
+
+"Discord refused the activity: %@" = "Discord refused the activity: %@";
+
 "Fullscreen Podcast" = "Fullscreen Podcast";
+
+"Your profile shows the track you're playing, its artists and artwork while the Discord app is running on this Mac. No Discord account is needed, and nothing is sent anywhere else." = "Your profile shows the track you're playing, its artists and artwork while the Discord app is running on this Mac. No Discord account is needed, and nothing is sent anywhere else.";
+
+"Waiting for Discord" = "Waiting for Discord";
+
+"Presence helper missing" = "Presence helper missing";
+
+"Open the Discord app on this Mac to start sharing." = "Open the Discord app on this Mac to start sharing.";
+
+"This copy of Kaset is missing the helper that reaches Discord. Reinstalling Kaset restores it." = "This copy of Kaset is missing the helper that reaches Discord. Reinstalling Kaset restores it.";
+
+"Play a song and your Discord profile will show it." = "Play a song and your Discord profile will show it.";
+
+"Sharing “%@”" = "Sharing “%@”";
+
+"Open Discord" = "Open Discord";
+
+"Get Discord" = "Get Discord";
+
+"Turn Off" = "Turn Off";
+
+"Turn this on to show what you're playing on your Discord profile." = "Turn this on to show what you're playing on your Discord profile.";
+
+"Listen on YouTube Music" = "Listen on YouTube Music";
 
 "Loading…" = "Loading…";
 
@@ -63,6 +101,8 @@
 "Episode Options" = "Episode Options";
 
 "No transcript is available for this episode." = "No transcript is available for this episode.";
+
+"Show what I'm listening to on Discord" = "Show what I'm listening to on Discord";
 
 "Sleep Timer" = "Sleep Timer";
 
@@ -378,6 +418,8 @@
 "Switch between community lyric versions" = "Switch between community lyric versions";
 
 "Lyric versions" = "Lyric versions";
+
+"The Discord connection closed: %@" = "The Discord connection closed: %@";
 
 "Word Animation" = "Word Animation";
 
