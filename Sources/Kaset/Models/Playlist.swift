@@ -125,6 +125,19 @@ extension Playlist {
     }
 }
 
+// MARK: - PlaylistRecommendations
+
+/// The songs YouTube Music suggests for an owned playlist, shown after its tracks.
+///
+/// They are not part of the playlist: they are `musicShelfRenderer` sections that follow the
+/// playlist's own shelf, and adding one is a separate write (`ACTION_ADD_VIDEO`), which the section's
+/// add button sends.
+struct PlaylistRecommendations {
+    /// Section title the page advertised, e.g. "Recommendations".
+    let title: String
+    let tracks: [Song]
+}
+
 // MARK: - PlaylistDetail
 
 /// Detailed playlist information including tracks.
@@ -156,6 +169,8 @@ struct PlaylistDetail: Identifiable {
     /// trustworthy than anything derived here: for an album it is the `OLAK5uy_…` audio playlist the
     /// library stores the album under, never the `MPREb_…` page the album is browsed by.
     let libraryPlaylistId: String?
+    /// Songs YouTube Music suggests for this playlist. `nil` when the page carried no such shelf.
+    let recommendations: PlaylistRecommendations?
 
     /// Whether this is an album (vs a playlist).
     /// Albums have IDs starting with "OLAK" or "MPRE".
@@ -293,7 +308,8 @@ struct PlaylistDetail: Identifiable {
         availableSortOrders: [PlaylistSortOrder] = [],
         isEditable: Bool = false,
         mixPlaylistId: String? = nil,
-        libraryPlaylistId: String? = nil
+        libraryPlaylistId: String? = nil,
+        recommendations: PlaylistRecommendations? = nil
     ) {
         self.id = playlist.id
         self.title = playlist.title
@@ -309,6 +325,7 @@ struct PlaylistDetail: Identifiable {
         self.isEditable = isEditable
         self.mixPlaylistId = mixPlaylistId
         self.libraryPlaylistId = libraryPlaylistId
+        self.recommendations = recommendations
     }
 
     /// Track count to show in the UI, preferring the API-reported total over the loaded row count.
@@ -349,6 +366,18 @@ struct PlaylistTracksResponse {
     /// Continuation token for fetching more tracks, if available.
     let continuationToken: String?
 
+    /// Continuation token for the recommendation section that follows the tracks, if available.
+    ///
+    /// This is the page's section-level continuation (or the recommendation shelf's own): it loads
+    /// more sections after the playlist's shelf, which is where the suggestions live.
+    let recommendationsToken: String?
+
+    init(detail: PlaylistDetail, continuationToken: String?, recommendationsToken: String? = nil) {
+        self.detail = detail
+        self.continuationToken = continuationToken
+        self.recommendationsToken = recommendationsToken
+    }
+
     /// Whether more tracks are available to load.
     var hasMore: Bool {
         self.continuationToken != nil
@@ -364,6 +393,15 @@ struct PlaylistContinuationResponse {
 
     /// Continuation token for fetching more tracks, if available.
     let continuationToken: String?
+
+    /// Section title the page gave its shelf, when the response carried one.
+    let title: String?
+
+    init(tracks: [Song], continuationToken: String?, title: String? = nil) {
+        self.tracks = tracks
+        self.continuationToken = continuationToken
+        self.title = title
+    }
 
     /// Whether more tracks are available to load.
     var hasMore: Bool {

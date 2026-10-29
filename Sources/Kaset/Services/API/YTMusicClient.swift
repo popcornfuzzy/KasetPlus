@@ -558,6 +558,7 @@ final class YTMusicClient: YTMusicClientProtocol {
         self.searchContinuationToken = nil
         self.likedSongsContinuationToken = nil
         self.playlistContinuationToken = nil
+        self.playlistRecommendationsToken = nil
     }
 
     /// Fetches search suggestions for autocomplete.
@@ -751,6 +752,9 @@ final class YTMusicClient: YTMusicClientProtocol {
     /// Continuation token for playlist tracks pagination.
     private var playlistContinuationToken: String?
 
+    /// Continuation token for the recommendation section that follows a playlist's tracks.
+    private var playlistRecommendationsToken: String?
+
     /// Whether more playlist tracks are available to load.
     var hasMorePlaylistTracks: Bool {
         self.playlistContinuationToken != nil
@@ -782,8 +786,10 @@ final class YTMusicClient: YTMusicClientProtocol {
 
         let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: id)
 
-        // Store continuation token for pagination
+        // Store continuation tokens for pagination. Tracks and recommendations are separate: the
+        // section that follows the playlist's shelf is not part of the playlist.
         self.playlistContinuationToken = response.continuationToken
+        self.playlistRecommendationsToken = response.recommendationsToken
         let hasMore = response.hasMore
 
         self.logger.info("Parsed playlist '\(response.detail.title)' with \(response.detail.tracks.count) tracks, hasMore: \(hasMore)")
@@ -837,6 +843,30 @@ final class YTMusicClient: YTMusicClientProtocol {
         } catch {
             self.logger.warning("Failed to fetch playlist continuation: \(error.localizedDescription)")
             self.playlistContinuationToken = nil
+            throw error
+        }
+    }
+
+    /// Fetches the recommendation section that follows a playlist's tracks.
+    /// Returns nil when the page advertised no further section.
+    func getPlaylistRecommendationsContinuation() async throws -> PlaylistContinuationResponse? {
+        guard let token = playlistRecommendationsToken else {
+            self.logger.debug("No playlist recommendations continuation token available")
+            return nil
+        }
+
+        self.logger.info("Fetching playlist recommendations continuation")
+
+        do {
+            let continuationData = try await requestContinuation(token)
+            let response = PlaylistParser.parsePlaylistContinuation(continuationData)
+            self.playlistRecommendationsToken = response.continuationToken
+
+            self.logger.info("Playlist recommendations loaded: \(response.tracks.count) songs, hasMore: \(response.hasMore)")
+            return response
+        } catch {
+            self.logger.warning("Failed to fetch playlist recommendations: \(error.localizedDescription)")
+            self.playlistRecommendationsToken = nil
             throw error
         }
     }

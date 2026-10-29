@@ -476,7 +476,8 @@ enum PlaylistParser {
         let header = self.parsePlaylistHeader(data, playlistId: playlistId)
 
         // Parse tracks
-        let tracks = self.parsePlaylistTracks(data, fallbackThumbnailURL: header.thumbnailURL)
+        let page = self.parsePlaylistPage(data, fallbackThumbnailURL: header.thumbnailURL)
+        let tracks = page.tracks
         let trackCount = max(header.trackCount ?? 0, tracks.count)
 
         let playlist = Playlist(
@@ -497,7 +498,8 @@ enum PlaylistParser {
             availableSortOrders: header.availableSortOrders,
             isEditable: header.isEditable,
             mixPlaylistId: header.mixPlaylistId,
-            libraryPlaylistId: header.libraryPlaylistId
+            libraryPlaylistId: header.libraryPlaylistId,
+            recommendations: page.recommendations
         )
     }
 
@@ -506,7 +508,8 @@ enum PlaylistParser {
         let header = self.parsePlaylistHeader(data, playlistId: playlistId)
 
         // Parse tracks
-        let tracks = self.parsePlaylistTracks(data, fallbackThumbnailURL: header.thumbnailURL)
+        let page = self.parsePlaylistPage(data, fallbackThumbnailURL: header.thumbnailURL)
+        let tracks = page.tracks
         let trackCount = max(header.trackCount ?? 0, tracks.count)
 
         let playlist = Playlist(
@@ -527,13 +530,17 @@ enum PlaylistParser {
             availableSortOrders: header.availableSortOrders,
             isEditable: header.isEditable,
             mixPlaylistId: header.mixPlaylistId,
-            libraryPlaylistId: header.libraryPlaylistId
+            libraryPlaylistId: header.libraryPlaylistId,
+            recommendations: page.recommendations
         )
-        let continuationToken = Self.extractPlaylistContinuationToken(from: data)
 
-        Self.logger.debug("parsePlaylistWithContinuation: tracks=\(tracks.count), hasToken=\(continuationToken != nil)")
+        Self.logger.debug("parsePlaylistWithContinuation: tracks=\(tracks.count), recommendations=\(page.recommendations?.tracks.count ?? 0), hasToken=\(page.trackToken != nil), hasRecommendationsToken=\(page.recommendationsToken != nil)")
 
-        return PlaylistTracksResponse(detail: detail, continuationToken: continuationToken)
+        return PlaylistTracksResponse(
+            detail: detail,
+            continuationToken: page.trackToken,
+            recommendationsToken: page.recommendationsToken
+        )
     }
 
     /// Parses playlist continuation response.
@@ -594,7 +601,11 @@ enum PlaylistParser {
         // Try legacy format first, then 2025 format
         let token = Self.extractTokenFromRenderer(shelfContinuation) ?? Self.extractTokenFromContents(contents)
 
-        return PlaylistContinuationResponse(tracks: tracks, continuationToken: token)
+        return PlaylistContinuationResponse(
+            tracks: tracks,
+            continuationToken: token,
+            title: Self.shelfTitle(shelfContinuation)
+        )
     }
 
     /// Parses sectionListContinuation format.
@@ -609,15 +620,19 @@ enum PlaylistParser {
 
         var tracks: [Song] = []
         var token: String?
+        var title: String?
 
         for sectionData in sectionContents {
             if let (sectionTracks, sectionToken) = Self.parseShelfFromSection(sectionData, key: "musicPlaylistShelfRenderer") {
                 tracks.append(contentsOf: sectionTracks)
                 token = token ?? sectionToken
             }
-            if let (sectionTracks, sectionToken) = Self.parseShelfFromSection(sectionData, key: "musicShelfRenderer") {
+            if let shelfRenderer = sectionData["musicShelfRenderer"] as? [String: Any],
+               let (sectionTracks, sectionToken) = Self.parseShelfFromSection(sectionData, key: "musicShelfRenderer")
+            {
                 tracks.append(contentsOf: sectionTracks)
                 token = token ?? sectionToken
+                title = title ?? Self.shelfTitle(shelfRenderer)
             }
         }
 
@@ -626,7 +641,9 @@ enum PlaylistParser {
             token = Self.extractTokenFromRenderer(sectionListContinuation)
         }
 
-        return tracks.isEmpty ? nil : PlaylistContinuationResponse(tracks: tracks, continuationToken: token)
+        return tracks.isEmpty
+            ? nil
+            : PlaylistContinuationResponse(tracks: tracks, continuationToken: token, title: title)
     }
 
     /// Parses a shelf renderer from a section.
@@ -669,7 +686,7 @@ enum PlaylistParser {
     /// Parses liked songs response with pagination support.
     /// Checks both legacy continuations format and 2025 continuationItemRenderer format.
     static func parseLikedSongs(_ data: [String: Any]) -> LikedSongsResponse {
-        let tracks = self.parsePlaylistTracks(data, fallbackThumbnailURL: nil)
+        let tracks = self.parsePlaylistPage(data, fallbackThumbnailURL: nil).tracks
         let continuationToken = Self.extractContinuationToken(from: data)
         Self.logger.info("Parsed \(tracks.count) liked songs, hasMore: \(continuationToken != nil)")
         return LikedSongsResponse(songs: tracks, continuationToken: continuationToken)
@@ -782,173 +799,6 @@ enum PlaylistParser {
             return token
         }
 
-        return nil
-    }
-
-    /// Extracts continuation token from playlist browse response (handles multiple renderer types).
-    private static func extractPlaylistContinuationToken(from data: [String: Any]) -> String? {
-        guard let contents = data["contents"] as? [String: Any] else {
-            self.logger.debug("No contents key found in playlist response. Top keys: \(Array(data.keys))")
-            return nil
-        }
-
-        Self.logger.debug("Contents keys: \(Array(contents.keys))")
-
-        // Try singleColumnBrowseResultsRenderer path
-        if let token = Self.extractTokenFromSingleColumnRenderer(contents) {
-            return token
-        }
-
-        // Try twoColumnBrowseResultsRenderer path
-        if let token = Self.extractTokenFromTwoColumnRenderer(contents) {
-            return token
-        }
-
-        return nil
-    }
-
-    /// Extracts token from singleColumnBrowseResultsRenderer.
-    private static func extractTokenFromSingleColumnRenderer(_ contents: [String: Any]) -> String? {
-        guard let singleColumnBrowseResults = contents["singleColumnBrowseResultsRenderer"] as? [String: Any],
-              let tabs = singleColumnBrowseResults["tabs"] as? [[String: Any]],
-              let firstTab = tabs.first,
-              let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
-              let tabContent = tabRenderer["content"] as? [String: Any],
-              let sectionListRenderer = tabContent["sectionListRenderer"] as? [String: Any]
-        else {
-            return nil
-        }
-
-        // First check for continuation at sectionListRenderer level
-        if let token = Self.extractTokenFromRenderer(sectionListRenderer) {
-            Self.logger.debug("Found continuation token at sectionListRenderer level")
-            return token
-        }
-
-        // Check section contents
-        if let sectionContents = sectionListRenderer["contents"] as? [[String: Any]] {
-            return Self.extractTokenFromSectionContents(sectionContents)
-        }
-
-        return nil
-    }
-
-    /// Extracts token from twoColumnBrowseResultsRenderer.
-    private static func extractTokenFromTwoColumnRenderer(_ contents: [String: Any]) -> String? {
-        guard let twoColumnRenderer = contents["twoColumnBrowseResultsRenderer"] as? [String: Any] else {
-            return nil
-        }
-
-        Self.logger.debug("Found twoColumnBrowseResultsRenderer, keys: \(Array(twoColumnRenderer.keys))")
-
-        // Try secondaryContents path
-        if let token = Self.extractTokenFromSecondaryContents(twoColumnRenderer) {
-            return token
-        }
-
-        // Try tabs path
-        if let token = Self.extractTokenFromTabs(twoColumnRenderer) {
-            return token
-        }
-
-        return nil
-    }
-
-    /// Extracts token from secondaryContents.
-    /// Prioritizes track-level continuation (inside musicPlaylistShelfRenderer) over
-    /// section-level continuation (on sectionListRenderer) to ensure we paginate through
-    /// all playlist tracks before loading suggested/automix sections.
-    private static func extractTokenFromSecondaryContents(_ twoColumnRenderer: [String: Any]) -> String? {
-        guard let secondaryContents = twoColumnRenderer["secondaryContents"] as? [String: Any],
-              let sectionListRenderer = secondaryContents["sectionListRenderer"] as? [String: Any]
-        else {
-            return nil
-        }
-
-        // First check section contents for track-level continuation (musicPlaylistShelfRenderer)
-        // This must be checked BEFORE the section-level continuation to ensure we paginate
-        // through all playlist tracks, not skip to the suggested/automix section.
-        if let sectionContents = sectionListRenderer["contents"] as? [[String: Any]] {
-            Self.logger.debug("Found secondaryContents with \(sectionContents.count) sections")
-            if let token = Self.extractTokenFromSectionContents(sectionContents) {
-                return token
-            }
-        }
-
-        // Fall back to section-level continuation (sectionListRenderer.continuations)
-        // This token loads the next section (e.g., suggested tracks) after all track pages are exhausted.
-        if let token = Self.extractTokenFromRenderer(sectionListRenderer) {
-            Self.logger.debug("Found continuation token at secondaryContents sectionListRenderer level (section-level)")
-            return token
-        }
-
-        return nil
-    }
-
-    /// Extracts token from tabs path.
-    private static func extractTokenFromTabs(_ twoColumnRenderer: [String: Any]) -> String? {
-        guard let tabs = twoColumnRenderer["tabs"] as? [[String: Any]],
-              let firstTab = tabs.first,
-              let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
-              let tabContent = tabRenderer["content"] as? [String: Any],
-              let sectionListRenderer = tabContent["sectionListRenderer"] as? [String: Any],
-              let sectionContents = sectionListRenderer["contents"] as? [[String: Any]]
-        else {
-            return nil
-        }
-
-        Self.logger.debug("Found twoColumnBrowseResultsRenderer tabs with \(sectionContents.count) sections")
-
-        for sectionData in sectionContents {
-            if let shelfRenderer = sectionData["musicShelfRenderer"] as? [String: Any],
-               let token = Self.extractTokenFromRenderer(shelfRenderer)
-            {
-                Self.logger.debug("Found continuation token in tabs musicShelfRenderer")
-                return token
-            }
-            if let playlistShelfRenderer = sectionData["musicPlaylistShelfRenderer"] as? [String: Any],
-               let token = Self.extractTokenFromRenderer(playlistShelfRenderer)
-            {
-                Self.logger.debug("Found continuation token in tabs musicPlaylistShelfRenderer")
-                return token
-            }
-        }
-
-        return nil
-    }
-
-    /// Extracts token from section contents array.
-    /// Prioritizes musicPlaylistShelfRenderer (main playlist tracks) over
-    /// musicShelfRenderer (suggested/automix section) to ensure we paginate
-    /// through actual playlist tracks before loading suggestions.
-    private static func extractTokenFromSectionContents(_ sectionContents: [[String: Any]]) -> String? {
-        // First pass: look for the main playlist section (musicPlaylistShelfRenderer)
-        for sectionData in sectionContents {
-            if let playlistShelfRenderer = sectionData["musicPlaylistShelfRenderer"] as? [String: Any] {
-                self.logger.debug("Found musicPlaylistShelfRenderer, has continuations: \(playlistShelfRenderer["continuations"] != nil)")
-                // Try legacy continuations format first
-                if let token = extractTokenFromRenderer(playlistShelfRenderer) {
-                    self.logger.debug("Found continuation token in musicPlaylistShelfRenderer (legacy format)")
-                    return token
-                }
-                // Try 2025 format - token at last item of contents
-                if let shelfContents = playlistShelfRenderer["contents"] as? [[String: Any]],
-                   let token = Self.extractTokenFromContents(shelfContents)
-                {
-                    return token
-                }
-            }
-        }
-        // Second pass: fall back to musicShelfRenderer (suggested/automix sections)
-        for sectionData in sectionContents {
-            if let shelfRenderer = sectionData["musicShelfRenderer"] as? [String: Any] {
-                self.logger.debug("Found musicShelfRenderer, has continuations: \(shelfRenderer["continuations"] != nil)")
-                if let token = extractTokenFromRenderer(shelfRenderer) {
-                    self.logger.debug("Found continuation token in musicShelfRenderer (suggested/automix)")
-                    return token
-                }
-            }
-        }
         return nil
     }
 
@@ -1653,89 +1503,172 @@ enum PlaylistParser {
 
     // MARK: - Track Parsing
 
-    private static func parsePlaylistTracks(_ data: [String: Any], fallbackThumbnailURL: URL?) -> [Song] {
+    /// One playlist browse page: the playlist's own shelf, the recommendation shelves that follow
+    /// it, and the continuation each of them advertises.
+    private struct PlaylistPageContent {
         var tracks: [Song] = []
-
-        if let contents = data["contents"] as? [String: Any] {
-            // Try singleColumnBrowseResultsRenderer path
-            if let singleColumnBrowseResults = contents["singleColumnBrowseResultsRenderer"] as? [String: Any],
-               let tabs = singleColumnBrowseResults["tabs"] as? [[String: Any]],
-               let firstTab = tabs.first,
-               let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
-               let tabContent = tabRenderer["content"] as? [String: Any],
-               let sectionListRenderer = tabContent["sectionListRenderer"] as? [String: Any],
-               let sectionContents = sectionListRenderer["contents"] as? [[String: Any]]
-            {
-                tracks.append(contentsOf: self.parseTracksFromSections(sectionContents, fallbackThumbnailURL: fallbackThumbnailURL))
-            }
-
-            // Try twoColumnBrowseResultsRenderer path
-            if tracks.isEmpty,
-               let twoColumnRenderer = contents["twoColumnBrowseResultsRenderer"] as? [String: Any]
-            {
-                if let secondaryContents = twoColumnRenderer["secondaryContents"] as? [String: Any],
-                   let sectionListRenderer = secondaryContents["sectionListRenderer"] as? [String: Any],
-                   let sectionContents = sectionListRenderer["contents"] as? [[String: Any]]
-                {
-                    tracks.append(contentsOf: self.parseTracksFromSections(sectionContents, fallbackThumbnailURL: fallbackThumbnailURL))
-                }
-
-                if tracks.isEmpty,
-                   let tabs = twoColumnRenderer["tabs"] as? [[String: Any]],
-                   let firstTab = tabs.first,
-                   let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
-                   let tabContent = tabRenderer["content"] as? [String: Any],
-                   let sectionListRenderer = tabContent["sectionListRenderer"] as? [String: Any],
-                   let sectionContents = sectionListRenderer["contents"] as? [[String: Any]]
-                {
-                    tracks.append(contentsOf: self.parseTracksFromSections(sectionContents, fallbackThumbnailURL: fallbackThumbnailURL))
-                }
-            }
-        }
-
-        // Try recursive search if no tracks found
-        if tracks.isEmpty {
-            if let contents = data["contents"] as? [String: Any] {
-                for (_, value) in contents {
-                    if let renderer = value as? [String: Any] {
-                        tracks.append(contentsOf: self.findTracksRecursively(in: renderer, depth: 0, fallbackThumbnailURL: fallbackThumbnailURL))
-                        if !tracks.isEmpty {
-                            break
-                        }
-                    }
-                }
-            }
-        }
-
-        return tracks
+        var recommendations: PlaylistRecommendations?
+        var trackToken: String?
+        var recommendationsToken: String?
     }
 
-    private static func parseTracksFromSections(_ sections: [[String: Any]], fallbackThumbnailURL: URL?) -> [Song] {
-        var tracks: [Song] = []
+    private static func parsePlaylistPage(_ data: [String: Any], fallbackThumbnailURL: URL?) -> PlaylistPageContent {
+        if let page = self.parseShelfPage(data, fallbackThumbnailURL: fallbackThumbnailURL) {
+            return page
+        }
 
-        for sectionData in sections {
-            if let shelfRenderer = sectionData["musicShelfRenderer"] as? [String: Any],
-               let shelfContents = shelfRenderer["contents"] as? [[String: Any]]
+        return self.parsePageRecursively(data, fallbackThumbnailURL: fallbackThumbnailURL)
+    }
+
+    private static func parseShelfPage(_ data: [String: Any], fallbackThumbnailURL: URL?) -> PlaylistPageContent? {
+        guard let (sections, sectionToken) = Self.playlistSections(in: data) else { return nil }
+
+        // The playlist's own rows are the page's first shelf: `musicPlaylistShelfRenderer` for a
+        // playlist (and a modern Liked Music page), `musicShelfRenderer` on older and album pages.
+        // Every song shelf *after* it is a recommendation shelf — YouTube Music appends those to an
+        // owned playlist, and they are not part of the playlist.
+        let primaryIndex = sections.firstIndex { $0["musicPlaylistShelfRenderer"] != nil }
+            ?? sections.firstIndex { $0["musicShelfRenderer"] != nil }
+        guard let primaryIndex else { return nil }
+
+        var page = PlaylistPageContent()
+        let primaryShelf = sections[primaryIndex]["musicPlaylistShelfRenderer"] as? [String: Any]
+            ?? sections[primaryIndex]["musicShelfRenderer"] as? [String: Any]
+
+        if let primaryShelf {
+            page.tracks = Self.parseSongs(in: primaryShelf, fallbackThumbnailURL: fallbackThumbnailURL)
+            page.trackToken = Self.shelfToken(primaryShelf)
+        }
+
+        var recommendedTracks: [Song] = []
+        var recommendationTitle: String?
+        var recommendationShelfToken: String?
+
+        for section in sections.dropFirst(primaryIndex + 1) {
+            guard let shelf = section["musicShelfRenderer"] as? [String: Any] else { continue }
+            let songs = Self.parseSongs(in: shelf, fallbackThumbnailURL: fallbackThumbnailURL)
+            guard !songs.isEmpty else { continue }
+
+            recommendationTitle = recommendationTitle ?? Self.shelfTitle(shelf)
+            recommendationShelfToken = recommendationShelfToken ?? Self.shelfToken(shelf)
+            recommendedTracks.append(contentsOf: songs)
+        }
+
+        if !recommendedTracks.isEmpty {
+            page.recommendations = PlaylistRecommendations(
+                title: recommendationTitle ?? String(localized: "Recommendations"),
+                tracks: recommendedTracks
+            )
+        }
+
+        // A page that does not inline its suggestions loads the whole next section instead of the
+        // shelf, so the section-level token is the recommendation continuation when the shelf
+        // advertised none of its own.
+        page.recommendationsToken = recommendationShelfToken ?? sectionToken
+        return page
+    }
+
+    /// The section list a playlist page renders its shelves in, plus its section-level continuation.
+    private static func playlistSections(in data: [String: Any]) -> (sections: [[String: Any]], sectionToken: String?)? {
+        guard let contents = data["contents"] as? [String: Any] else { return nil }
+
+        if let singleColumn = contents["singleColumnBrowseResultsRenderer"] as? [String: Any],
+           let sectionList = Self.sectionListRenderer(in: singleColumn)
+        {
+            return Self.sections(from: sectionList)
+        }
+
+        if let twoColumn = contents["twoColumnBrowseResultsRenderer"] as? [String: Any] {
+            if let secondaryContents = twoColumn["secondaryContents"] as? [String: Any],
+               let sectionList = Self.sectionListRenderer(in: secondaryContents),
+               let secondary = Self.sections(from: sectionList),
+               secondary.sections.contains(where: Self.hasShelf)
             {
-                for itemData in shelfContents {
-                    if let track = parseTrackItem(itemData, fallbackThumbnailURL: fallbackThumbnailURL) {
-                        tracks.append(track)
-                    }
-                }
+                return secondary
             }
 
-            if let playlistShelfRenderer = sectionData["musicPlaylistShelfRenderer"] as? [String: Any],
-               let playlistContents = playlistShelfRenderer["contents"] as? [[String: Any]]
-            {
-                for itemData in playlistContents {
-                    if let track = parseTrackItem(itemData, fallbackThumbnailURL: fallbackThumbnailURL) {
-                        tracks.append(track)
-                    }
+            if let sectionList = Self.sectionListRenderer(in: twoColumn) {
+                return Self.sections(from: sectionList)
+            }
+        }
+
+        return nil
+    }
+
+    private static func sectionListRenderer(in node: [String: Any]) -> [String: Any]? {
+        if let sectionList = node["sectionListRenderer"] as? [String: Any] {
+            return sectionList
+        }
+
+        guard let tabs = node["tabs"] as? [[String: Any]],
+              let firstTab = tabs.first,
+              let tabRenderer = firstTab["tabRenderer"] as? [String: Any],
+              let content = tabRenderer["content"] as? [String: Any]
+        else {
+            return nil
+        }
+
+        return content["sectionListRenderer"] as? [String: Any]
+    }
+
+    private static func sections(from sectionList: [String: Any]) -> (sections: [[String: Any]], sectionToken: String?)? {
+        guard let sections = sectionList["contents"] as? [[String: Any]] else { return nil }
+        return (sections, Self.extractTokenFromRenderer(sectionList))
+    }
+
+    private static func hasShelf(_ section: [String: Any]) -> Bool {
+        section["musicPlaylistShelfRenderer"] != nil || section["musicShelfRenderer"] != nil
+    }
+
+    private static func parseSongs(in shelf: [String: Any], fallbackThumbnailURL: URL?) -> [Song] {
+        guard let contents = shelf["contents"] as? [[String: Any]] else { return [] }
+        return contents.compactMap { self.parseTrackItem($0, fallbackThumbnailURL: fallbackThumbnailURL) }
+    }
+
+    /// The continuation a shelf advertises, in either the legacy `continuations` form or the 2025
+    /// trailing `continuationItemRenderer`.
+    private static func shelfToken(_ shelf: [String: Any]) -> String? {
+        if let token = Self.extractTokenFromRenderer(shelf) {
+            return token
+        }
+
+        guard let contents = shelf["contents"] as? [[String: Any]] else { return nil }
+        return Self.extractTokenFromContents(contents)
+    }
+
+    private static func shelfTitle(_ shelf: [String: Any]) -> String? {
+        guard let title = shelf["title"] as? [String: Any] else { return nil }
+
+        let text: String? = if let runs = title["runs"] as? [[String: Any]] {
+            runs.compactMap { $0["text"] as? String }.joined()
+        } else {
+            title["simpleText"] as? String
+        }
+
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+
+        return trimmed
+    }
+
+    private static func parsePageRecursively(_ data: [String: Any], fallbackThumbnailURL: URL?) -> PlaylistPageContent {
+        var page = PlaylistPageContent()
+
+        guard let contents = data["contents"] as? [String: Any] else { return page }
+
+        for (_, value) in contents {
+            if let renderer = value as? [String: Any] {
+                page.tracks = self.findTracksRecursively(in: renderer, depth: 0, fallbackThumbnailURL: fallbackThumbnailURL)
+                if !page.tracks.isEmpty {
+                    break
                 }
             }
         }
 
-        return tracks
+        return page
     }
 
     private static func parseTrackItem(_ data: [String: Any], fallbackThumbnailURL: URL?) -> Song? {

@@ -691,4 +691,47 @@ struct PlaylistDetailViewModelTests {
         #expect(self.viewModel.playlistDetail?.sortOrder == .newestLast)
         #expect(self.viewModel.sortOrderError == nil)
     }
+
+    // MARK: - Recommendations
+
+    /// The section YouTube Music loads after a playlist's tracks is a set of suggestions, not more
+    /// rows of the playlist: appending it to `tracks` numbered them as entries and offered to remove
+    /// them from a playlist they were never in.
+    @Test("Recommendations that follow the tracks stay out of the playlist")
+    func recommendationsStayOutOfTracks() async {
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            tracks: TestFixtures.makeSongs(count: 3)
+        )
+        self.mockClient.playlistRecommendationTracks = [[
+            TestFixtures.makeSong(id: "rec-1"),
+            TestFixtures.makeSong(id: "rec-2"),
+        ]]
+
+        await self.viewModel.load()
+
+        #expect(self.mockClient.getPlaylistRecommendationsContinuationCalled)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 3)
+        #expect(self.viewModel.playlistDetail?.recommendations?.tracks.map(\.videoId) == ["rec-1", "rec-2"])
+        #expect(self.viewModel.playlistDetail?.recommendations?.title == "Recommendations")
+    }
+
+    /// A page that inlines the shelf needs no second request, and the songs are still kept apart.
+    @Test("Inline recommendations are not fetched again")
+    func inlineRecommendationsNeedNoRequest() async {
+        self.mockClient.playlistDetails["VL-test-playlist"] = PlaylistDetail(
+            playlist: TestFixtures.makePlaylist(id: "VL-test-playlist"),
+            tracks: TestFixtures.makeSongs(count: 2),
+            recommendations: PlaylistRecommendations(
+                title: "Recommendations",
+                tracks: [TestFixtures.makeSong(id: "rec-inline")]
+            )
+        )
+
+        await self.viewModel.load()
+
+        #expect(!self.mockClient.getPlaylistRecommendationsContinuationCalled)
+        #expect(self.viewModel.playlistDetail?.tracks.count == 2)
+        #expect(self.viewModel.playlistDetail?.recommendations?.tracks.map(\.videoId) == ["rec-inline"])
+    }
 }

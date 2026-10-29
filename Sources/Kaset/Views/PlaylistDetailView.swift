@@ -60,6 +60,9 @@ struct PlaylistDetailView: View {
     /// passing under a stationary pointer don't animate their background mid-flick.
     @State private var isScrolling: Bool = false
 
+    /// Video IDs of recommendations whose add request is in flight.
+    @State private var addingRecommendationVideoIds: Set<String> = []
+
     /// Scroll distance from the bottom, in points, at which the next page is requested.
     /// Requesting a page this early keeps the fetch and its spinner below the visible
     /// window, so scrolling never waits on the network.
@@ -306,6 +309,12 @@ struct PlaylistDetailView: View {
                     }
 
                     self.trackRows(detail, tracks: tracks)
+
+                    if self.viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let recommendations = detail.recommendations
+                    {
+                        self.recommendationsSection(recommendations)
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -1130,6 +1139,54 @@ struct PlaylistDetailView: View {
         }
     }
 
+    /// The songs YouTube Music suggests for this playlist, drawn as their own section after the
+    /// playlist's rows. They are not playlist entries: the rows carry no position number, no actions
+    /// menu and no removal, only one button that adds them to this playlist.
+    @ViewBuilder
+    private func recommendationsSection(_ recommendations: PlaylistRecommendations) -> some View {
+        let currentVideoId = self.playerService.currentTrack?.videoId
+        let isPlaying = self.playerService.isPlaying
+
+        Text(verbatim: recommendations.title)
+            .font(.title3)
+            .fontWeight(.semibold)
+            .padding(.horizontal, PlaylistTrackRow.contentInset)
+            .padding(.top, 20)
+            .padding(.bottom, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
+        ForEach(Array(recommendations.tracks.enumerated()), id: \.element.id) { index, track in
+            PlaylistTrackRow(
+                song: track,
+                index: index,
+                isAlbum: false,
+                isCurrentTrack: currentVideoId == track.videoId,
+                isPlaying: isPlaying,
+                showsSeparator: index < recommendations.tracks.count - 1,
+                showsIndex: false,
+                isScrolling: self.isScrolling,
+                favoritesManager: self.favoritesManager,
+                likeStatusManager: self.likeStatusManager,
+                playerService: self.playerService,
+                client: self.viewModel.client,
+                libraryViewModel: self.libraryViewModel,
+                onPlay: { self.playTrack(in: recommendations.tracks, at: index) },
+                onRemoveFromPlaylist: nil,
+                onAddToCurrentPlaylist: {
+                    Task { await self.addRecommendationToPlaylist(track) }
+                },
+                isAddingToCurrentPlaylist: self.addingRecommendationVideoIds.contains(track.videoId)
+            )
+            .equatable()
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+        }
+    }
+
     /// Plays the row's queue from the list currently on screen, so a filtered result plays the
     /// filtered songs rather than the full playlist.
     private func playTrack(in tracks: [Song], at index: Int) {
@@ -1315,6 +1372,29 @@ struct PlaylistDetailView: View {
         } catch {
             self.playlistActionError = error.localizedDescription
             DiagnosticsLogger.api.error("Failed to rename playlist: \(error.localizedDescription)")
+        }
+    }
+
+    /// Adds a suggested song to this playlist and reloads it, so the suggestion becomes a row the
+    /// playlist owns instead of a suggestion. The add button shows the request's progress.
+    private func addRecommendationToPlaylist(_ track: Song) async {
+        guard !self.addingRecommendationVideoIds.contains(track.videoId) else { return }
+
+        self.addingRecommendationVideoIds.insert(track.videoId)
+        defer { self.addingRecommendationVideoIds.remove(track.videoId) }
+
+        do {
+            _ = try await self.viewModel.client.addSongToPlaylist(
+                videoId: track.videoId,
+                playlistId: self.playlist.id
+            )
+            self.playlistActionError = nil
+            self.libraryViewModel?.markNeedsReloadOnActivation()
+            await self.viewModel.refresh()
+            await self.libraryViewModel?.refreshFromNetwork()
+        } catch {
+            self.playlistActionError = error.localizedDescription
+            DiagnosticsLogger.api.error("Failed to add recommendation to playlist: \(error.localizedDescription)")
         }
     }
 

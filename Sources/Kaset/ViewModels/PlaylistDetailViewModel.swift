@@ -15,6 +15,13 @@ final class PlaylistDetailViewModel {
     /// Whether more tracks are available to load.
     private(set) var hasMore: Bool = false
 
+    /// Whether the section that follows the tracks (the recommendations) is still to be loaded.
+    private(set) var hasMoreRecommendations: Bool = false
+
+    /// Whether the recommendation section is being fetched. Recommendations are not the playlist's
+    /// rows: they get their own section, and their request must never be mixed into track pagination.
+    private(set) var isLoadingRecommendations: Bool = false
+
     private let playlist: Playlist
     /// The API client (exposed for add to library action).
     let client: any YTMusicClientProtocol
@@ -136,6 +143,8 @@ final class PlaylistDetailViewModel {
         self.playlistDetail = nil
         self.loadedVideoIds = []
         self.hasMore = false
+        self.hasMoreRecommendations = false
+        self.isLoadingRecommendations = false
         self.sortOrderError = nil
         self.loadingState = .idle
     }
@@ -159,6 +168,7 @@ final class PlaylistDetailViewModel {
             self.playlistDetail = result.detail
             self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
+            self.hasMoreRecommendations = result.hasRecommendations && result.detail.recommendations == nil
             self.loadingState = .loaded
             let loadedTrackCount = result.detail.tracks.count
             let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
@@ -166,6 +176,10 @@ final class PlaylistDetailViewModel {
 
             // Keep a page of headroom below the loaded tracks so a fast scroll never waits on the network.
             self.prefillNextPage()
+
+            if !self.hasMore {
+                await self.loadRecommendationsIfNeeded()
+            }
         } catch is CancellationError {
             // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
             guard generation == self.loadGeneration else { return }
@@ -178,7 +192,7 @@ final class PlaylistDetailViewModel {
         }
     }
 
-    private func fetchPlaylistDetail() async throws -> (detail: PlaylistDetail, hasMore: Bool) {
+    private func fetchPlaylistDetail() async throws -> (detail: PlaylistDetail, hasMore: Bool, hasRecommendations: Bool) {
         // For radio playlists (RDCLAK prefix), use the queue API to get all tracks at once
         // This bypasses the broken continuation pagination for these playlists
         // Check for both VL-prefixed and raw RDCLAK IDs
@@ -215,7 +229,8 @@ final class PlaylistDetailViewModel {
                         sortOrder: detail.sortOrder,
                         availableSortOrders: detail.availableSortOrders,
                         isEditable: detail.isEditable,
-                        mixPlaylistId: detail.mixPlaylistId
+                        mixPlaylistId: detail.mixPlaylistId,
+                        recommendations: detail.recommendations
                     )
                     hasMore = false
                 }
@@ -261,11 +276,16 @@ final class PlaylistDetailViewModel {
                 sortOrder: detail.sortOrder,
                 availableSortOrders: detail.availableSortOrders,
                 isEditable: detail.isEditable,
-                mixPlaylistId: detail.mixPlaylistId
+                mixPlaylistId: detail.mixPlaylistId,
+                recommendations: detail.recommendations
             )
         }
 
-        return (detail: self.fillingArtistsFromAlbum(detail), hasMore: hasMore)
+        return (
+            detail: self.fillingArtistsFromAlbum(detail),
+            hasMore: hasMore,
+            hasRecommendations: response.recommendationsToken != nil
+        )
     }
 
     /// Album pages list their tracks without bylines, so a row would show no artist even though the
@@ -324,7 +344,8 @@ final class PlaylistDetailViewModel {
             sortOrder: detail.sortOrder,
             availableSortOrders: detail.availableSortOrders,
             isEditable: detail.isEditable,
-            mixPlaylistId: detail.mixPlaylistId
+            mixPlaylistId: detail.mixPlaylistId,
+            recommendations: detail.recommendations
         )
     }
 
@@ -427,12 +448,19 @@ final class PlaylistDetailViewModel {
                 sortOrder: currentDetail.sortOrder,
                 availableSortOrders: currentDetail.availableSortOrders,
                 isEditable: currentDetail.isEditable,
-                mixPlaylistId: currentDetail.mixPlaylistId
+                mixPlaylistId: currentDetail.mixPlaylistId,
+                recommendations: currentDetail.recommendations
             ))
             self.hasMore = response.hasMore
 
             let loadedTrackCount = allTracks.count
             self.logger.info("Loaded \(newTracks.count) new tracks (from \(response.tracks.count)), loaded total: \(loadedTrackCount), reported total: \(preservedTrackCount), hasMore: \(self.hasMore)")
+
+            // The last track page is where the page's next section — its recommendations — begins.
+            if !self.hasMore {
+                await self.loadRecommendationsIfNeeded()
+            }
+
             return true
         } catch is CancellationError {
             self.logger.debug("Playlist continuation cancelled")
@@ -441,6 +469,95 @@ final class PlaylistDetailViewModel {
             self.logger.error("Failed to load more playlist tracks: \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// Loads the recommendation section that follows the tracks when the browse page did not inline
+    /// it — the page's section-level continuation is what carries it.
+    ///
+    /// The songs land in `PlaylistDetail.recommendations`, never in `tracks`: they are suggestions
+    /// YouTube Music makes for the playlist, not rows the playlist holds.
+    private func loadRecommendationsIfNeeded() async {
+        guard let detail = self.playlistDetail,
+              detail.recommendations == nil,
+              self.hasMoreRecommendations,
+              !self.isLoadingRecommendations
+        else {
+            return
+        }
+
+        let generation = self.loadGeneration
+        self.isLoadingRecommendations = true
+        self.hasMoreRecommendations = false
+        defer { self.isLoadingRecommendations = false }
+
+        var songs: [Song] = []
+        var loadedVideoIds: Set<String> = []
+        var title: String?
+
+        do {
+            while true {
+                guard let response = try await self.client.getPlaylistRecommendationsContinuation() else {
+                    break
+                }
+
+                // A page requested for a list that is gone must not mutate what replaced it.
+                guard generation == self.loadGeneration else { return }
+
+                let newSongs = response.tracks.filter { loadedVideoIds.insert($0.videoId).inserted }
+                guard !newSongs.isEmpty else { break }
+
+                title = title ?? response.title
+                songs.append(contentsOf: newSongs)
+                self.hasMoreRecommendations = response.hasMore
+
+                if !response.hasMore {
+                    break
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            self.logger.warning("Failed to load playlist recommendations: \(error.localizedDescription)")
+            return
+        }
+
+        guard generation == self.loadGeneration,
+              !songs.isEmpty,
+              let current = self.playlistDetail,
+              current.recommendations == nil
+        else {
+            return
+        }
+
+        self.playlistDetail = self.detail(current, recommendations: PlaylistRecommendations(
+            title: title ?? String(localized: "Recommendations"),
+            tracks: songs
+        ))
+        self.logger.info("Loaded \(songs.count) playlist recommendations")
+    }
+
+    /// A copy of the detail with the recommendation section attached, so every other field the page
+    /// has loaded survives.
+    private func detail(_ detail: PlaylistDetail, recommendations: PlaylistRecommendations) -> PlaylistDetail {
+        PlaylistDetail(
+            playlist: Playlist(
+                id: detail.id,
+                title: detail.title,
+                description: detail.description,
+                thumbnailURL: detail.thumbnailURL,
+                trackCount: detail.trackCount,
+                author: detail.author
+            ),
+            tracks: detail.tracks,
+            duration: detail.duration,
+            artists: detail.artists,
+            sortOrder: detail.sortOrder,
+            availableSortOrders: detail.availableSortOrders,
+            isEditable: detail.isEditable,
+            mixPlaylistId: detail.mixPlaylistId,
+            libraryPlaylistId: detail.libraryPlaylistId,
+            recommendations: recommendations
+        )
     }
 
     /// Refreshes the playlist.
@@ -494,10 +611,15 @@ final class PlaylistDetailViewModel {
             self.playlistDetail = result.detail
             self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
+            self.hasMoreRecommendations = result.hasRecommendations && result.detail.recommendations == nil
             let loadedTrackCount = result.detail.tracks.count
             let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
             self.logger.info("Playlist refreshed: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
             self.prefillNextPage()
+
+            if !self.hasMore {
+                await self.loadRecommendationsIfNeeded()
+            }
         } catch is CancellationError {
             self.logger.debug("Playlist refresh cancelled")
         } catch {

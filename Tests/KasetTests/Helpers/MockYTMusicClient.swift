@@ -63,6 +63,10 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     var likedSongsContinuationSongs: [[Song]] = []
     var playlistDetails: [String: PlaylistDetail] = [:]
     var playlistContinuationTracks: [String: [[Song]]] = [:]
+    /// Pages served by `getPlaylistRecommendationsContinuation`, in order.
+    var playlistRecommendationTracks: [[Song]] = []
+    private(set) var getPlaylistRecommendationsContinuationCalled = false
+    private var _playlistRecommendationsIndex = 0
     var artistDetails: [String: ArtistDetail] = [:]
     var artistSongs: [String: [Song]] = [:]
     var artistSongsResponse: [Song] = []
@@ -592,12 +596,17 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.getPlaylistIds.append(id)
         self._currentPlaylistId = id
         self._playlistContinuationIndex = 0
+        self._playlistRecommendationsIndex = 0
         if let error = shouldThrowError { throw error }
         guard let detail = playlistDetails[id] else {
             throw YTMusicError.parseError(message: "Playlist not found: \(id)")
         }
         let hasContinuation = self.playlistContinuationTracks[id]?.isEmpty == false
-        return PlaylistTracksResponse(detail: detail, continuationToken: hasContinuation ? "mock-token" : nil)
+        return PlaylistTracksResponse(
+            detail: detail,
+            continuationToken: hasContinuation ? "mock-token" : nil,
+            recommendationsToken: self.playlistRecommendationTracks.isEmpty ? nil : "mock-recommendations-token"
+        )
     }
 
     func getPlaylistContinuation() async throws -> PlaylistContinuationResponse? {
@@ -619,6 +628,22 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self._playlistContinuationIndex += 1
         let hasMore = self._playlistContinuationIndex < continuations.count
         return PlaylistContinuationResponse(tracks: tracks, continuationToken: hasMore ? "mock-token-\(self._playlistContinuationIndex)" : nil)
+    }
+
+    func getPlaylistRecommendationsContinuation() async throws -> PlaylistContinuationResponse? {
+        self.getPlaylistRecommendationsContinuationCalled = true
+        if let error = shouldThrowError { throw error }
+        guard self._playlistRecommendationsIndex < self.playlistRecommendationTracks.count else {
+            return nil
+        }
+        let tracks = self.playlistRecommendationTracks[self._playlistRecommendationsIndex]
+        self._playlistRecommendationsIndex += 1
+        let hasMore = self._playlistRecommendationsIndex < self.playlistRecommendationTracks.count
+        return PlaylistContinuationResponse(
+            tracks: tracks,
+            continuationToken: hasMore ? "mock-recommendations-token-\(self._playlistRecommendationsIndex)" : nil,
+            title: "Recommendations"
+        )
     }
 
     func getPlaylistAllTracks(playlistId: String) async throws -> [Song] {
@@ -777,7 +802,8 @@ final class MockYTMusicClient: YTMusicClientProtocol {
                 artists: existing.artists,
                 sortOrder: sortOrder,
                 availableSortOrders: existing.availableSortOrders,
-                isEditable: existing.isEditable
+                isEditable: existing.isEditable,
+                recommendations: existing.recommendations
             )
         }
     }

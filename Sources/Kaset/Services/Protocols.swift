@@ -179,6 +179,11 @@ protocol YTMusicClientProtocol: Sendable {
     /// Returns nil if no more tracks are available.
     func getPlaylistContinuation() async throws -> PlaylistContinuationResponse?
 
+    /// Fetches the recommendation section that follows a playlist's tracks, and any further
+    /// recommendation pages it advertises.
+    /// Returns nil when the page has no more sections to load.
+    func getPlaylistRecommendationsContinuation() async throws -> PlaylistContinuationResponse?
+
     /// Whether more playlist tracks are available to load.
     var hasMorePlaylistTracks: Bool { get }
 

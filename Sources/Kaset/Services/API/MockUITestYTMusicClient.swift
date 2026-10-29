@@ -302,6 +302,10 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         nil
     }
 
+    func getPlaylistRecommendationsContinuation() async throws -> PlaylistContinuationResponse? {
+        nil
+    }
+
     func getPlaylistAllTracks(playlistId _: String) async throws -> [Song] {
         try? await Task.sleep(for: .milliseconds(100))
         return Self.defaultSongs(count: 50)

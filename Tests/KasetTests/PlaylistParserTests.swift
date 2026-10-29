@@ -130,6 +130,76 @@ struct PlaylistParserTests {
         #expect(detail.tracks.isEmpty)
     }
 
+    /// An owned playlist page appends a recommendation shelf after its own. Those songs are
+    /// suggestions, not playlist rows: keeping them in `tracks` numbered them as entries and offered
+    /// to remove them from a playlist they were never in.
+    @Test("Recommendation shelf is not part of the playlist's tracks")
+    func parsePlaylistRecommendationsAreSeparate() {
+        let data = self.makeOwnedPlaylistData(
+            tracks: [("playlist-1", "Playlist One"), ("playlist-2", "Playlist Two")],
+            recommendations: [("rec-1", "Suggestion One"), ("rec-2", "Suggestion Two")],
+            recommendationTitle: "Recommendations"
+        )
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "VLowned")
+
+        #expect(response.detail.tracks.map(\.videoId) == ["playlist-1", "playlist-2"])
+        #expect(response.detail.recommendations?.tracks.map(\.videoId) == ["rec-1", "rec-2"])
+        #expect(response.detail.recommendations?.title == "Recommendations")
+        #expect(response.detail.resolvedTrackCount == 2)
+        #expect(response.continuationToken == "tracks-token")
+        #expect(response.recommendationsToken == "sections-token")
+    }
+
+    /// The recommendation shelf's own token is what continues that shelf; the page's section-level
+    /// token is only the fallback for pages that do not inline the shelf.
+    @Test("Recommendation shelf advertises its own continuation")
+    func parseRecommendationShelfToken() {
+        let data = self.makeOwnedPlaylistData(
+            tracks: [("playlist-1", "Playlist One")],
+            recommendations: [("rec-1", "Suggestion One")],
+            recommendationTitle: "Recommendations",
+            recommendationToken: "recommendations-token"
+        )
+
+        let response = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: "VLowned")
+
+        #expect(response.continuationToken == "tracks-token")
+        #expect(response.recommendationsToken == "recommendations-token")
+    }
+
+    /// A page that did not inline its suggestions loads the next section instead; that continuation
+    /// must come back as recommendations too, with the shelf's title.
+    @Test("Recommendation continuation section keeps its title")
+    func parseRecommendationContinuationSection() {
+        let data: [String: Any] = [
+            "continuationContents": [
+                "sectionListContinuation": [
+                    "contents": [[
+                        "musicShelfRenderer": [
+                            "title": ["runs": [["text": "You might like"]]],
+                            "contents": [[
+                                "musicResponsiveListItemRenderer": [
+                                    "playlistItemData": ["videoId": "rec-cont-1"],
+                                    "flexColumns": [[
+                                        "musicResponsiveListItemFlexColumnRenderer": [
+                                            "text": ["runs": [["text": "Suggested Song"]]],
+                                        ],
+                                    ]],
+                                ],
+                            ]],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = PlaylistParser.parsePlaylistContinuation(data)
+
+        #expect(response.tracks.map(\.videoId) == ["rec-cont-1"])
+        #expect(response.title == "You might like")
+    }
+
     @Test("Parse responsive playlist header track count and continuation")
     func parseResponsivePlaylistHeaderTrackCount() {
         let response = PlaylistParser.parsePlaylistWithContinuation(
@@ -1256,6 +1326,80 @@ struct PlaylistParserTests {
                             ],
                         ],
                     ]],
+                ],
+            ],
+        ]
+    }
+
+    /// An owned playlist page: the header in the tab, the playlist shelf and its recommendation
+    /// shelf in `secondaryContents`, with track- and section-level continuations.
+    private func makeOwnedPlaylistData(
+        tracks: [(id: String, title: String)],
+        recommendations: [(id: String, title: String)],
+        recommendationTitle: String,
+        recommendationToken: String? = nil
+    ) -> [String: Any] {
+        func row(_ item: (id: String, title: String)) -> [String: Any] {
+            [
+                "musicResponsiveListItemRenderer": [
+                    "playlistItemData": ["videoId": item.id],
+                    "flexColumns": [[
+                        "musicResponsiveListItemFlexColumnRenderer": [
+                            "text": ["runs": [["text": item.title]]],
+                        ],
+                    ]],
+                ],
+            ]
+        }
+
+        var recommendationShelf: [String: Any] = [
+            "title": ["runs": [["text": recommendationTitle]]],
+            "contents": recommendations.map(row),
+        ]
+        if let recommendationToken {
+            recommendationShelf["continuations"] = [[
+                "nextContinuationData": ["continuation": recommendationToken],
+            ]]
+        }
+
+        return [
+            "contents": [
+                "twoColumnBrowseResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicResponsiveHeaderRenderer": [
+                                            "title": ["runs": [["text": "My Playlist"]]],
+                                            "subtitle": ["runs": [["text": "Playlist"]]],
+                                            "secondSubtitle": [
+                                                "runs": [["text": "\(tracks.count) songs"], ["text": " • "], ["text": "10 minutes"]],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                    "secondaryContents": [
+                        "sectionListRenderer": [
+                            "contents": [
+                                [
+                                    "musicPlaylistShelfRenderer": [
+                                        "contents": tracks.map(row),
+                                        "continuations": [[
+                                            "nextContinuationData": ["continuation": "tracks-token"],
+                                        ]],
+                                    ],
+                                ],
+                                ["musicShelfRenderer": recommendationShelf],
+                            ],
+                            "continuations": [[
+                                "nextContinuationData": ["continuation": "sections-token"],
+                            ]],
+                        ],
+                    ],
                 ],
             ],
         ]

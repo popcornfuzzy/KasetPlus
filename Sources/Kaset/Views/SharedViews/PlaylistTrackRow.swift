@@ -35,6 +35,9 @@ struct PlaylistTrackRow: View, Equatable {
     let isPlaying: Bool
     /// Whether to draw the separator under this row (false for the last row).
     let showsSeparator: Bool
+    /// Whether the row leads with its position. False for a recommendation: it is not a row of the
+    /// playlist, so numbering it would make it look like one.
+    var showsIndex: Bool = true
     /// True while the list is scrolling; suppresses hover highlighting.
     let isScrolling: Bool
 
@@ -48,8 +51,14 @@ struct PlaylistTrackRow: View, Equatable {
     /// Plays this row's queue. Implementations must read live playlist state rather than
     /// capturing a track snapshot — that is what makes excluding it from `==` safe.
     let onPlay: () -> Void
-    /// Removes the song from the playlist this row belongs to.
-    let onRemoveFromPlaylist: (Song) -> Void
+    /// Removes the song from the playlist this row belongs to. `nil` for a row that is not part of
+    /// the playlist — a recommendation — whose menu therefore offers no removal.
+    let onRemoveFromPlaylist: ((Song) -> Void)?
+    /// Adds this row's song to the playlist the page shows. When set, the row's trailing control is
+    /// one add button instead of the actions menu: a recommendation has no other row action here.
+    var onAddToCurrentPlaylist: (() -> Void)?
+    /// Whether the add request for this row is in flight.
+    var isAddingToCurrentPlaylist: Bool = false
 
     /// Whether the add-to-playlist popover is presented for this row.
     @State private var isShowingAddToPlaylist = false
@@ -62,6 +71,8 @@ struct PlaylistTrackRow: View, Equatable {
     /// menu reads favorites/like state from live services inside `PlaylistTrackMenuContent`.
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.index == rhs.index
+            && lhs.showsIndex == rhs.showsIndex
+            && lhs.isAddingToCurrentPlaylist == rhs.isAddingToCurrentPlaylist
             && lhs.isAlbum == rhs.isAlbum
             && lhs.isCurrentTrack == rhs.isCurrentTrack
             && lhs.isPlaying == rhs.isPlaying
@@ -79,15 +90,35 @@ struct PlaylistTrackRow: View, Equatable {
         HStack(spacing: 8) {
             self.playButton
 
-            Menu {
-                self.menuContent
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+            if let onAddToCurrentPlaylist = self.onAddToCurrentPlaylist {
+                Button(action: onAddToCurrentPlaylist) {
+                    Group {
+                        if self.isAddingToCurrentPlaylist {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     .frame(width: 20)
+                }
+                .buttonStyle(.plain)
+                .disabled(self.isAddingToCurrentPlaylist)
+                .help(String(localized: "Add to Playlist"))
+                .accessibilityLabel(String(localized: "Add to Playlist"))
+            } else {
+                Menu {
+                    self.menuContent
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, Self.contentInset)
         // The highlight is drawn at row level, not by the play button's style, so that it covers
@@ -152,10 +183,14 @@ struct PlaylistTrackRow: View, Equatable {
             Group {
                 if self.isCurrentTrack {
                     NowPlayingIndicator(isPlaying: self.isPlaying, size: 14)
-                } else {
+                } else if self.showsIndex {
                     Text("\(self.index + 1)")
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
+                } else {
+                    // A recommendation holds the position's width without showing a number, so its
+                    // artwork lines up with the playlist's rows and playing it does not shift them.
+                    Color.clear
                 }
             }
             .frame(width: 28, alignment: .trailing)
@@ -230,7 +265,7 @@ struct PlaylistTrackMenuContent: View {
     let playerService: PlayerService
     let onPlay: () -> Void
     let onAddToPlaylist: () -> Void
-    let onRemoveFromPlaylist: (Song) -> Void
+    let onRemoveFromPlaylist: ((Song) -> Void)?
 
     var body: some View {
         Button {
@@ -275,11 +310,11 @@ struct PlaylistTrackMenuContent: View {
             Label("Add to Playlist", systemImage: "text.badge.plus")
         }
 
-        if !self.isAlbum {
+        if !self.isAlbum, let onRemoveFromPlaylist = self.onRemoveFromPlaylist {
             Divider()
 
             Button(role: .destructive) {
-                self.onRemoveFromPlaylist(self.song)
+                onRemoveFromPlaylist(self.song)
             } label: {
                 Label("Remove from Playlist", systemImage: "minus.circle")
             }
