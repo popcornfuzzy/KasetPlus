@@ -58,6 +58,7 @@ struct QueueSidePanelView: View {
                     panelWidth: self.width,
                     queue: self.playerService.queue,
                     currentIndex: self.playerService.queueHighlightIndex ?? -1,
+                    manualQueueCount: self.playerService.manualQueueCount,
                     isPlaying: self.playerService.isPlaying,
                     favoritesManager: self.favoritesManager,
                     onSelect: { index in
@@ -66,12 +67,24 @@ struct QueueSidePanelView: View {
                         }
                     },
                     onReorder: { source, destination in
-                        self.playerService.reorderQueue(from: IndexSet(integer: source), to: destination)
+                        self.playerService.reorderQueue(
+                            from: IndexSet(integer: source),
+                            to: destination
+                        )
+                        // Handed back so the table can show the new order inside the drop itself.
+                        return QueueTableState(
+                            queue: self.playerService.queue,
+                            currentIndex: self.playerService.queueHighlightIndex ?? -1,
+                            manualQueueCount: self.playerService.manualQueueCount
+                        )
                     },
                     onRemove: { videoId in
                         Task {
                             self.playerService.removeFromQueue(videoIds: Set([videoId]))
                         }
+                    },
+                    onClearHandQueued: {
+                        self.playerService.clearManualQueue()
                     },
                     onStartRadio: { song in
                         Task {
@@ -114,6 +127,21 @@ struct QueueSidePanelView: View {
     }
 }
 
+// MARK: - QueueTableState
+
+/// What the queue table must show after a reorder: the queue, its playhead and the hand-queued run.
+///
+/// A drop runs the reorder on the model, and the table needs the result **before `acceptDrop`
+/// returns**: that is the moment AppKit settles the session against the data source, so a table still
+/// holding the old order draws every row where it was for a frame and then jumps to the new order.
+/// Handing the result back lets the table install it in the same turn.
+@available(macOS 26.0, *)
+struct QueueTableState {
+    let queue: [Song]
+    let currentIndex: Int
+    let manualQueueCount: Int
+}
+
 // MARK: - QueueListControllerRepresentable
 
 @available(macOS 26.0, *)
@@ -126,11 +154,16 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
     var panelWidth: CGFloat?
     let queue: [Song]
     let currentIndex: Int
+    /// How many rows under `currentIndex` the reader queued by hand (see `PlayerService.manualQueueCount`).
+    let manualQueueCount: Int
     let isPlaying: Bool
     let favoritesManager: FavoritesManager
     let onSelect: (Int) -> Void
-    let onReorder: (Int, Int) -> Void
+    /// Reorders the queue and returns what the table must show afterwards, or `nil` when the model
+    /// refused the move.
+    let onReorder: (Int, Int) -> QueueTableState?
     let onRemove: (String) -> Void
+    let onClearHandQueued: () -> Void
     let onStartRadio: (Song) -> Void
 
     func makeNSViewController(context: Context) -> QueueListViewController {
@@ -142,28 +175,30 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
     func updateNSViewController(_ viewController: QueueListViewController, context: Context) {
         viewController.applyPanelWidth(self.panelWidth)
-        context.coordinator.queue = self.queue
-        context.coordinator.currentIndex = self.currentIndex
-        context.coordinator.isPlaying = self.isPlaying
-        context.coordinator.favoritesManager = self.favoritesManager
-
-        if !context.coordinator.isDragging {
-            viewController.tableView?.reloadData()
-        }
-
+        let coordinator = context.coordinator
+        // One apply, so the rows are rebuilt once for a queue, its playhead and its run together, and
+        // a state that changes none of them asks for no reload at all — the update that follows a
+        // drop the table already applied is exactly that case.
+        coordinator.apply(
+            queue: self.queue,
+            currentIndex: self.currentIndex,
+            manualQueueCount: self.manualQueueCount
+        )
+        coordinator.isPlaying = self.isPlaying
+        coordinator.favoritesManager = self.favoritesManager
+        coordinator.reloadIfNeeded(in: viewController.tableView)
         // Update current track highlighting and waveform animation
         if let tableView = viewController.tableView {
-            for row in 0 ..< self.queue.count {
-                if let cellView = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? QueueTableCellView {
-                    cellView.updateAppearance(
-                        isCurrentTrack: row == self.currentIndex,
-                        isPlaying: self.isPlaying,
-                        index: row
-                    )
-                }
+            for index in 0 ..< self.queue.count {
+                guard let tableRow = context.coordinator.tableRow(forQueueIndex: index),
+                      let cellView = tableView.view(atColumn: 0, row: tableRow, makeIfNecessary: false) as? QueueTableCellView
+                else { continue }
+                cellView.updateAppearance(
+                    isCurrentTrack: index == self.currentIndex,
+                    isPlaying: self.isPlaying,
+                    index: index
+                )
             }
-
-            tableView.syncRevealedDeleteUI()
 
             context.coordinator.syncAutoScroll(in: tableView)
         }
@@ -173,11 +208,13 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         Coordinator(
             queue: self.queue,
             currentIndex: self.currentIndex,
+            manualQueueCount: self.manualQueueCount,
             isPlaying: self.isPlaying,
             favoritesManager: self.favoritesManager,
             onSelect: self.onSelect,
             onReorder: self.onReorder,
             onRemove: self.onRemove,
+            onClearHandQueued: self.onClearHandQueued,
             onStartRadio: self.onStartRadio
         )
     }
@@ -219,6 +256,11 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             tableView.registerForDraggedTypes([dragType, .string])
             tableView.verticalMotionCanBeginDrag = true
             tableView.draggingDestinationFeedbackStyle = .gap // Show gap where item will be dropped
+            // The section captions never float. A floating group row is drawn by the table above the
+            // list, and while a drag opens a gap it is carried along with the rows making room — which
+            // is why the caption under the pointer slid around with the song being dragged. A caption
+            // that scrolls with its own section has nothing to follow.
+            tableView.floatsGroupRows = false
 
             scrollView.documentView = tableView
             self.tableView = tableView
@@ -271,6 +313,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                     coordinator?.registerUserScrollInteraction()
                 }
                 self.sizeColumnToPanel()
+                self.coordinator?.reloadIfNeeded(in: tableView)
             }
         }
 
@@ -293,34 +336,63 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
     @MainActor
     class Coordinator: NSObject, NSTableViewDelegate, NSTableViewDataSource {
-        var queue: [Song]
-        var currentIndex: Int
+        /// One table row: a section caption, or the song at a queue index.
+        ///
+        /// The table lists captions as rows of their own, so they cannot be dragged, selected or end up
+        /// in a drag image. Every table row that is not a caption maps back to its queue index.
+        enum Row {
+            case section(title: String, clearsHandQueuedSongs: Bool)
+            case song(index: Int)
+        }
+
+        var queue: [Song] {
+            didSet { self.rebuildRows() }
+        }
+
+        var currentIndex: Int {
+            didSet { self.rebuildRows() }
+        }
+
+        var manualQueueCount: Int {
+            didSet { self.rebuildRows() }
+        }
+
         var isPlaying: Bool
         var favoritesManager: FavoritesManager
         let onSelect: (Int) -> Void
-        let onReorder: (Int, Int) -> Void
+        let onReorder: (Int, Int) -> QueueTableState?
         let onRemove: (String) -> Void
+        let onClearHandQueued: () -> Void
         let onStartRadio: (Song) -> Void
         weak var viewController: QueueListViewController?
+        /// The table's rows, captions included.
+        private(set) var rows: [Row] = []
         var isDragging = false
+        /// Whether the rows above are out of date with the queue the view last handed down.
+        private(set) var needsReload = false
         private var hasPerformedInitialScroll = false
         private var previousCurrentIndex: Int?
         private var isUserScrolling = false
         private var resumeAutoScrollTimer: Timer?
         private let dragType = NSPasteboard.PasteboardType("com.kaset.queueitem")
 
-        init(queue: [Song], currentIndex: Int, isPlaying: Bool, favoritesManager: FavoritesManager,
-             onSelect: @escaping (Int) -> Void, onReorder: @escaping (Int, Int) -> Void, onRemove: @escaping (String) -> Void, onStartRadio: @escaping (Song) -> Void)
+        init(queue: [Song], currentIndex: Int, manualQueueCount: Int = 0, isPlaying: Bool,
+             favoritesManager: FavoritesManager,
+             onSelect: @escaping (Int) -> Void, onReorder: @escaping (Int, Int) -> QueueTableState?, onRemove: @escaping (String) -> Void,
+             onClearHandQueued: @escaping () -> Void = {}, onStartRadio: @escaping (Song) -> Void)
         {
             self.queue = queue
             self.currentIndex = currentIndex
+            self.manualQueueCount = manualQueueCount
             self.isPlaying = isPlaying
             self.favoritesManager = favoritesManager
             self.onSelect = onSelect
             self.onReorder = onReorder
             self.onRemove = onRemove
+            self.onClearHandQueued = onClearHandQueued
             self.onStartRadio = onStartRadio
             super.init()
+            self.rebuildRows()
         }
 
         func registerUserScrollInteraction() {
@@ -365,15 +437,17 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
         @MainActor
         private func scrollToCurrentSong(in tableView: DraggableTableView, animated: Bool) {
-            guard self.queue.indices.contains(self.currentIndex) else { return }
+            guard self.queue.indices.contains(self.currentIndex),
+                  let tableRow = self.tableRow(forQueueIndex: self.currentIndex)
+            else { return }
             guard let scrollView = tableView.enclosingScrollView else {
-                tableView.scrollRowToVisible(self.currentIndex)
+                tableView.scrollRowToVisible(tableRow)
                 return
             }
 
-            let rowRect = tableView.rect(ofRow: self.currentIndex)
+            let rowRect = tableView.rect(ofRow: tableRow)
             guard rowRect != .zero else {
-                tableView.scrollRowToVisible(self.currentIndex)
+                tableView.scrollRowToVisible(tableRow)
                 return
             }
 
@@ -425,39 +499,153 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         }
 
         func numberOfRows(in _: NSTableView) -> Int {
-            self.queue.count
+            self.rows.count
+        }
+
+        /// Takes the queue state the view was given, noting whether the table's rows changed with it.
+        ///
+        /// A reorder the table applied itself (`performDrop`) arrives here unchanged a beat later, and
+        /// reloading for it would rebuild every visible row right after the drop — the whole-queue
+        /// flicker a drop ended with. So a state that matches what is already shown is a no-op.
+        func apply(queue: [Song], currentIndex: Int, manualQueueCount: Int) {
+            let changed = queue != self.queue
+                || currentIndex != self.currentIndex
+                || manualQueueCount != self.manualQueueCount
+            self.queue = queue
+            self.currentIndex = currentIndex
+            self.manualQueueCount = manualQueueCount
+            if changed { self.needsReload = true }
+        }
+
+        /// Rebuilds the table when its rows are out of date, unless a row is being dragged.
+        ///
+        /// Mid-drag the table owns its row views: reloading recreates them under the pointer and drops
+        /// the drag feedback the session is drawing. A change that arrives then is kept and applied
+        /// once the session ends (`draggingSession(_:endedAt:operation:)`).
+        func reloadIfNeeded(in tableView: NSTableView?) {
+            guard let tableView, !self.isDragging else { return }
+            // The count check is the first display: the table starts empty whatever state it is given.
+            guard self.needsReload || tableView.numberOfRows != self.rows.count else { return }
+            self.needsReload = false
+            tableView.reloadData()
+        }
+
+        /// The hand-queued rows the reader added, directly below the playing row.
+        ///
+        /// The list shows them as their own section, the way Spotify shows "Next in queue": the songs
+        /// added by hand first, then the rest of the playlist once it resumes.
+        var manualRun: Range<Int> {
+            let start = max(0, self.currentIndex + 1)
+            let end = min(self.queue.count, start + max(0, self.manualQueueCount))
+            return start ..< max(start, end)
+        }
+
+        /// Rebuilds the table rows: a caption opens each section, and every song keeps its queue index.
+        ///
+        /// The sections only exist while the reader has songs queued by hand, so a queue nothing was
+        /// added to is a plain list of songs.
+        private func rebuildRows() {
+            let run = self.manualRun
+            var rows: [Row] = []
+            rows.reserveCapacity(self.queue.count + 2)
+            for index in self.queue.indices {
+                if !run.isEmpty, index == run.lowerBound {
+                    rows.append(.section(
+                        title: String(localized: "Next in queue"),
+                        clearsHandQueuedSongs: true
+                    ))
+                }
+                if !run.isEmpty, index == run.upperBound {
+                    rows.append(.section(
+                        title: String(localized: "Rest of the queue"),
+                        clearsHandQueuedSongs: false
+                    ))
+                }
+                rows.append(.song(index: index))
+            }
+            self.rows = rows
+        }
+
+        /// The queue index of a table row, or `nil` for a caption row.
+        func queueIndex(forTableRow row: Int) -> Int? {
+            guard let entry = self.rows[safe: row], case let .song(index) = entry else { return nil }
+            return index
+        }
+
+        /// The table row that shows the song at `index`.
+        func tableRow(forQueueIndex index: Int) -> Int? {
+            self.rows.firstIndex { entry in
+                if case let .song(songIndex) = entry { return songIndex == index }
+                return false
+            }
+        }
+
+        /// Whether `row` is a section caption.
+        func isSectionHeaderRow(_ row: Int) -> Bool {
+            guard let entry = self.rows[safe: row] else { return false }
+            if case .section = entry { return true }
+            return false
+        }
+
+        /// The queue index an insertion at table row `row` lands on: the number of songs above it,
+        /// because captions take no place in the queue.
+        func queueDestination(forTableRow row: Int) -> Int {
+            self.rows.prefix(max(0, min(row, self.rows.count))).reduce(0) { count, entry in
+                if case .song = entry { return count + 1 }
+                return count
+            }
         }
 
         func tableView(_ tableView: NSTableView, viewFor _: NSTableColumn?, row: Int) -> NSView? {
-            let cellView = QueueTableCellView()
-            let song = self.queue[row]
-            cellView.configure(
-                song: song,
-                index: row,
-                isCurrentTrack: row == self.currentIndex,
-                isPlaying: self.isPlaying,
-                actions: QueueCellActions(
-                    onPlay: { [weak self] in self?.onSelect(row) },
-                    onRevealRemove: {
-                        guard let draggableTableView = tableView as? DraggableTableView
-                        else { return }
-                        draggableTableView.revealDeleteActionForRow(row)
-                    }
+            guard let entry = self.rows[safe: row] else { return nil }
+
+            switch entry {
+            case let .section(title, clearsHandQueuedSongs):
+                let headerView = QueueSectionHeaderCellView()
+                headerView.configure(
+                    title: title,
+                    clearsHandQueuedSongs: clearsHandQueuedSongs,
+                    onClear: self.onClearHandQueued
                 )
-            )
-            if let draggableTableView = tableView as? DraggableTableView {
-                cellView.setInlineRemoveButtonHidden(draggableTableView.isDeleteActionRevealed(for: row))
+                return headerView
+
+            case let .song(index):
+                let cellView = QueueTableCellView()
+                self.configureSongCell(cellView, index: index)
+                return cellView
             }
-            // The row that is playing cannot be reordered, and a row that looks like the others but
-            // refuses to land anywhere reads as broken: hovering it says why.
-            cellView.toolTip = row == self.currentIndex
-                ? String(localized: "Playing — this row stays where it is")
-                : nil
-            return cellView
         }
 
-        func tableView(_: NSTableView, heightOfRow _: Int) -> CGFloat {
-            56
+        /// Points a song row's view at the song at `index`.
+        ///
+        /// The one place a row's content is set, so a row the table builds and a row it keeps across a
+        /// drop are configured the same way.
+        private func configureSongCell(_ cellView: QueueTableCellView, index: Int) {
+            cellView.configure(
+                song: self.queue[index],
+                index: index,
+                isCurrentTrack: index == self.currentIndex,
+                isPlaying: self.isPlaying,
+                actions: QueueCellActions(
+                    onPlay: { [weak self] in self?.onSelect(index) }
+                )
+            )
+            // The row that is playing cannot be reordered, and a row that looks like the others but
+            // refuses to land anywhere reads as broken: hovering it says why.
+            cellView.toolTip = index == self.currentIndex
+                ? String(localized: "Playing — this row stays where it is")
+                : nil
+        }
+
+        func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+            self.isSectionHeaderRow(row)
+                ? QueueSectionHeaderCellView.rowHeight
+                : QueueTableCellView.rowHeight
+        }
+
+        /// Captions are group rows: full width, not selectable, not draggable.
+        func tableView(_: NSTableView, isGroupRow row: Int) -> Bool {
+            self.isSectionHeaderRow(row)
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
@@ -478,9 +666,12 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         /// The playing row is locked at the *drop*, not at the drag: `dropIsAllowed` refuses every
         /// position for it, so it can be lifted but has nowhere to land, and the model refuses the same
         /// moves (`PlayerService.reorderMovesPlayingRow`).
-        func tableView(_: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+            // A caption is a group row and offers no drag; its pasteboard carries a queue index, not a
+            // table row, so the drop side never has to know where the captions are.
+            guard let queueIndex = self.queueIndex(forTableRow: row) else { return nil }
             let item = NSPasteboardItem()
-            item.setString(String(row), forType: self.dragType)
+            item.setString(String(queueIndex), forType: self.dragType)
             self.isDragging = true
             return item
         }
@@ -491,6 +682,8 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
         func tableView(_: NSTableView, draggingSession _: NSDraggingSession, endedAt _: NSPoint, operation _: NSDragOperation) {
             self.isDragging = false
+            // Anything the drag kept waiting is applied now that the table has its rows back.
+            self.reloadIfNeeded(in: self.viewController?.tableView)
         }
 
         /// Drop Destination
@@ -498,21 +691,52 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             if let draggableTableView = tableView as? DraggableTableView {
                 draggableTableView.handleDragAutoScroll(draggingLocationInWindow: info.draggingLocation)
             }
-            guard dropOperation == .above else { return [] }
+            // Above a row is an insertion; on a caption is one too (the caption marks where its
+            // section begins), while dropping *on* a song means "after it" and is not offered.
+            guard dropOperation == .above || self.isSectionHeaderRow(row) else { return [] }
             guard let str = info.draggingPasteboard.string(forType: dragType),
                   let srcRow = Int(str) else { return [] }
+            // `row` is a table row; the model thinks in queue indices, and a caption row occupies none.
+            let destination = self.queueDestination(forTableRow: row)
             // Refused here as well as in `acceptDrop`, so a refused drop shows no gap either — the
             // reader never sees the queue make room for something that is not going to happen.
-            guard self.dropIsAllowed(from: srcRow, to: row) else { return [] }
+            guard self.dropIsAllowed(from: srcRow, to: destination) else { return [] }
             return .move
         }
 
-        func tableView(_: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation _: NSTableView.DropOperation) -> Bool {
+        func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation _: NSTableView.DropOperation) -> Bool {
             guard let str = info.draggingPasteboard.string(forType: dragType),
-                  let srcRow = Int(str) else { return false }
-            guard self.dropIsAllowed(from: srcRow, to: row) else { return false }
-            self.onReorder(srcRow, row)
+                  let source = Int(str) else { return false }
+            return self.performDrop(
+                from: source, to: self.queueDestination(forTableRow: row), in: tableView
+            )
+        }
+
+        /// Drops a dragged row: the model reorders, and the table takes the result **now**.
+        ///
+        /// AppKit settles the session against the data source as `acceptDrop` returns, so a table that
+        /// waits for the next SwiftUI update shows the queue in its old order while the gap closes and
+        /// then jumps to the new one — a flicker of the whole list on every drop. Installing the result
+        /// here means the order the session settles onto is already the final one.
+        ///
+        /// The rows are rebuilt rather than re-pointed at their new songs in place: AppKit is still
+        /// easing the row views out of the gap it opened for the drag as this runs, and setting a new
+        /// song on a view it is moving is a list that slides one way while its songs change the other.
+        /// A reload ends that motion instead of dragging it along — and it costs no artwork, because a
+        /// row now starts with the picture already decoded in memory (`QueueTableCellView.configure`).
+        func performDrop(from source: Int, to destination: Int, in tableView: NSTableView) -> Bool {
+            guard self.dropIsAllowed(from: source, to: destination) else { return false }
             self.isDragging = false
+            guard let state = self.onReorder(source, destination) else {
+                self.reloadIfNeeded(in: tableView)
+                return true
+            }
+            self.apply(
+                queue: state.queue,
+                currentIndex: state.currentIndex,
+                manualQueueCount: state.manualQueueCount
+            )
+            self.reloadIfNeeded(in: tableView)
             return true
         }
 
@@ -525,7 +749,10 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         /// Internal rather than private so the rule can be read off the coordinator itself, which is
         /// where the table's feedback comes from (see `QueueRowDragStrandTests`).
         func dropIsAllowed(from source: Int, to destination: Int) -> Bool {
-            guard source != self.currentIndex, destination != source else { return false }
+            guard source != self.currentIndex else { return false }
+            // A row dropped where it already stands is no move at all: the drop is refused so the drag
+            // springs back instead of animating a move that never happened.
+            guard destination != source else { return false }
             return !PlayerService.reorderMovesPlayingRow(
                 from: source, to: destination, currentIndex: self.currentIndex
             )
@@ -540,7 +767,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         /// nothing at all — which is why the queue's context menu had to be brought back to the Now
         /// Playing sidebar by hand.
         func menu(forRow row: Int) -> NSMenu? {
-            guard row >= 0, let song = queue[safe: row] else { return nil }
+            guard let index = self.queueIndex(forTableRow: row), let song = queue[safe: index] else { return nil }
             let menu = NSMenu()
             let manager = self.favoritesManager
             let isPinned = MainActor.assumeIsolated { manager.isPinned(song: song) }
@@ -574,7 +801,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 menu.addItem(NSMenuItem.separator())
             }
 
-            if row != self.currentIndex {
+            if index != self.currentIndex {
                 let removeItem = NSMenuItem(title: "Remove from Queue", action: #selector(Coordinator.contextMenuRemove(_:)), keyEquivalent: "")
                 removeItem.target = self
                 removeItem.representedObject = song
@@ -718,28 +945,26 @@ class DraggableTableView: NSTableView {
         scrollView.reflectScrolledClipView(clipView)
     }
 
+    /// The song a table row shows, or `nil` for a section caption.
+    private func song(atTableRow row: Int) -> Song? {
+        guard let index = self.coordinator?.queueIndex(forTableRow: row) else { return nil }
+        return self.coordinator?.queue[safe: index]
+    }
+
+    /// Whether a table row shows the playing song (captions never do).
+    private func isPlayingTableRow(_ row: Int) -> Bool {
+        guard let coordinator = self.coordinator else { return false }
+        return coordinator.queueIndex(forTableRow: row) == coordinator.currentIndex
+    }
+
     func revealDeleteActionForRow(_ row: Int) {
-        guard let coord = self.coordinator,
-              row >= 0,
-              row != coord.currentIndex,
-              coord.queue[safe: row] != nil
-        else { return }
+        guard row >= 0, !self.isPlayingTableRow(row), let song = self.song(atTableRow: row) else { return }
         if self.revealedDeleteRow == row { return }
-        if let song = coord.queue[safe: row] {
-            self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
-        }
+        self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
     }
 
     func isDeleteActionRevealed(for row: Int) -> Bool {
         self.revealedDeleteRow == row
-    }
-
-    func syncRevealedDeleteUI() {
-        for row in 0 ..< self.numberOfRows {
-            if let cellView = self.view(atColumn: 0, row: row, makeIfNecessary: false) as? QueueTableCellView {
-                cellView.setInlineRemoveButtonHidden(self.isDeleteActionRevealed(for: row))
-            }
-        }
     }
 
     override func awakeFromNib() {
@@ -804,7 +1029,8 @@ class DraggableTableView: NSTableView {
             let point = event.locationInWindow
             let localPoint = self.convert(point, from: nil)
             let rowAtStart = self.row(at: localPoint)
-            self.swipeRemoveTargetRow = rowAtStart
+            // A section caption is not a song row; a swipe that starts on one removes nothing.
+            self.swipeRemoveTargetRow = self.song(atTableRow: rowAtStart) == nil ? -1 : rowAtStart
         }
     }
 
@@ -815,10 +1041,9 @@ class DraggableTableView: NSTableView {
         self.horizontalSwipeAccumulator += dx
         self.verticalSwipeAccumulator += dy
         // Real-time row slide: once horizontal movement passes commit threshold, move the row with the finger.
-        if let coord = coordinator,
-           swipeRemoveTargetRow >= 0,
-           swipeRemoveTargetRow != coord.currentIndex,
-           coord.queue[safe: swipeRemoveTargetRow] != nil,
+        if swipeRemoveTargetRow >= 0,
+           !self.isPlayingTableRow(swipeRemoveTargetRow),
+           self.song(atTableRow: swipeRemoveTargetRow) != nil,
            abs(horizontalSwipeAccumulator) > Self.swipeCommitThreshold,
            abs(horizontalSwipeAccumulator) > abs(verticalSwipeAccumulator)
         {
@@ -849,9 +1074,8 @@ class DraggableTableView: NSTableView {
 
         if let initialX = swipeTrackedInitialOriginX {
             self.swipeTrackedInitialOriginX = nil
-            guard let coord = coordinator,
-                  swipeRemoveTargetRow >= 0,
-                  let song = coord.queue[safe: swipeRemoveTargetRow]
+            guard swipeRemoveTargetRow >= 0,
+                  let song = self.song(atTableRow: swipeRemoveTargetRow)
             else {
                 self.swipeRemoveTargetRow = -1
                 return false
@@ -866,7 +1090,7 @@ class DraggableTableView: NSTableView {
                 && abs(accH) >= Self.swipeRemoveDeltaThreshold
                 && abs(accH) > abs(accV)
                 && accH < 0
-                && row != coord.currentIndex
+                && !self.isPlayingTableRow(row)
 
             if passed {
                 self.revealDeleteAction(for: row, direction: -1, initialX: initialX, song: song)
@@ -890,13 +1114,13 @@ class DraggableTableView: NSTableView {
               abs(accH) > abs(accV),
               accH < 0
         else { return false }
-        guard let coord = coordinator else { return false }
+        guard self.coordinator != nil else { return false }
         let row = self.swipeRemoveTargetRow >= 0 ? self.swipeRemoveTargetRow : rowAtEnd
         self.swipeRemoveTargetRow = -1
         if row < 0 { return false }
-        if row == coord.currentIndex { return false }
-        guard let song = coord.queue[safe: row] else { return false }
-          self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
+        if self.isPlayingTableRow(row) { return false }
+        guard let song = self.song(atTableRow: row) else { return false }
+        self.revealDeleteAction(for: row, direction: -1, initialX: 0, song: song)
         return true
     }
 
@@ -939,9 +1163,8 @@ class DraggableTableView: NSTableView {
     }
 
     private func revealDeleteAction(for row: Int, direction: CGFloat, initialX _: CGFloat, song _: Song) {
-        guard let coord = self.coordinator,
-              let rowView = self.rowView(atRow: row, makeIfNecessary: false),
-              coord.queue[safe: row] != nil
+        guard let rowView = self.rowView(atRow: row, makeIfNecessary: false),
+              self.song(atTableRow: row) != nil
         else { return }
 
         if self.revealedDeleteRow >= 0 {
@@ -999,7 +1222,6 @@ class DraggableTableView: NSTableView {
         self.revealedDeleteDirection = direction
         self.revealedDeleteInitialOriginX = rowSlotFrame.origin.x
         self.revealedDeleteBackgroundView = deleteButton
-        self.syncRevealedDeleteUI()
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
@@ -1014,9 +1236,8 @@ class DraggableTableView: NSTableView {
     @objc private func handleRevealedDeleteButtonClick(_ sender: NSButton) {
         let row = sender.tag
         guard row >= 0,
-              let coord = self.coordinator,
-              row != coord.currentIndex,
-              let song = coord.queue[safe: row],
+              !self.isPlayingTableRow(row),
+              let song = self.song(atTableRow: row),
               let rowView = self.rowView(atRow: row, makeIfNecessary: false)
         else {
             self.clearRevealedDeleteAction(animated: true)
@@ -1078,7 +1299,6 @@ class DraggableTableView: NSTableView {
                 self.revealedDeleteRow = -1
                 self.revealedDeleteDirection = 0
                 self.revealedDeleteInitialOriginX = 0
-                self.syncRevealedDeleteUI()
                 self.coordinator?.onRemove(song.videoId)
             }
         }
@@ -1146,7 +1366,6 @@ class DraggableTableView: NSTableView {
         self.revealedDeleteRow = -1
         self.revealedDeleteDirection = 0
         self.revealedDeleteInitialOriginX = 0
-        self.syncRevealedDeleteUI()
     }
 }
 

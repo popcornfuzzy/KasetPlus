@@ -31,7 +31,8 @@ extension PlayerService {
         queue: [Song],
         currentIndex: Int,
         progress: TimeInterval,
-        duration: TimeInterval
+        duration: TimeInterval,
+        manualQueueCount: Int = 0
     ) {
         guard let originalSong = queue[safe: currentIndex] else { return }
 
@@ -46,6 +47,8 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.queue = preparedQueue
         self.currentIndex = preparedIndex
+        // Restored after the index, because its observer trims the count for the move it sees.
+        self.manualQueueCount = max(0, min(manualQueueCount, max(0, preparedQueue.count - preparedIndex - 1)))
         self.currentTrack = currentSong
         self.currentTrackVideoVariant = self.preferAudioVersions
             ? self.variantMatcher.videoVariant(of: currentSong)

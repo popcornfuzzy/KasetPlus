@@ -456,8 +456,14 @@ protocol PlayerServiceProtocol: AnyObject, Sendable {
     /// Updates track metadata when track changes.
     func updateTrackMetadata(title: String, artist: String, thumbnailUrl: String, videoId: String?)
 
-    /// Updates the like status from WebView observation.
-    func updateLikeStatus(_ status: LikeStatus)
+    /// Updates the like status from the transport's like button, when the observation describes
+    /// the track this service holds.
+    func updateLikeStatus(
+        _ status: LikeStatus,
+        videoId: String?,
+        playerBarVideoId: String?,
+        metadataFromPlayer: Bool
+    )
 
     /// Updates whether an ad is currently active in the Web player.
     func updateAdPlaybackState(_ isAdPlaying: Bool)

@@ -410,10 +410,16 @@ extension SingletonPlayerWebView {
                         thumbnailUrl = thumbEl.src || thumbEl.getAttribute('src') || '';
                     }
 
-                    // Extract like status from the like button renderer
+                    // Extract like status from the player bar's own like button. The page can carry
+                    // other like buttons (a playlist or album header)
+                    // and an unscoped query would take whichever renders first; the bar's button is
+                    // the one that describes the track the bar names.
                     let likeStatus = 'INDIFFERENT';
-                    const likeRenderer = document.querySelector('ytmusic-like-button-renderer');
-                    if (likeRenderer) {
+                    const likeButtonHost = document.querySelector('ytmusic-player-bar');
+                    const likeRenderer = likeButtonHost && typeof likeButtonHost.querySelector === 'function'
+                        ? likeButtonHost.querySelector('ytmusic-like-button-renderer')
+                        : null;
+                    if (likeRenderer && typeof likeRenderer.getAttribute === 'function') {
                         const status = likeRenderer.getAttribute('like-status');
                         if (status === 'LIKE') likeStatus = 'LIKE';
                         else if (status === 'DISLIKE') likeStatus = 'DISLIKE';

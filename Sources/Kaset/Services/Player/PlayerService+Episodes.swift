@@ -23,6 +23,7 @@ extension PlayerService {
         // Live streams / channel videos play standalone — clear queue state.
         self.queue = []
         self.currentIndex = 0
+        self.manualQueueCount = 0
         self.clearForwardSkipNavigationStack()
 
         let representative = Song(

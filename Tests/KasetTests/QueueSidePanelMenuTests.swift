@@ -24,7 +24,7 @@ struct QueueSidePanelMenuTests {
             // first item is "Add to Favorites" only for a song that is not pinned.
             favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
-            onReorder: { _, _ in },
+            onReorder: { _, _ in nil },
             onRemove: { _ in },
             onStartRadio: { _ in }
         )

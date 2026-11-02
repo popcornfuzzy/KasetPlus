@@ -382,10 +382,16 @@ Caches and syncs like/dislike status for songs:
 |--------|-------------|
 | `status(for:)` | Get cached status for video ID or Song |
 | `isLiked(_:)` | Check if song is liked |
+| `hasUserRating(for:)` | Whether the user rated this video in this session (outranks a fetched record) |
 | `setStatus(_:for:)` | Update cache (optimistic update) |
 | `rate(_:status:)` | Sync rating with YouTube Music API |
 
 **Optimistic Updates**: Updates cache immediately, rolls back on API failure.
+
+**Authority**: the `next` record (`fetchSongMetadata`) is the answer for a video, including its
+`.indifferent` (not rated); a rating the user made in this session outranks it, since a cached record
+can predate the click. The player bar's like button only counts when it describes the track being
+played. See [ADR-0042](adr/0042-like-status-authority.md).
 
 ### URLHandler
 

@@ -69,6 +69,15 @@ final class SongLikeStatusManager {
     @ObservationIgnored
     private var ratingFlights: [RatingKey: RatingFlight] = [:]
 
+    /// Video IDs the user rated in this session, per account.
+    ///
+    /// A record fetched from YouTube Music can predate the click — a `next` response is cached, and a
+    /// burst's write may still be in flight — so the user's own rating outranks it. A status that
+    /// merely arrived from a page does not, which is why this is not the cache itself. Cleared when a
+    /// burst rolls back: the server never took that rating, so the record may answer again.
+    @ObservationIgnored
+    private var userRatedVideoIdsByAccount: [String: Set<String>] = [:]
+
     /// Reference to the YTMusic client for API calls.
     private var client: (any YTMusicClientProtocol)?
 
@@ -125,6 +134,13 @@ final class SongLikeStatusManager {
     /// - Returns: True if the song is disliked.
     func isDisliked(_ song: Song) -> Bool {
         self.status(for: song) == .dislike
+    }
+
+    /// Whether the user rated this song in this session.
+    /// - Parameter videoId: The video ID to check.
+    /// - Returns: True when a rating the user made (or is still making) owns this song's status.
+    func hasUserRating(for videoId: String) -> Bool {
+        self.userRatedVideoIdsByAccount[self.activeAccountID]?.contains(videoId) ?? false
     }
 
     // MARK: - Rating Actions
@@ -247,6 +263,9 @@ final class SongLikeStatusManager {
             )
         }
 
+        // The user's intent now owns this song's status: no fetched record may undo it.
+        self.setUserRated(true, videoId: song.videoId, accountID: resolvedAccountID)
+
         // Optimistically update cache and notify observers
         self.setStatus(status, for: song.videoId, accountID: resolvedAccountID)
         self.publishEvent(
@@ -264,6 +283,7 @@ final class SongLikeStatusManager {
         if Task.isCancelled {
             if self.ratingFlights[key]?.latestSequence == sequence {
                 let baseline = self.ratingFlights[key]?.baseline
+                self.setUserRated(false, videoId: song.videoId, accountID: resolvedAccountID)
                 self.restoreStatus(baseline, for: song.videoId, accountID: resolvedAccountID)
                 self.publishEvent(
                     LikeStatusEvent(videoId: song.videoId, status: baseline ?? .indifferent, song: song),
@@ -351,6 +371,7 @@ final class SongLikeStatusManager {
         // still the latest (a newer intent owns the state otherwise).
         guard self.ratingFlights[key]?.latestSequence == sequence else { return }
         let baseline = self.ratingFlights[key]?.baseline
+        self.setUserRated(false, videoId: videoId, accountID: key.accountID)
         self.restoreStatus(baseline, for: videoId, accountID: key.accountID)
         self.publishEvent(
             LikeStatusEvent(videoId: videoId, status: baseline ?? .indifferent, song: song),
@@ -375,6 +396,7 @@ final class SongLikeStatusManager {
     /// Clears all cached statuses.
     func clearCache() {
         self.statusCacheByAccount.removeAll()
+        self.userRatedVideoIdsByAccount.removeAll()
         self.lastLikeEvent = nil
     }
 
@@ -390,6 +412,20 @@ final class SongLikeStatusManager {
         var cache = self.statusCacheByAccount[accountID] ?? [:]
         cache[videoId] = status
         self.statusCacheByAccount[accountID] = cache
+    }
+
+    private func setUserRated(_ rated: Bool, videoId: String, accountID: String) {
+        var ratedVideoIds = self.userRatedVideoIdsByAccount[accountID] ?? []
+        if rated {
+            ratedVideoIds.insert(videoId)
+        } else {
+            ratedVideoIds.remove(videoId)
+        }
+        if ratedVideoIds.isEmpty {
+            self.userRatedVideoIdsByAccount.removeValue(forKey: accountID)
+        } else {
+            self.userRatedVideoIdsByAccount[accountID] = ratedVideoIds
+        }
     }
 
     private func restoreStatus(_ status: LikeStatus?, for videoId: String, accountID: String) {

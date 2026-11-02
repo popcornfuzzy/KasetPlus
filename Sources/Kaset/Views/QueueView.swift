@@ -130,6 +130,13 @@ struct QueueView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(self.playerService.queue.enumerated()), id: \.offset) { index, song in
+                        if let header = self.sectionHeader(forRow: index) {
+                            self.sectionHeaderRow(
+                                header,
+                                clearsHandQueuedSongs: index == self.playerService.manualQueueRange.lowerBound
+                            )
+                        }
+
                         QueueRowView(
                             song: song,
                             isCurrentTrack: index == self.playerService.currentIndex,
@@ -186,6 +193,50 @@ struct QueueView: View {
             }
         }
         .accessibilityIdentifier(AccessibilityID.Queue.scrollView)
+    }
+
+    /// The caption that opens the section `row` belongs to, or `nil` for a row in the middle of one.
+    ///
+    /// Rows the reader added with "Add to Queue" are their own section under the playing row, the way
+    /// Spotify's queue shows them; the playlist resumes in the section below.
+    private func sectionHeader(forRow row: Int) -> String? {
+        let run = self.playerService.manualQueueRange
+        guard !run.isEmpty else { return nil }
+        if row == run.lowerBound {
+            return String(localized: "Next in queue")
+        }
+        if row == run.upperBound, row < self.playerService.queue.count {
+            return String(localized: "Rest of the queue")
+        }
+        return nil
+    }
+
+    private func sectionHeaderRow(_ title: String, clearsHandQueuedSongs: Bool) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+
+            Spacer(minLength: 0)
+
+            if clearsHandQueuedSongs {
+                Button {
+                    self.playerService.clearManualQueue()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "Clear Next in Queue"))
+                .accessibilityLabel(String(localized: "Clear Next in Queue"))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
     }
 
     private func scrollToCurrentSong(with proxy: ScrollViewProxy, animated: Bool) {

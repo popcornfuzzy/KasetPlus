@@ -83,6 +83,8 @@ extension PlayerService {
 
             self.queue = newQueue
             self.currentIndex = 0
+            // A tuned mix is a new context; hand-queued rows do not survive it.
+            self.manualQueueCount = 0
             self.mixContinuationToken = result.continuationToken
 
             if result.tunerChips.isEmpty {
@@ -131,6 +133,7 @@ extension PlayerService {
             self.recordQueueStateForUndo()
             self.queue = nextBatch
             self.currentIndex = 0
+            self.manualQueueCount = 0
 
             await self.play(song: nextSong)
             self.saveQueueForPersistence()
@@ -154,6 +157,7 @@ extension PlayerService {
         // Play the song version of every video track, before any of them starts.
         let preparedSongs = self.normalizedVariants(songs)
         self.queue = preparedSongs
+        self.manualQueueCount = 0
         self.currentIndex = preparedSongs.firstIndex(where: { $0.videoId == startingVideoId }) ?? 0
         // Clear mix continuation since this is not a mix queue
         self.mixContinuationToken = nil
@@ -179,6 +183,7 @@ extension PlayerService {
         // Start with just this song in the queue, already resolved to its audio variant.
         self.queue = [self.audioPreferredVariant(song)]
         self.currentIndex = 0
+        self.manualQueueCount = 0
         await self.play(song: song)
 
         // Fetch radio queue in background
@@ -224,6 +229,7 @@ extension PlayerService {
             // Set up the queue and play the first song
             self.queue = shuffledSongs
             self.currentIndex = 0
+            self.manualQueueCount = 0
             self.currentTrack = shuffledSongs[0]
 
             // Start playback
@@ -333,6 +339,7 @@ extension PlayerService {
             self.recordQueueStateForUndo()
             self.queue = self.normalizedVariants(newQueue)
             self.currentIndex = 0
+            self.manualQueueCount = 0
             self.setQueueTunerChips(radioResult.tunerChips)
             self.logger.info("Radio queue updated with \(newQueue.count) songs (current song at front)")
             self.saveQueueForPersistence()
@@ -350,6 +357,7 @@ extension PlayerService {
         self.setQueueTunerChips([])
         self.queue = []
         self.currentIndex = 0
+        self.manualQueueCount = 0
         self.logger.info("Queue cleared entirely")
         self.saveQueueForPersistence()
     }
@@ -366,12 +374,14 @@ extension PlayerService {
         guard let currentTrack else {
             self.queue = []
             self.currentIndex = 0
+            self.manualQueueCount = 0
             self.saveQueueForPersistence()
             return
         }
         // Keep only the current track
         self.queue = [currentTrack]
         self.currentIndex = 0
+        self.manualQueueCount = 0
         self.logger.info("Queue cleared, keeping current track")
         self.saveQueueForPersistence()
     }
@@ -390,16 +400,64 @@ extension PlayerService {
         self.saveQueueForPersistence()
     }
 
-    /// Inserts songs immediately after the current track.
+    /// The rows directly below the playing row that the reader queued by hand.
+    ///
+    /// Empty when there is no playing row, when the count has outlived the queue it described, or when
+    /// the queue is shorter than the run claims — every caller reads this instead of the raw count.
+    var manualQueueRange: Range<Int> {
+        let start = max(0, self.currentIndex + 1)
+        let end = min(self.queue.count, start + max(0, self.manualQueueCount))
+        return start ..< max(start, end)
+    }
+
+    /// Where a hand-queued song goes: the front of the run ("Play Next") or its end ("Add to Queue").
+    ///
+    /// Clamped against the queue so a count left over from a queue that has since shrunk can never
+    /// index out of bounds. An empty queue takes the song at index 0, exactly as an append used to.
+    private func manualQueueInsertIndex(atFront: Bool) -> Int {
+        let start = max(0, self.currentIndex + 1)
+        let end = self.manualQueueRange.upperBound
+        let index = atFront ? start : end
+        return max(0, min(index, self.queue.count))
+    }
+
+    /// Records that `count` songs were just inserted into the hand-queued run.
+    private func growManualQueue(by count: Int) {
+        let start = max(0, self.currentIndex + 1)
+        self.manualQueueCount = max(0, min(self.manualQueueCount + count, max(0, self.queue.count - start)))
+    }
+
+    /// Inserts songs immediately after the current track, above songs already hand-queued.
     /// - Parameter songs: The songs to insert into the queue.
     func insertNextInQueue(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
         self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
-        let insertIndex = min(self.currentIndex + 1, self.queue.count)
-        self.queue.insert(contentsOf: self.normalizedVariants(songs), at: insertIndex)
-        self.logger.info("Inserted \(songs.count) songs at position \(insertIndex)")
+        let preparedSongs = self.normalizedVariants(songs)
+        // An empty queue has no playing row to queued songs sit under: the insert is just the queue.
+        let hadQueue = !self.queue.isEmpty
+        let insertIndex = self.manualQueueInsertIndex(atFront: true)
+        self.queue.insert(contentsOf: preparedSongs, at: insertIndex)
+        if hadQueue {
+            self.growManualQueue(by: preparedSongs.count)
+        }
+        self.logger.info("Inserted \(preparedSongs.count) songs to play next at position \(insertIndex)")
+        self.saveQueueForPersistence()
+    }
+
+    /// Removes every row the reader added by hand, leaving the playing row and the loaded queue.
+    ///
+    /// This is the queue section's clear button: the playlist, album or mix keeps playing on as if the
+    /// songs had never been added.
+    func clearManualQueue() {
+        let run = self.manualQueueRange
+        guard !run.isEmpty else { return }
+        self.clearForwardSkipNavigationStack()
+        self.recordQueueStateForUndo()
+        self.queue.removeSubrange(run)
+        self.manualQueueCount = 0
+        self.logger.info("Cleared \(run.count) hand-queued songs from the queue")
         self.saveQueueForPersistence()
     }
 
@@ -409,6 +467,7 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let previousCount = self.queue.count
+        let removedFromManualQueue = self.manualQueueRange.filter { videoIds.contains(self.queue[$0].videoId) }.count
         self.queue.removeAll { videoIds.contains($0.videoId) }
 
         // Adjust currentIndex if needed
@@ -420,8 +479,18 @@ extension PlayerService {
             self.currentIndex = max(0, self.queue.count - 1)
         }
 
+        // The rows that went were hand-queued ones, so the run below the playing row is shorter too.
+        self.manualQueueCount = max(0, self.manualQueueCount - removedFromManualQueue)
+        self.trimManualQueue()
+
         self.logger.info("Removed \(previousCount - self.queue.count) songs from queue")
         self.saveQueueForPersistence()
+    }
+
+    /// Keeps the hand-queued count inside the queue after a change that could invalidate it.
+    private func trimManualQueue() {
+        let rowsBelowPlayhead = max(0, self.queue.count - max(0, self.currentIndex + 1))
+        self.manualQueueCount = max(0, min(self.manualQueueCount, rowsBelowPlayhead))
     }
 
     /// Whether moving the queue's `source` row to `destination` would move the **playing** row.
@@ -448,6 +517,11 @@ extension PlayerService {
     /// Used for drag-and-drop reordering. The row that is playing neither moves nor lets anything else
     /// move it: the whole move is refused, so a drag across the playing row leaves the queue — and its
     /// highlight — exactly as they were (see `reorderMovesPlayingRow`).
+    ///
+    /// A drop is the move and nothing else: the row lands where it is released. The sections follow the
+    /// positions rather than the songs, so a row reads as hand-queued exactly when it stands in the run
+    /// under the playing row — dragging a row across the boundary files it by where it landed, which is
+    /// all the reader asked for.
     /// - Parameters:
     ///   - source: Indices of items to move.
     ///   - destination: Index where items will be placed (after removal from source).
@@ -471,6 +545,8 @@ extension PlayerService {
         }
         var newQueue = self.queue
         newQueue.move(fromOffsets: source, toOffset: destination)
+        // A drop back onto a row's own slot is not a move: no undo entry, no save, nothing to redraw.
+        guard newQueue != self.queue else { return }
 
         // The row that is playing is where it was, or the move does not happen.
         //
@@ -487,6 +563,9 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         self.queue = newQueue
+        // The run's length is how many rows the reader queued under the playing row; a drag moves a row
+        // without adding or removing one, so the count only has to stay inside the queue.
+        self.manualQueueCount = max(0, min(self.manualQueueCount, self.queue.count - max(0, self.currentIndex + 1)))
         self.logger.info("Queue reordered: moved from \(source) to \(destination)")
         self.saveQueueForPersistence()
     }
@@ -510,6 +589,8 @@ extension PlayerService {
         }
 
         self.queue = reordered
+        // The new order says nothing about which rows were queued by hand.
+        self.manualQueueCount = 0
 
         // Update currentIndex to match current track's new position
         if let current = currentTrack,
@@ -528,7 +609,9 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
 
-        // Remove current track, shuffle the rest, put current track at front
+        // Remove current track, shuffle the rest, put current track at front.
+        // A shuffle deals the hand-queued rows in with the playlist's, so afterwards they are all
+        // just the queue — nothing sits in a run below the playing row any more.
         if let currentSong = queue[safe: currentIndex] {
             var shuffled = self.queue
             shuffled.remove(at: self.currentIndex)
@@ -540,18 +623,27 @@ extension PlayerService {
             self.queue.shuffle()
             self.currentIndex = 0
         }
+        self.manualQueueCount = 0
 
         self.logger.info("Queue shuffled")
         self.saveQueueForPersistence()
     }
 
-    /// Adds songs to the end of the queue.
-    /// - Parameter songs: The songs to append to the queue.
+    /// Adds songs to the hand-queued run, below everything already added and above the rest of the
+    /// queue ("Add to Queue").
+    /// - Parameter songs: The songs to queue by hand.
     func appendToQueue(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
         self.recordQueueStateForUndo()
-        self.queue.append(contentsOf: self.normalizedVariants(songs))
-        self.logger.info("Appended \(songs.count) songs to queue")
+        let preparedSongs = self.normalizedVariants(songs)
+        // An empty queue has no playing row for the songs to sit under: they are simply the queue.
+        let hadQueue = !self.queue.isEmpty
+        let insertIndex = self.manualQueueInsertIndex(atFront: false)
+        self.queue.insert(contentsOf: preparedSongs, at: insertIndex)
+        if hadQueue {
+            self.growManualQueue(by: preparedSongs.count)
+        }
+        self.logger.info("Added \(preparedSongs.count) songs to the queue at position \(insertIndex)")
         self.saveQueueForPersistence()
     }
 
@@ -564,6 +656,8 @@ extension PlayerService {
         let currentVideoId: String?
         let progress: TimeInterval
         let duration: TimeInterval
+        /// Optional so a session saved before the hand-queued run existed still decodes.
+        let manualQueueCount: Int?
     }
 
     /// UserDefaults keys for queue persistence (no expiry; saved queue is kept until overwritten or cleared).
@@ -595,7 +689,8 @@ extension PlayerService {
                     currentIndex: safeIndex,
                     currentVideoId: currentVideoId,
                     progress: clampedProgress,
-                    duration: resolvedDuration
+                    duration: resolvedDuration,
+                    manualQueueCount: self.manualQueueCount
                 )
             )
 
@@ -633,7 +728,8 @@ extension PlayerService {
                     queue: savedSession.queue,
                     currentIndex: resolvedIndex,
                     progress: savedSession.progress,
-                    duration: savedSession.duration
+                    duration: savedSession.duration,
+                    manualQueueCount: savedSession.manualQueueCount ?? 0
                 )
                 self.logger.info(
                     "Restored playback session with \(savedSession.queue.count) songs at index \(resolvedIndex)"

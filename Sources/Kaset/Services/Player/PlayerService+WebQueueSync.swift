@@ -451,6 +451,8 @@ extension PlayerService {
             self.clearForwardSkipNavigationStack()
             self.queue = preparedQueue
             self.currentIndex = preparedIndex
+            // YouTube's autoplay brought a new context; nothing hand-queued survives it.
+            self.manualQueueCount = 0
             self.currentTrack = preparedQueue[safe: preparedIndex] ?? autoplaySong
             self.pendingPlayVideoId = self.currentTrack?.videoId ?? observedVideoId
             self.mixContinuationToken = nil

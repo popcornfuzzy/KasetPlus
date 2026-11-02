@@ -226,6 +226,9 @@
 
 "Clear input" = "Clear input";
 
+/* Button that empties the queue's "Next in queue" section */
+"Clear Next in Queue" = "Clear Next in Queue";
+
 "Clear search" = "Clear search";
 
 "Clearing..." = "Clearing...";
@@ -503,6 +506,9 @@
 
 "Next" = "Next";
 
+/* Section caption above songs the reader added with Add to Queue */
+"Next in queue" = "Next in queue";
+
 "Next track" = "Next track";
 
 "No Connection" = "No Connection";
@@ -645,6 +651,9 @@
 "Repeat Off" = "Repeat Off";
 
 "Repeat One" = "Repeat One";
+
+/* Section caption above the playlist's remaining songs, after the hand-queued ones */
+"Rest of the queue" = "Rest of the queue";
 
 /* Button to retry failed playback */
 "Retry" = "Retry";

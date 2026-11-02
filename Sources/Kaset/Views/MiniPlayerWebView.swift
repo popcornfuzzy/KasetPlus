@@ -1460,9 +1460,15 @@ final class SingletonPlayerWebView {
                 self.playerService.updateVideoAvailability(hasVideo: hasVideo)
                 self.playerService.updateMiniPlayerVideoDimensions(width: videoWidth, height: videoHeight)
 
-                // Update like status only when track changes (initial state)
+                // Update like status only when track changes (initial state), with what the
+                // observation is anchored to: the bar's button can still describe the song just left.
                 if trackChanged {
-                    self.playerService.updateLikeStatus(likeStatus)
+                    self.playerService.updateLikeStatus(
+                        likeStatus,
+                        videoId: observedVideoId,
+                        playerBarVideoId: playerBarVideoId,
+                        metadataFromPlayer: metadataFromPlayer
+                    )
                 }
 
                 // Repeat-one must keep enforcing queue/current song even if WebView doesn't flag `trackChanged`

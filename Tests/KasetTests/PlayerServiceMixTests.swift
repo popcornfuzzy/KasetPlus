@@ -192,7 +192,7 @@ struct PlayerServiceMixTests {
 
     // MARK: - appendToQueue Tests
 
-    @Test("appendToQueue adds songs to end")
+    @Test("appendToQueue adds songs under the playing row, above the rest of the queue")
     func appendToQueue() async {
         let queue = TestFixtures.makeSongs(count: 2)
         await self.playerService.playQueue(queue, startingAt: 0)
@@ -205,7 +205,7 @@ struct PlayerServiceMixTests {
         self.playerService.appendToQueue(newSongs)
 
         #expect(self.playerService.queue.count == 4)
-        #expect(self.playerService.queue.last?.videoId == "appended-2")
+        #expect(self.playerService.queue.map(\.videoId) == ["video-0", "appended-1", "appended-2", "video-1"])
     }
 
     @Test("appendToQueue with empty array does nothing")

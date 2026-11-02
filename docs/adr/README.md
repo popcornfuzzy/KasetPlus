@@ -76,3 +76,5 @@ What becomes easier or more difficult because of this change?
 | [0037](0037-in-page-track-changes.md) | In-Page Track Changes Instead of Watch-Page Navigations | Accepted |
 | [0038](0038-pinned-media-session-actions.md) | Pinned Media Session Actions (and No Native Now Playing Claim) | Accepted |
 | [0039](0039-discord-rich-presence.md) | Discord Rich Presence | Accepted |
+| [0041](0041-hand-queued-run.md) | The Hand-Queued Run (Spotify-Style Two-Tier Queue) | Accepted |
+| [0042](0042-like-status-authority.md) | One Authority per Question: Where the Transport's Like Status Comes From | Accepted |

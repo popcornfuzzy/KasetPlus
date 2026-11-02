@@ -6,7 +6,6 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct QueueCellActions {
     let onPlay: () -> Void
-    let onRevealRemove: () -> Void
 }
 
 // MARK: - Queue Row Colours
@@ -64,12 +63,13 @@ enum QueueRowTextColor {
 // MARK: - QueueTableCellView
 
 @available(macOS 26.0, *)
-class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
+class QueueTableCellView: NSView {
+    /// Height of a song row.
+    static let rowHeight: CGFloat = 56
+
     private var onPlay: (() -> Void)?
-    private var onRevealRemove: (() -> Void)?
     private var isCurrentTrack: Bool = false
     private var isPlaying: Bool = false
-    private var isInlineRemoveHidden = false
     private var stackView: NSStackView?
     private var indicatorLabel = NSTextField()
     private var waveformView: NSView?
@@ -79,7 +79,6 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
     private let titleLabel = NSTextField()
     private let artistLabel = NSTextField()
     private let durationLabel = NSTextField()
-    private let removeButton = NSButton()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -163,21 +162,6 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.durationLabel.textColor = QueueRowTextColor.detail
         self.durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal) // Don't compress duration
 
-        self.removeButton.title = ""
-        self.removeButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Remove from Queue")
-        self.removeButton.isBordered = false
-        self.removeButton.bezelStyle = .regularSquare
-        self.removeButton.controlSize = .small
-        self.removeButton.contentTintColor = .systemRed
-        self.removeButton.target = self
-        self.removeButton.action = #selector(self.handleRemoveClick)
-        self.removeButton.toolTip = "Remove from Queue"
-        self.removeButton.setButtonType(.momentaryPushIn)
-        self.removeButton.setContentHuggingPriority(.required, for: .horizontal)
-        self.removeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        self.removeButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
-        self.removeButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
-
         // Spacer takes all flexible space so title/artist and duration stay consistently aligned across rows
         let spacerView = NSView()
         spacerView.translatesAutoresizingMaskIntoConstraints = false
@@ -191,7 +175,6 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         stackView.addArrangedSubview(infoStackView)
         stackView.addArrangedSubview(spacerView)
         stackView.addArrangedSubview(self.durationLabel)
-        stackView.addArrangedSubview(self.removeButton)
 
         addSubview(stackView)
         NSLayoutConstraint.activate([
@@ -202,7 +185,6 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         ])
 
         let clickGesture = NSClickGestureRecognizer(target: self, action: #selector(self.handleRowClick))
-        clickGesture.delegate = self
         addGestureRecognizer(clickGesture)
 
     }
@@ -218,9 +200,14 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.stackView?.needsLayout = true
     }
 
-    func configure(song: Song, index: Int, isCurrentTrack: Bool, isPlaying: Bool, actions: QueueCellActions) {
+    func configure(
+        song: Song,
+        index: Int,
+        isCurrentTrack: Bool,
+        isPlaying: Bool,
+        actions: QueueCellActions
+    ) {
         self.onPlay = actions.onPlay
-        self.onRevealRemove = actions.onRevealRemove
         self.isCurrentTrack = isCurrentTrack
         self.isPlaying = isPlaying
         
@@ -245,26 +232,22 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
             self.durationLabel.stringValue = ""
         }
 
-        self.applyInlineRemoveButtonState()
-
         let songId = song.id
         self.currentSongId = songId
         self.imageLoadTask?.cancel()
-        if let primaryURL = song.thumbnailURL?.highQualityThumbnailURL {
-            let fallbackURL = song.thumbnailURL
+        let candidates = Self.thumbnailCandidates(for: song)
+        if candidates.isEmpty {
+            self.thumbnailImageView.image = nil
+        } else {
+            // The row starts with the picture the app already holds, when it holds one: the load below
+            // answers a hop later, and a row that draws before it does shows an empty slot. Rebuilding
+            // the list — a reload after a drop, a row scrolled back into view — would otherwise flash
+            // every thumbnail it re-creates.
+            self.thumbnailImageView.image = Self.cachedThumbnail(from: candidates)
             self.imageLoadTask = Task { [weak self] in
-                var candidates: [URL] = [primaryURL]
-                if let fallbackURL {
-                    let hqCandidates = fallbackURL.highQualityThumbnailCandidates.filter { $0 != fallbackURL }
-                    candidates.append(contentsOf: hqCandidates)
-                    candidates.append(fallbackURL)
-                }
-
                 var image: NSImage?
-                var seen: Set<String> = []
                 for candidate in candidates {
-                    guard seen.insert(candidate.absoluteString).inserted else { continue }
-                    image = await ImageCache.shared.image(for: candidate, targetSize: CGSize(width: 40, height: 40))
+                    image = await ImageCache.shared.image(for: candidate, targetSize: Self.thumbnailSize)
                     if image != nil {
                         break
                     }
@@ -273,9 +256,36 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
                 guard !Task.isCancelled, self?.currentSongId == songId else { return }
                 self?.thumbnailImageView.image = image
             }
-        } else {
-            self.thumbnailImageView.image = nil
         }
+    }
+
+    private static let thumbnailSize = CGSize(width: 40, height: 40)
+
+    /// The artwork URLs a row tries, in order: the high-quality size, the other high-quality sizes,
+    /// and the URL the song was parsed with last.
+    private static func thumbnailCandidates(for song: Song) -> [URL] {
+        guard let primaryURL = song.thumbnailURL?.highQualityThumbnailURL,
+              let fallbackURL = song.thumbnailURL
+        else { return [] }
+        var candidates: [URL] = [primaryURL]
+        candidates.append(contentsOf: fallbackURL.highQualityThumbnailCandidates.filter { $0 != fallbackURL })
+        candidates.append(fallbackURL)
+        var seen: Set<String> = []
+        return candidates.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    /// The first candidate already decoded in memory at this row's size.
+    ///
+    /// `configure` runs while the table draws, so a picture has to be there *now* rather than a hop
+    /// later: a row that starts empty and fills in is a flash when a whole list is rebuilt at once.
+    private static func cachedThumbnail(from candidates: [URL]) -> NSImage? {
+        for candidate in candidates {
+            guard let image = ImageCache.shared.cachedImage(for: candidate) else { continue }
+            if ImageCache.isSufficientResolution(image, for: Self.thumbnailSize) {
+                return image
+            }
+        }
+        return nil
     }
 
     func updateAppearance(isCurrentTrack: Bool, isPlaying: Bool, index: Int) {
@@ -344,49 +354,110 @@ class QueueTableCellView: NSView, NSGestureRecognizerDelegate {
         self.applyLayerColours()
     }
 
-    @objc private func handleRemoveClick() {
-        self.onRevealRemove?()
-    }
-
-    func setInlineRemoveButtonHidden(_ hidden: Bool) {
-        self.isInlineRemoveHidden = hidden
-        self.applyInlineRemoveButtonState()
-    }
-
-    private func applyInlineRemoveButtonState() {
-        if self.isInlineRemoveHidden {
-            self.removeButton.isHidden = true
-            self.removeButton.isEnabled = false
-            self.removeButton.alphaValue = 0
-            return
-        }
-
-        self.removeButton.isHidden = false
-        self.removeButton.isEnabled = !self.isCurrentTrack
-        self.removeButton.alphaValue = self.isCurrentTrack ? 0.35 : 1
-    }
-
     @objc private func handleRowClick() {
         self.onPlay?()
     }
 
-    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
-        guard gestureRecognizer is NSClickGestureRecognizer else { return true }
-        let location = self.convert(event.locationInWindow, from: nil)
-        let removeButtonFrame = self.convert(self.removeButton.bounds, from: self.removeButton)
-        return !removeButtonFrame.insetBy(dx: -4, dy: -4).contains(location)
-    }
-
     override func prepareForReuse() {
         super.prepareForReuse()
-        self.isInlineRemoveHidden = false
-        self.applyInlineRemoveButtonState()
         self.imageLoadTask?.cancel()
         self.imageLoadTask = nil
         self.currentSongId = nil
         self.thumbnailImageView.image = nil
         self.waveformView?.removeFromSuperview()
         self.waveformView = nil
+    }
+}
+
+// MARK: - QueueSectionHeaderCellView
+
+/// A queue section's caption row: "Next in queue" and "Rest of the queue".
+///
+/// It is a real table row (`isGroupRow`), not a strip inside the first song's row, so it is not
+/// draggable, not selectable, and cannot appear in a drag image. "Next in queue" carries the button
+/// that empties that section.
+@available(macOS 26.0, *)
+class QueueSectionHeaderCellView: NSView {
+    /// Height of a caption row. The caption is centred, so the row itself is the air above and below it.
+    static let rowHeight: CGFloat = 34
+
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let clearButton = NSButton()
+    private var onClear: (() -> Void)?
+    private var titleTrailingWithButton: NSLayoutConstraint?
+    private var titleTrailingToEdge: NSLayoutConstraint?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        self.setupView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        self.setupView()
+    }
+
+    private func setupView() {
+        wantsLayer = true
+        autoresizingMask = [.width, .height]
+
+        self.titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        self.titleLabel.textColor = QueueRowTextColor.artist
+        self.titleLabel.lineBreakMode = .byTruncatingTail
+        self.titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(self.titleLabel)
+
+        self.clearButton.title = ""
+        self.clearButton.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Clear Next in Queue")
+        self.clearButton.isBordered = false
+        self.clearButton.bezelStyle = .regularSquare
+        self.clearButton.controlSize = .mini
+        self.clearButton.contentTintColor = QueueRowTextColor.detail
+        self.clearButton.target = self
+        self.clearButton.action = #selector(self.handleClearClick)
+        self.clearButton.toolTip = String(localized: "Clear Next in Queue")
+        self.clearButton.setAccessibilityLabel(String(localized: "Clear Next in Queue"))
+        self.clearButton.isHidden = true
+        self.clearButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(self.clearButton)
+
+        let titleTrailingWithButton = self.titleLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: self.clearButton.leadingAnchor,
+            constant: -8
+        )
+        let titleTrailingToEdge = self.titleLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: trailingAnchor,
+            constant: -12
+        )
+        self.titleTrailingWithButton = titleTrailingWithButton
+        self.titleTrailingToEdge = titleTrailingToEdge
+        titleTrailingToEdge.isActive = true
+
+        NSLayoutConstraint.activate([
+            self.titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            self.titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            self.clearButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            self.clearButton.centerYAnchor.constraint(equalTo: self.titleLabel.centerYAnchor),
+            self.clearButton.widthAnchor.constraint(equalToConstant: 18),
+            self.clearButton.heightAnchor.constraint(equalToConstant: 18),
+        ])
+    }
+
+    /// - Parameters:
+    ///   - title: The section's name.
+    ///   - clearsHandQueuedSongs: Whether this section's caption carries the clear button.
+    ///   - onClear: The action that empties the section.
+    func configure(title: String, clearsHandQueuedSongs: Bool, onClear: (() -> Void)?) {
+        self.titleLabel.stringValue = title
+        self.onClear = clearsHandQueuedSongs ? onClear : nil
+        self.clearButton.isHidden = !clearsHandQueuedSongs
+
+        self.titleTrailingWithButton?.isActive = clearsHandQueuedSongs
+        self.titleTrailingToEdge?.isActive = !clearsHandQueuedSongs
+    }
+
+    @objc private func handleClearClick() {
+        self.onClear?()
     }
 }
 

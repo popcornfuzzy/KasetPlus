@@ -160,8 +160,34 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Playback queue.
     var queue: [Song] = []
 
+    /// Number of rows directly below the playing row that the reader queued by hand.
+    ///
+    /// The queue is two queues in one list, the way Spotify's is: the songs a playlist, album, mix or
+    /// radio loaded (the *context*), and the songs the reader added with "Add to Queue" or "Play Next".
+    /// The hand-queued rows are the contiguous run right under the playing row, which is what makes
+    /// them play before the rest of the context. "Add to Queue" appends to the end of that run and
+    /// "Play Next" to its front, so a second add lands below the first and above every song the
+    /// playlist still has to play.
+    ///
+    /// The run belongs to the queue it was added to: every path that loads a new queue clears it, and
+    /// an observer on ``currentIndex`` drops a row from it as playback passes that row — including the
+    /// moves the page's own queue drives, so no advance can leave the count behind.
+    var manualQueueCount: Int = 0
+
     /// Index of current track in queue.
-    var currentIndex: Int = 0
+    var currentIndex: Int = 0 {
+        didSet {
+            let moved = self.currentIndex - oldValue
+            guard moved != 0 else { return }
+            // Moving forward past hand-queued rows plays them, so the run shrinks by however many rows
+            // were passed. Moving back does not put them in front again: the array order is untouched,
+            // so playback still walks the same songs, and a new hand-queued song belongs directly below
+            // the playing row rather than under rows the reader has already heard.
+            self.manualQueueCount = moved > 0
+                ? max(0, self.manualQueueCount - moved)
+                : 0
+        }
+    }
 
     /// Whether the right sidebar shows the music/video-podcast video instead of the artwork.
     ///
@@ -462,8 +488,14 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     static let queueDisplayModeKey = "kaset.queue.displayMode"
 
     /// Undo/redo history for queue (up to 10 states). In-memory only.
-    private var queueUndoHistory: [([Song], Int)] = []
-    private var queueRedoHistory: [([Song], Int)] = []
+    private struct QueueSnapshot {
+        let queue: [Song]
+        let currentIndex: Int
+        let manualQueueCount: Int
+    }
+
+    private var queueUndoHistory: [QueueSnapshot] = []
+    private var queueRedoHistory: [QueueSnapshot] = []
     private static let queueUndoMaxCount = 10
 
     /// Queue index before each `next()`; `previous()` pops so Back returns to the track you skipped from (shuffle- and seek-safe).
@@ -740,7 +772,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
     /// Records current queue state for undo (call before mutating queue). Clears redo. Keeps up to 3 states.
     func recordQueueStateForUndo() {
-        let state = (self.queue, self.currentIndex)
+        let state = QueueSnapshot(
+            queue: self.queue,
+            currentIndex: self.currentIndex,
+            manualQueueCount: self.manualQueueCount
+        )
         self.queueUndoHistory.append(state)
         if self.queueUndoHistory.count > Self.queueUndoMaxCount {
             self.queueUndoHistory.removeFirst()
@@ -753,28 +789,38 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Restores the previous queue state. Does nothing if undo history is empty.
     func undoQueue() {
         guard let state = self.queueUndoHistory.popLast() else { return }
-        let (previousQueue, previousIndex) = state
-        self.queueRedoHistory.append((self.queue, self.currentIndex))
+        self.queueRedoHistory.append(self.currentQueueSnapshot)
         self.clearYouTubeAutoplayState()
-        self.queue = previousQueue
-        self.currentIndex = min(previousIndex, max(0, previousQueue.count - 1))
+        self.restoreQueueSnapshot(state)
         self.saveQueueForPersistence()
         self.logger.info(
-            "Undid queue to \(previousQueue.count) songs at index \(self.currentIndex)")
+            "Undid queue to \(state.queue.count) songs at index \(self.currentIndex)")
         self.clearForwardSkipNavigationStack()
     }
 
     /// Restores the next queue state after an undo. Does nothing if redo history is empty.
     func redoQueue() {
         guard let state = self.queueRedoHistory.popLast() else { return }
-        let (nextQueue, nextIndex) = state
-        self.queueUndoHistory.append((self.queue, self.currentIndex))
+        self.queueUndoHistory.append(self.currentQueueSnapshot)
         self.clearYouTubeAutoplayState()
-        self.queue = nextQueue
-        self.currentIndex = min(nextIndex, max(0, nextQueue.count - 1))
+        self.restoreQueueSnapshot(state)
         self.saveQueueForPersistence()
-        self.logger.info("Redid queue to \(nextQueue.count) songs at index \(self.currentIndex)")
+        self.logger.info("Redid queue to \(state.queue.count) songs at index \(self.currentIndex)")
         self.clearForwardSkipNavigationStack()
+    }
+
+    private var currentQueueSnapshot: QueueSnapshot {
+        QueueSnapshot(queue: self.queue, currentIndex: self.currentIndex, manualQueueCount: self.manualQueueCount)
+    }
+
+    /// Puts a snapshot back, hand-queued run included.
+    ///
+    /// The run is written after `currentIndex`, because that observer trims the count for the move it
+    /// sees; the snapshot's own count is the one the queue had at the time.
+    private func restoreQueueSnapshot(_ snapshot: QueueSnapshot) {
+        self.queue = snapshot.queue
+        self.currentIndex = min(snapshot.currentIndex, max(0, snapshot.queue.count - 1))
+        self.manualQueueCount = max(0, min(snapshot.manualQueueCount, max(0, self.queue.count - self.currentIndex - 1)))
     }
 
     /// Clears forward-skip undo when the queue is replaced or reordered so indices are not stale.

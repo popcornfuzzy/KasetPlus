@@ -22,7 +22,7 @@ struct QueueRowDragStrandTests {
             isPlaying: false,
             favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
-            onReorder: { _, _ in },
+            onReorder: { _, _ in nil },
             onRemove: { _ in },
             onStartRadio: { _ in }
         )

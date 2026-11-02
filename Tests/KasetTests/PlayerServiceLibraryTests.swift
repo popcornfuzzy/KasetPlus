@@ -395,16 +395,99 @@ struct PlayerServiceLibraryTests {
         self.playerService.currentTrack = nil
         self.playerService.currentTrackLikeStatus = .indifferent
 
-        self.playerService.updateLikeStatus(.like)
+        self.playerService.updateLikeStatus(
+            .like, videoId: nil, playerBarVideoId: nil, metadataFromPlayer: false
+        )
         #expect(self.playerService.currentTrackLikeStatus == .like)
 
-        self.playerService.updateLikeStatus(.dislike)
+        self.playerService.updateLikeStatus(
+            .dislike, videoId: nil, playerBarVideoId: nil, metadataFromPlayer: false
+        )
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
 
         // ...but an uncertain .indifferent from the WebView is ignored when there is
         // no trusted source, per updateLikeStatus's contract.
-        self.playerService.updateLikeStatus(.indifferent)
+        self.playerService.updateLikeStatus(
+            .indifferent, videoId: nil, playerBarVideoId: nil, metadataFromPlayer: false
+        )
         #expect(self.playerService.currentTrackLikeStatus == .dislike)
+    }
+
+    @Test("A transport observation only applies to the track it is anchored to")
+    func updateLikeStatusRequiresAnAnchoredObservation() {
+        // The player bar lags an in-page track change, so the like button it renders can still carry
+        // the rating of the song that was just left. Believing it lit the new track's thumb, and
+        // nothing corrected it afterwards.
+        self.playerService.currentTrack = TestFixtures.makeSong(id: "song-a")
+        self.playerService.currentTrackLikeStatus = .indifferent
+
+        self.playerService.updateLikeStatus(
+            .like, videoId: "song-b", playerBarVideoId: "song-b", metadataFromPlayer: false
+        )
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent, "another track's rating is not this track's")
+
+        self.playerService.updateLikeStatus(
+            .like, videoId: "song-a", playerBarVideoId: "song-b", metadataFromPlayer: false
+        )
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent, "a bar naming another track has no say")
+
+        self.playerService.updateLikeStatus(
+            .like, videoId: "song-a", playerBarVideoId: "song-a", metadataFromPlayer: true
+        )
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent, "the bar's button lags with its text")
+
+        self.playerService.updateLikeStatus(
+            .like, videoId: "song-a", playerBarVideoId: "song-a", metadataFromPlayer: false
+        )
+        #expect(self.playerService.currentTrackLikeStatus == .like, "an anchored observation of this track applies")
+    }
+
+    @Test("A record that says not rated clears a stale liked thumb")
+    func fetchSongMetadataAcceptsNotRatedAsAnAnswer() async {
+        // `.indifferent` from the record is an answer — the video carries a like button and it is not
+        // rated — not a gap. Reading it as unknown is what left a wrong thumb lit for the whole song.
+        let song = TestFixtures.makeSong(id: "not-rated-video")
+        self.playerService.currentTrack = song
+        self.playerService.currentTrackLikeStatus = .like
+        self.mockClient.songResponses[song.videoId] = Song(
+            id: song.videoId,
+            title: song.title,
+            artists: song.artists,
+            videoId: song.videoId,
+            likeStatus: .indifferent
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: song.videoId)
+
+        #expect(self.playerService.currentTrackLikeStatus == .indifferent)
+        #expect(self.playerService.currentTrack?.likeStatus == .indifferent)
+        #expect(SongLikeStatusManager.shared.status(for: song.videoId) == .indifferent)
+    }
+
+    @Test("A rating the user made outranks a record that predates it")
+    func fetchSongMetadataDoesNotUndoTheUsersRating() async {
+        let song = TestFixtures.makeSong(id: "just-liked-video")
+        self.playerService.currentTrack = song
+        self.playerService.currentTrackLikeStatus = .indifferent
+
+        self.playerService.likeCurrentTrack()
+        await waitUntil("the like to settle") {
+            SongLikeStatusManager.shared.status(for: song.videoId) == .like
+        }
+
+        // The record can be older than the click: `next` responses are cached for 30 minutes.
+        self.mockClient.songResponses[song.videoId] = Song(
+            id: song.videoId,
+            title: song.title,
+            artists: song.artists,
+            videoId: song.videoId,
+            likeStatus: .indifferent
+        )
+
+        await self.playerService.fetchSongMetadata(videoId: song.videoId)
+
+        #expect(self.playerService.currentTrackLikeStatus == .like)
+        #expect(SongLikeStatusManager.shared.status(for: song.videoId) == .like)
     }
 
     @Test("fetchSongMetadata preserves cached like status when API like status is unknown")

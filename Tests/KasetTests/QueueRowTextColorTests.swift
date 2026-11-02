@@ -81,7 +81,7 @@ struct QueueRowTextColorTests {
             index: index,
             isCurrentTrack: isCurrentTrack,
             isPlaying: isPlaying,
-            actions: QueueCellActions(onPlay: {}, onRevealRemove: {})
+            actions: QueueCellActions(onPlay: {})
         )
         return cell
     }
