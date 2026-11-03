@@ -435,7 +435,7 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let preparedSongs = self.normalizedVariants(songs)
-        // An empty queue has no playing row to queued songs sit under: the insert is just the queue.
+        // An empty queue has no playing row for queued songs to sit under: the insert is just the queue.
         let hadQueue = !self.queue.isEmpty
         let insertIndex = self.manualQueueInsertIndex(atFront: true)
         self.queue.insert(contentsOf: preparedSongs, at: insertIndex)
@@ -464,11 +464,18 @@ extension PlayerService {
     /// Removes songs from the queue by video ID.
     /// - Parameter videoIds: Set of video IDs to remove.
     func removeFromQueue(videoIds: Set<String>) {
+        // The row that is playing stays, as it does for every other queue change: removing it would
+        // leave the track playing outside the queue and the highlight on another song.
+        var removable = videoIds
+        if let playingVideoId = self.currentTrack?.videoId {
+            removable.remove(playingVideoId)
+        }
+        guard !removable.isEmpty else { return }
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let previousCount = self.queue.count
-        let removedFromManualQueue = self.manualQueueRange.filter { videoIds.contains(self.queue[$0].videoId) }.count
-        self.queue.removeAll { videoIds.contains($0.videoId) }
+        let removedFromManualQueue = self.manualQueueRange.filter { removable.contains(self.queue[$0].videoId) }.count
+        self.queue.removeAll { removable.contains($0.videoId) }
 
         // Adjust currentIndex if needed
         if let current = currentTrack,
@@ -570,39 +577,6 @@ extension PlayerService {
         self.saveQueueForPersistence()
     }
 
-    /// Reorders the queue based on a new order of video IDs.
-    /// - Parameter videoIds: The new order of video IDs.
-    func reorderQueue(videoIds: [String]) {
-        self.clearForwardSkipNavigationStack()
-        self.recordQueueStateForUndo()
-        var reordered: [Song] = []
-        var videoIdToSong: [String: Song] = [:]
-
-        for song in self.queue {
-            videoIdToSong[song.videoId] = song
-        }
-
-        for videoId in videoIds {
-            if let song = videoIdToSong[videoId] {
-                reordered.append(song)
-            }
-        }
-
-        self.queue = reordered
-        // The new order says nothing about which rows were queued by hand.
-        self.manualQueueCount = 0
-
-        // Update currentIndex to match current track's new position
-        if let current = currentTrack,
-           let newIndex = queue.firstIndex(where: { $0.videoId == current.videoId })
-        {
-            self.currentIndex = newIndex
-        }
-
-        self.logger.info("Queue reordered with \(reordered.count) songs")
-        self.saveQueueForPersistence()
-    }
-
     /// Shuffles the queue, keeping the current track in place at the front.
     func shuffleQueue() {
         guard self.queue.count > 1 else { return }
@@ -634,6 +608,9 @@ extension PlayerService {
     /// - Parameter songs: The songs to queue by hand.
     func appendToQueue(_ songs: [Song]) {
         guard !songs.isEmpty else { return }
+        // The insert shifts every row below it, so indices recorded by earlier `next()` calls no longer
+        // name the rows they did.
+        self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let preparedSongs = self.normalizedVariants(songs)
         // An empty queue has no playing row for the songs to sit under: they are simply the queue.

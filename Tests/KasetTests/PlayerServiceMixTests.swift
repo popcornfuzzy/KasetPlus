@@ -246,33 +246,7 @@ struct PlayerServiceMixTests {
         #expect(self.playerService.currentIndex == 0)
     }
 
-    // MARK: - reorderQueue Tests
-
-    @Test("reorderQueue changes order based on video IDs")
-    func reorderQueue() async {
-        let queue = TestFixtures.makeSongs(count: 3)
-        await self.playerService.playQueue(queue, startingAt: 0)
-
-        self.playerService.reorderQueue(videoIds: ["video-2", "video-0", "video-1"])
-
-        #expect(self.playerService.queue.count == 3)
-        #expect(self.playerService.queue[0].videoId == "video-2")
-        #expect(self.playerService.queue[1].videoId == "video-0")
-        #expect(self.playerService.queue[2].videoId == "video-1")
-    }
-
-    @Test("reorderQueue updates currentIndex to match current track")
-    func reorderQueueUpdatesIndex() async {
-        let queue = TestFixtures.makeSongs(count: 3)
-        await self.playerService.playQueue(queue, startingAt: 0)
-
-        // Current track is video-0 at index 0
-        self.playerService.reorderQueue(videoIds: ["video-2", "video-1", "video-0"])
-
-        // Current track should now be at index 2
-        #expect(self.playerService.currentTrack?.videoId == "video-0")
-        #expect(self.playerService.currentIndex == 2)
-    }
+    // MARK: - reorderQueue(from:to:) Tests
 
     @Test("reorderQueue(from:to:) moves item and maintains current track")
     func reorderQueueFromTo() async {

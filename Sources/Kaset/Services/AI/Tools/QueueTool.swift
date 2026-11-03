@@ -57,7 +57,14 @@ struct QueueTool: Tool {
             }
 
             if queue.count > limit {
-                output += "... and \(queue.count - limit) more tracks"
+                output += "... and \(queue.count - limit) more tracks\n"
+            }
+
+            // The playing row can sit past the returned window, and a queue the model reads as having
+            // nothing on would have it answer about the wrong song.
+            if currentIndex >= limit, let nowPlaying = queue[safe: currentIndex] {
+                output += "▶ NOW PLAYING (track \(currentIndex + 1) of \(queue.count)): "
+                    + "\"\(nowPlaying.title)\" by \(nowPlaying.artistsDisplay) [videoId: \(nowPlaying.videoId)]\n"
             }
 
             self.logger.debug("QueueTool returned \(queue.count) tracks")

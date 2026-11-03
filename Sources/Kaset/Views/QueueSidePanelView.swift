@@ -346,15 +346,15 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         }
 
         var queue: [Song] {
-            didSet { self.rebuildRows() }
+            didSet { self.rebuildRowsUnlessInstallingState() }
         }
 
         var currentIndex: Int {
-            didSet { self.rebuildRows() }
+            didSet { self.rebuildRowsUnlessInstallingState() }
         }
 
         var manualQueueCount: Int {
-            didSet { self.rebuildRows() }
+            didSet { self.rebuildRowsUnlessInstallingState() }
         }
 
         var isPlaying: Bool
@@ -367,6 +367,10 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         weak var viewController: QueueListViewController?
         /// The table's rows, captions included.
         private(set) var rows: [Row] = []
+        /// The table row that shows each queue index, so a row lookup is not a walk of the list.
+        private var rowByQueueIndex: [Int] = []
+        /// Whether a whole state is being installed at once; its single rebuild comes at the end.
+        private var isInstallingState = false
         var isDragging = false
         /// Whether the rows above are out of date with the queue the view last handed down.
         private(set) var needsReload = false
@@ -511,10 +515,16 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             let changed = queue != self.queue
                 || currentIndex != self.currentIndex
                 || manualQueueCount != self.manualQueueCount
+            guard changed else { return }
+            // One rebuild for the three properties: each `didSet` would otherwise rebuild the rows for
+            // itself, which is three walks of the queue on every update.
+            self.isInstallingState = true
             self.queue = queue
             self.currentIndex = currentIndex
             self.manualQueueCount = manualQueueCount
-            if changed { self.needsReload = true }
+            self.isInstallingState = false
+            self.rebuildRows()
+            self.needsReload = true
         }
 
         /// Rebuilds the table when its rows are out of date, unless a row is being dragged.
@@ -540,6 +550,12 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             return start ..< max(start, end)
         }
 
+        /// Rebuilds the rows unless a whole state is being installed at once (see `apply`).
+        private func rebuildRowsUnlessInstallingState() {
+            guard !self.isInstallingState else { return }
+            self.rebuildRows()
+        }
+
         /// Rebuilds the table rows: a caption opens each section, and every song keeps its queue index.
         ///
         /// The sections only exist while the reader has songs queued by hand, so a queue nothing was
@@ -563,6 +579,11 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
                 }
                 rows.append(.song(index: index))
             }
+            var lookup = [Int](repeating: 0, count: self.queue.count)
+            for (row, entry) in rows.enumerated() {
+                if case let .song(index) = entry { lookup[index] = row }
+            }
+            self.rowByQueueIndex = lookup
             self.rows = rows
         }
 
@@ -574,10 +595,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
         /// The table row that shows the song at `index`.
         func tableRow(forQueueIndex index: Int) -> Int? {
-            self.rows.firstIndex { entry in
-                if case let .song(songIndex) = entry { return songIndex == index }
-                return false
-            }
+            self.rowByQueueIndex[safe: index]
         }
 
         /// Whether `row` is a section caption.

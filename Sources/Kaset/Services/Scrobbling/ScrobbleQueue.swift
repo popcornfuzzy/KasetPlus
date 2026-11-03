@@ -131,7 +131,10 @@ final class ScrobbleQueue {
     // MARK: - Default Directory
 
     private static func defaultDirectory() -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return appSupport.appendingPathComponent("Kaset")
     }
 }
