@@ -85,7 +85,10 @@ struct OnboardingView: View {
             Spacer()
                 .frame(height: 40)
         }
-        .frame(minWidth: 500, minHeight: 500)
+        // Fills the window it is the whole content of: the stack sits in a bottom-trailing `ZStack`
+        // with the player layer, so a minimum-sized body would be pinned to the corner instead of
+        // being the screen the reader is greeted with.
+        .frame(minWidth: 500, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .sheet(isPresented: self.$showLoginSheet) {
             LoginSheet()
         }

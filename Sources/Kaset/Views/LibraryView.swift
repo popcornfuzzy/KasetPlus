@@ -40,6 +40,10 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
 
 /// How the library grid is ordered.
 enum LibrarySortOrder: String, CaseIterable, Identifiable {
+    /// The order the library arrives in: most recently used first, with Liked Music and the new
+    /// episodes where YouTube Music puts them. The default, because sorting by title moves the shelves
+    /// the reader actually uses to wherever their name happens to fall.
+    case defaultOrder
     case titleAscending
     case titleDescending
     case type
@@ -50,6 +54,7 @@ enum LibrarySortOrder: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .defaultOrder: String(localized: "Default")
         case .titleAscending: String(localized: "Title (A–Z)")
         case .titleDescending: String(localized: "Title (Z–A)")
         case .type: String(localized: "Type")
@@ -71,7 +76,7 @@ struct LibraryView: View {
     @State private var selectedFilter: LibraryFilter = .all
     @State private var showCreatePlaylistPopover = false
     @State private var searchText = ""
-    @State private var sortOrder: LibrarySortOrder = .titleAscending
+    @State private var sortOrder: LibrarySortOrder = .defaultOrder
 
     /// Height shared by every control in the filter row — the type chips, the search pill and the sort
     /// pill — so the row reads as one line rather than three heights.
@@ -297,7 +302,8 @@ struct LibraryView: View {
             items = items.filter { $0.matches(query) }
         }
 
-        return items.sorted(by: self.sortOrder.comparator)
+        guard let comparator = self.sortOrder.comparator else { return items }
+        return items.sorted(by: comparator)
     }
 
     private var libraryGrid: some View {
@@ -613,9 +619,12 @@ enum LibraryItem: Identifiable {
 // MARK: - LibrarySortOrder + Sorting
 
 extension LibrarySortOrder {
-    /// The ordering applied to the library grid.
-    var comparator: (LibraryItem, LibraryItem) -> Bool {
+    /// The ordering applied to the library grid, or `nil` when the order the library arrives in is the
+    /// order to show.
+    var comparator: ((LibraryItem, LibraryItem) -> Bool)? {
         switch self {
+        case .defaultOrder:
+            nil
         case .titleAscending:
             { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case .titleDescending:

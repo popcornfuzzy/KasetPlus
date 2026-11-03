@@ -942,7 +942,17 @@ struct MainWindow: View {
                 .controlSize(.regular)
                 .frame(width: 20, height: 20)
         }
-        .frame(minWidth: 900, minHeight: 600)
+        // The shell's own floor, not a smaller one of its own, and filling the window: this screen is
+        // the window the app is about to open, so it should already be that size when loading ends
+        // instead of growing under the reader as the shell takes over.
+        .frame(
+            minWidth: self.shellLayout.minimumWindowWidth(
+                tracksColumn: self.playerService.isNowPlayingSidebarVisible
+            ),
+            maxWidth: .infinity,
+            minHeight: Layout.minimumContentHeight,
+            maxHeight: .infinity
+        )
     }
 
     private func handleAuthStateChange(oldState: AuthService.State, newState: AuthService.State) {
