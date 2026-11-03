@@ -101,16 +101,11 @@ struct AccentBackgroundModifier: ViewModifier {
     let imageURL: URL?
 
     func body(content: Content) -> some View {
-        // TEMPORARY: honors the PerfHUD "PageFX" switch (see PerfHUD).
-        if PerfHUD.isEnabled, !PerfHUD.shared.usesPageEffects {
-            content
-        } else {
-            content
-                .background {
-                    AccentBackground(imageURL: self.imageURL)
-                        .ignoresSafeArea()
-                }
-        }
+        content
+            .background {
+                AccentBackground(imageURL: self.imageURL)
+                    .ignoresSafeArea()
+            }
     }
 }
 

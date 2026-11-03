@@ -250,12 +250,9 @@ private struct FavoriteItemCard: View {
         .accessibilityHint(String(localized: "Drag to reorder"))
     }
 
-    /// TEMPORARY: honors the PerfHUD "Materials" switch (see PerfHUD).
-    private var playOverlayStyle: AnyShapeStyle {
-        if PerfHUD.isEnabled, !PerfHUD.shared.usesMaterials {
-            return AnyShapeStyle(Color.black.opacity(0.35))
-        }
-        return AnyShapeStyle(.ultraThinMaterial)
+    /// Fill for the play overlay shown on hover.
+    private var playOverlayStyle: Material {
+        .ultraThinMaterial
     }
 
     private var thumbnail: some View {

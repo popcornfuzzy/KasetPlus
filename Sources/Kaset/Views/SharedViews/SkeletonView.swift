@@ -18,7 +18,7 @@ struct SkeletonView: View {
     private let animationDuration: Double = 1.5
 
     private var shouldAnimate: Bool {
-        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        !AccessibilityMotion.shared.reduceMotion
     }
 
     /// Gradient for shimmer effect based on animation progress.

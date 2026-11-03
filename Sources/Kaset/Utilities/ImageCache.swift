@@ -30,6 +30,11 @@ actor ImageCache {
     /// not have for this video). Remembered so the candidate chain does not re-request them on every
     /// render; transient failures are deliberately not remembered.
     private var unavailableURLs: Set<URL> = []
+    /// Disk cache size in bytes, as of the last write or measurement.
+    ///
+    /// `nil` until the startup measurement lands. Kept as a number rather than derived on demand
+    /// because deriving it walks the cache directory and stats every file in it.
+    private var approximateDiskBytes: Int64?
     private let fileManager = FileManager.default
     private let session: URLSession
     private let diskCacheURL: URL
@@ -44,8 +49,12 @@ actor ImageCache {
         diskCacheDirectoryName: String = ImageCache.diskCacheDirectoryName,
         monitorsMemoryPressure: Bool = true
     ) {
-        self.memoryCache.countLimit = 200
-        self.memoryCache.totalCostLimit = 50 * 1024 * 1024 // 50MB
+        // Sized for the decodes the app actually makes: a 320 pt artwork downsampled for Retina is
+        // ~1.6 MB, so 50 MB held about thirty of them — a couple of Home pages could evict artwork
+        // still on screen and pay to decode it from disk again. `NSCache` still sheds everything
+        // under memory pressure, which is what the limit is really for.
+        self.memoryCache.countLimit = 300
+        self.memoryCache.totalCostLimit = 128 * 1024 * 1024 // 128MB
         self.session = session
 
         // Set up disk cache directory
@@ -275,6 +284,7 @@ actor ImageCache {
     func clearAllCaches() {
         self.clearMemoryCache()
         self.unavailableURLs.removeAll()
+        self.approximateDiskBytes = nil
         try? self.fileManager.removeItem(at: self.diskCacheURL)
         try? self.fileManager.createDirectory(at: self.diskCacheURL, withIntermediateDirectories: true)
     }
@@ -300,9 +310,7 @@ actor ImageCache {
     // MARK: - Disk Cache Helpers
 
     private func cacheKey(for url: URL) -> String {
-        let data = Data(url.absoluteString.utf8)
-        let hash = SHA256.hash(data: data)
-        return hash.compactMap { String(format: "%02x", $0) }.joined()
+        SHA256.hash(data: Data(url.absoluteString.utf8)).hexEncodedString
     }
 
     private func diskCachePath(for url: URL) -> URL {
@@ -321,8 +329,15 @@ actor ImageCache {
         let path = self.diskCachePath(for: url)
         try? data.write(to: path, options: .atomic)
 
-        // Evict old files if disk cache exceeds limit.
-        // Perform file system I/O off the main actor.
+        // Check the limit against a running total. Evicting used to rebuild that total by walking
+        // the whole cache directory, with a `stat` per file, after *every* image saved — which the
+        // actor serializes, so every artwork lookup queued behind a full directory scan.
+        if let bytes = self.approximateDiskBytes {
+            let total = bytes + Int64(data.count)
+            self.approximateDiskBytes = total
+            guard total > Self.maxDiskCacheSize else { return }
+        }
+
         Task(priority: .utility) {
             await self.evictDiskCacheIfNeeded()
         }
@@ -337,32 +352,46 @@ actor ImageCache {
         let fileSize: Int
     }
 
-    /// Evicts oldest files until disk cache is under the size limit.
+    /// Measures the disk cache and evicts the oldest files while it is over the size limit.
     /// Uses LRU (Least Recently Used) eviction based on file modification dates.
-    /// Marked async to document the I/O-bound nature and satisfy actor isolation.
+    ///
+    /// One pass gathers each file's size and date. The previous version enumerated the whole
+    /// directory for the total and then enumerated it a second time to pick victims, which is why it
+    /// could not run on the save path; now the pass also refreshes ``approximateDiskBytes``.
     private func evictDiskCacheIfNeeded() async {
-        let currentSize = self.diskCacheSize()
-        guard currentSize > Self.maxDiskCacheSize else { return }
-
-        // Get all cached files sorted by modification date (oldest first)
         guard let files = try? fileManager.contentsOfDirectory(
             at: diskCacheURL,
             includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ) else { return }
 
-        let sortedFiles = files.compactMap { url -> CachedFileInfo? in
+        var entries: [CachedFileInfo] = []
+        entries.reserveCapacity(files.count)
+        var total: Int64 = 0
+        for url in files {
             guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
                   let date = values.contentModificationDate,
                   let size = values.fileSize
-            else { return nil }
-            return CachedFileInfo(url: url, modificationDate: date, fileSize: size)
-        }.sorted { $0.modificationDate < $1.modificationDate } // Sort by date ascending (oldest first)
-
-        var sizeToFree = currentSize - Self.maxDiskCacheSize
-        for fileInfo in sortedFiles where sizeToFree > 0 {
-            try? self.fileManager.removeItem(at: fileInfo.url)
-            sizeToFree -= Int64(fileInfo.fileSize)
+            else { continue }
+            total += Int64(size)
+            entries.append(CachedFileInfo(url: url, modificationDate: date, fileSize: size))
         }
+
+        guard total > Self.maxDiskCacheSize else {
+            self.approximateDiskBytes = total
+            return
+        }
+
+        // Oldest first.
+        entries.sort { $0.modificationDate < $1.modificationDate }
+
+        var sizeToFree = total - Self.maxDiskCacheSize
+        for entry in entries where sizeToFree > 0 {
+            try? self.fileManager.removeItem(at: entry.url)
+            sizeToFree -= Int64(entry.fileSize)
+            total -= Int64(entry.fileSize)
+        }
+
+        self.approximateDiskBytes = max(0, total)
     }
 }

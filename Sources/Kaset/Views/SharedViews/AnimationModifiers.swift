@@ -60,7 +60,7 @@ struct StaggeredAppearanceModifier: ViewModifier {
             .offset(y: self.isVisible ? 0 : 20)
             .onAppear {
                 // Skip animation if reduce motion is enabled
-                guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                guard !AccessibilityMotion.shared.reduceMotion else {
                     self.isVisible = true
                     return
                 }
@@ -113,7 +113,7 @@ struct FadeInModifier: ViewModifier {
         content
             .opacity(self.opacity)
             .onAppear {
-                guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                guard !AccessibilityMotion.shared.reduceMotion else {
                     self.opacity = 1
                     return
                 }
@@ -147,7 +147,7 @@ struct PulseModifier: ViewModifier {
     var duration: Double = 1.0
 
     private var shouldAnimate: Bool {
-        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        !AccessibilityMotion.shared.reduceMotion
     }
 
     func body(content: Content) -> some View {

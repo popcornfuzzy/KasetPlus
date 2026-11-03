@@ -22,12 +22,9 @@ struct HomeSectionItemCard: View {
         self.action = action
     }
 
-    /// TEMPORARY: honors the PerfHUD "Materials" switch (see PerfHUD).
-    private var playOverlayStyle: AnyShapeStyle {
-        if PerfHUD.isEnabled, !PerfHUD.shared.usesMaterials {
-            return AnyShapeStyle(Color.black.opacity(0.35))
-        }
-        return AnyShapeStyle(.ultraThinMaterial)
+    /// Fill for the play overlay shown on hover.
+    private var playOverlayStyle: Material {
+        .ultraThinMaterial
     }
 
     var body: some View {
@@ -155,9 +152,16 @@ struct HomeSectionItemCard: View {
     }
 
     /// Generates a consistent gradient color based on the title string.
+    ///
+    /// FNV-1a rather than `title.hashValue`: Swift seeds its hasher per process, so a placeholder
+    /// gradient silently changed colour on every launch.
     private static func gradientForTitle(_ title: String) -> LinearGradient {
-        let hash = abs(title.hashValue)
-        let hue1 = Double(hash % 360) / 360.0
+        var seed: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in title.utf8 {
+            seed ^= UInt64(byte)
+            seed = seed &* 0x0000_0100_0000_01B3
+        }
+        let hue1 = Double(seed % 360) / 360.0
         let hue2 = (hue1 + 0.1).truncatingRemainder(dividingBy: 1.0)
 
         let color1 = Color(hue: hue1, saturation: 0.6, brightness: 0.5)

@@ -182,10 +182,16 @@ page, and a cancelled page (refresh or navigation) no longer mutates state becau
 - `PlaylistTrackRow` remains an `Equatable` view applied with `.equatable()`. That is no longer
   the scroll fix it was meant to be; it is kept because it still avoids rebuilding row bodies for
   unrelated app state, and the cost it adds is one view per row.
-- The remaining large lists (`HomeView`, `SearchView`, `ChartsView`, `QueueView`, the favourites
-  carousels) still use `ScrollView` + `LazyVStack`, and `HomeSectionItemCard` still tracks hover
-  per card. The mechanism measured here applies to them unchanged; they are out of scope for this
-  ADR, and each needs its own row-level design pass because their rows are not table rows.
+- The remaining large lists (`HomeView`, `SearchView`, `ChartsView`, the favourites carousels)
+  still use `ScrollView` + `LazyVStack`, and `HomeSectionItemCard` still tracks hover per card. The
+  mechanism measured here applies to them unchanged; they are out of scope for this ADR, and each
+  needs its own row-level design pass because their rows are not table rows.
+- `QueueView` was brought in line after the fact, without moving to `List` (a 280 pt panel of short
+  rows does not need it): `QueueRowView` takes value data plus `.equatable()` and reads no service in
+  its body, its menu moved into `QueueRowMenuContent`, rows are keyed by queue entry instead of array
+  offset, thumbnails decode at their 40 pt slot, and hover is suppressed while scrolling. Its drag
+  recognizer was replaced with `onScrollPhaseChange`, which is what this ADR should have used
+  originally — a `simultaneousGesture` competes with the scroll gesture.
 - `List` applies its own row metrics and selection model, so row chrome (insets, separators,
   background) is set explicitly rather than inherited.
 

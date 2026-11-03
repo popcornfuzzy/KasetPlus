@@ -752,7 +752,7 @@ struct FullscreenNowPlayingView: View {
     }
 
     private var shouldAnimateCanvas: Bool {
-        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        !AccessibilityMotion.shared.reduceMotion
     }
 
     /// Restarts the canvas lookup whenever the fullscreen view is presented or the track changes

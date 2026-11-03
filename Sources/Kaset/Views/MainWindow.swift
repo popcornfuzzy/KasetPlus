@@ -182,7 +182,6 @@ struct MainWindow: View {
         .overlayPreferenceValue(PodcastVideoSlotAnchor.self) { anchor in
             GeometryReader { proxy in
                 if showsPodcastFullscreen,
-                   self.showsWebLayer,
                    let videoId = playerService.pendingPlayVideoId
                 {
                     self.podcastVideoLayer(videoId: videoId, slot: anchor.map { proxy[$0] } ?? .zero)
@@ -346,15 +345,6 @@ struct MainWindow: View {
                 self.playerService.currentTrackLikeStatus = event.status
             }
         }
-        // TEMPORARY: scroll diagnostics (see PerfHUD).
-        .overlay(alignment: .topLeading) {
-            if PerfHUD.isEnabled {
-                PerfHUDOverlay()
-            }
-        }
-        .task {
-            PerfHUD.shared.start()
-        }
     }
 
     /// Carries the open right sidebar over when the design changes in Settings.
@@ -370,11 +360,6 @@ struct MainWindow: View {
         }
     }
 
-    /// TEMPORARY: honors the PerfHUD "WebLayer" switch.
-    private var showsWebLayer: Bool {
-        !PerfHUD.isEnabled || PerfHUD.shared.showsWebLayer
-    }
-
     /// Whether the hidden audio layer should be hosted at all.
     ///
     /// Signed-in sessions host it from launch, which is what gives the shell somewhere to preload;
@@ -385,7 +370,7 @@ struct MainWindow: View {
     /// while the fullscreen podcast view does: one WebView, one superview, so only one host at a
     /// time or the surface blanks — and a DRM stream does not survive being re-parented mid-song.
     private func hostsPlayerWebView(showsPodcastFullscreen: Bool) -> Bool {
-        guard self.showsWebLayer, !showsPodcastFullscreen else { return false }
+        guard !showsPodcastFullscreen else { return false }
         if SidebarVideoHosting.keepsSurface(
             isSidebarVisible: self.playerService.isNowPlayingSidebarVisible,
             hasVideoSurface: self.playerService.hasVideoSurface,

@@ -42,9 +42,6 @@ final class APICache {
     /// How long a response saved by an earlier session stays readable offline.
     private static let staleAge: TimeInterval = 14 * 24 * 60 * 60
 
-    /// How many responses are kept on disk.
-    private static let maxDiskEntries = 80
-
     /// Pre-allocated dictionary with initial capacity to reduce rehashing.
     private var cache: [String: CacheEntry]
 
@@ -99,20 +96,6 @@ final class APICache {
         self.persistToDisk(key: key, data: data)
     }
 
-    // MARK: - Disk (offline fallback)
-
-    /// Where responses are mirrored so a launch without a network is not a blank app.
-    private lazy var diskDirectory: URL? = {
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        let directory = appSupport
-            .appendingPathComponent("Kaset", isDirectory: true)
-            .appendingPathComponent("APICache", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }()
-
     private static let logger = DiagnosticsLogger.api
 
     /// Generates a stable, deterministic cache key from endpoint, request body, and brand ID.
@@ -140,15 +123,14 @@ final class APICache {
             hashData.append(Data(brandId.utf8))
         }
 
-        let hash = SHA256.hash(data: hashData)
-        let hashString = hash.prefix(16).compactMap { String(format: "%02x", $0) }.joined()
+        let hashString = SHA256.hash(data: hashData).prefix(16).hexEncodedString
         return "\(endpoint):\(hashString)"
     }
 
     /// Invalidates all cached entries.
     func invalidateAll() {
         self.cache.removeAll()
-        self.removeDiskEntries(matching: nil)
+        Task { await APICacheDiskStore.shared.removeAll() }
     }
 
     /// Invalidates entries matching the given prefix.
@@ -171,19 +153,15 @@ final class APICache {
         return (self.cache.count, expired)
     }
 
-    // MARK: - Disk Helpers
+    // MARK: - Disk (offline fallback)
 
-    private func diskFileURL(for key: String, in directory: URL) -> URL? {
-        let digest = SHA256.hash(data: Data(key.utf8))
-        let name = digest.compactMap { String(format: "%02x", $0) }.joined()
-        return directory.appendingPathComponent(name).appendingPathExtension("json")
-    }
-
+    /// Mirrors a response so a launch without a network is not a blank app.
+    ///
+    /// Encoding stays here — `[String: Any]` is not `Sendable`, so only the bytes can cross to the
+    /// disk store — but the write and the prune are the filesystem work that used to block the main
+    /// actor once per cached response.
     private func persistToDisk(key: String, data: [String: Any]) {
-        guard let directory = self.diskDirectory,
-              let fileURL = self.diskFileURL(for: key, in: directory),
-              JSONSerialization.isValidJSONObject(data)
-        else { return }
+        guard JSONSerialization.isValidJSONObject(data) else { return }
 
         let envelope: [String: Any] = [
             "key": key,
@@ -191,13 +169,15 @@ final class APICache {
             "data": data,
         ]
 
+        let encoded: Data
         do {
-            let encoded = try JSONSerialization.data(withJSONObject: envelope)
-            try encoded.write(to: fileURL, options: .atomic)
-            self.pruneDiskEntries(in: directory)
+            encoded = try JSONSerialization.data(withJSONObject: envelope)
         } catch {
-            Self.logger.debug("APICache: could not persist response: \(error.localizedDescription)")
+            Self.logger.debug("APICache: could not encode response for disk: \(error.localizedDescription)")
+            return
         }
+
+        Task { await APICacheDiskStore.shared.persist(encoded, key: key) }
     }
 
     /// Returns a response saved by an earlier session, while the app is offline only.
@@ -205,8 +185,7 @@ final class APICache {
     /// Serving it online would hide a changed feed behind old data; offline the alternative is an
     /// empty page, so the last known answer wins.
     private func staleDiskEntry(for key: String) -> [String: Any]? {
-        guard let directory = self.diskDirectory,
-              let fileURL = self.diskFileURL(for: key, in: directory),
+        guard let fileURL = APICacheDiskStore.fileURL(for: key),
               let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
               let modified = attributes[.modificationDate] as? Date,
               Date().timeIntervalSince(modified) < Self.staleAge,
@@ -222,42 +201,6 @@ final class APICache {
         return data
     }
 
-    private func pruneDiskEntries(in directory: URL) {
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey]
-        ), files.count > Self.maxDiskEntries else { return }
-
-        let ordered = files.sorted { lhs, rhs in
-            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return lhsDate < rhsDate
-        }
-
-        for file in ordered.prefix(files.count - Self.maxDiskEntries) {
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
-    /// Removes every saved response, or those whose key matches a prefix.
-    private func removeDiskEntries(matching prefix: String?) {
-        guard let directory = self.diskDirectory,
-              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        else { return }
-
-        for file in files {
-            if let prefix {
-                guard let raw = try? Data(contentsOf: file),
-                      let object = try? JSONSerialization.jsonObject(with: raw),
-                      let envelope = object as? [String: Any],
-                      let key = envelope["key"] as? String,
-                      key.hasPrefix(prefix)
-                else { continue }
-            }
-            try? FileManager.default.removeItem(at: file)
-        }
-    }
-
     // MARK: - Private Helpers
 
     /// Evicts all expired entries from the cache.
@@ -271,5 +214,98 @@ final class APICache {
             return
         }
         self.cache.removeValue(forKey: lruKey)
+    }
+}
+
+// MARK: - APICacheDiskStore
+
+/// Owns the on-disk mirror of the API cache.
+///
+/// Every method here is filesystem work: an atomic write is a temporary file, a flush and a rename,
+/// and pruning stats up to ``maxEntries`` saved responses. Doing that on the main actor, once per
+/// cached response, put disk latency on the path of every page load. The actor keeps the work off
+/// the main thread and serializes it, so a write and the prune that follows cannot interleave.
+private actor APICacheDiskStore {
+    static let shared = APICacheDiskStore()
+
+    /// How many responses are kept on disk.
+    private static let maxEntries = 80
+
+    /// Pruning lists and stats the whole directory, so it runs at most this often rather than after
+    /// every write.
+    private static let pruneInterval: TimeInterval = 10
+
+    private let fileManager = FileManager.default
+    private var lastPruneTime: Date = .distantPast
+
+    /// Where responses are mirrored so a launch without a network is not a blank app.
+    static let directory: URL? = {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = appSupport
+            .appendingPathComponent("Kaset", isDirectory: true)
+            .appendingPathComponent("APICache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }()
+
+    /// The file a response is mirrored to. Deterministic, and readable without entering the actor,
+    /// which is what lets the offline fallback open it synchronously.
+    static func fileURL(for key: String) -> URL? {
+        guard let directory else { return nil }
+        let name = SHA256.hash(data: Data(key.utf8)).hexEncodedString
+        return directory.appendingPathComponent(name).appendingPathExtension("json")
+    }
+
+    func persist(_ encoded: Data, key: String) {
+        guard let fileURL = Self.fileURL(for: key) else { return }
+
+        do {
+            try encoded.write(to: fileURL, options: .atomic)
+        } catch {
+            DiagnosticsLogger.api.debug("APICache: could not persist response: \(error.localizedDescription)")
+            return
+        }
+
+        self.pruneIfNeeded()
+    }
+
+    func removeAll() {
+        guard let directory = Self.directory,
+              let files = try? self.fileManager.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: nil
+              )
+        else { return }
+
+        for file in files {
+            try? self.fileManager.removeItem(at: file)
+        }
+    }
+
+    /// Drops the oldest responses while more than ``maxEntries`` are saved.
+    private func pruneIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(self.lastPruneTime) >= Self.pruneInterval else { return }
+        self.lastPruneTime = now
+
+        guard let directory = Self.directory,
+              let files = try? self.fileManager.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: [.contentModificationDateKey]
+              ),
+              files.count > Self.maxEntries
+        else { return }
+
+        let ordered = files.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return lhsDate < rhsDate
+        }
+
+        for file in ordered.prefix(ordered.count - Self.maxEntries) {
+            try? self.fileManager.removeItem(at: file)
+        }
     }
 }

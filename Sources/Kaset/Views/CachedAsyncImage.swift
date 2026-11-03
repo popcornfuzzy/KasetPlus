@@ -118,7 +118,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
 
     /// Whether to animate the image appearance.
     private var shouldAnimate: Bool {
-        !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        !AccessibilityMotion.shared.reduceMotion
     }
 
     var body: some View {

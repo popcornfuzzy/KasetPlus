@@ -129,53 +129,64 @@ struct QueueView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(self.playerService.queue.enumerated()), id: \.offset) { index, song in
-                        if let header = self.sectionHeader(forRow: index) {
+                    // Rows are keyed by their queue entry rather than by position. Enumerating the
+                    // queue allocated a copy of the whole array on every body evaluation, and offset
+                    // identity made every row after a removal look like a brand-new row — the same
+                    // two costs ADR-0014 removed from the playlist list.
+                    ForEach(self.queueEntries) { entry in
+                        if let header = self.sectionHeader(forRow: entry.index) {
                             self.sectionHeaderRow(
                                 header,
-                                clearsHandQueuedSongs: index == self.playerService.manualQueueRange.lowerBound
+                                clearsHandQueuedSongs: entry.index == self.playerService.manualQueueRange.lowerBound
                             )
                         }
 
                         QueueRowView(
-                            song: song,
-                            isCurrentTrack: index == self.playerService.currentIndex,
-                            index: index,
+                            song: entry.song,
+                            index: entry.index,
+                            isCurrentTrack: entry.index == self.playerService.currentIndex,
+                            isPlaying: self.playerService.isPlaying,
+                            isAutoplayIndicatorVisible: self.playerService.isYouTubeAutoplayIndicatorVisible,
+                            isScrolling: self.userIsScrolling,
                             favoritesManager: self.favoritesManager,
                             playerService: self.playerService,
                             client: self.libraryViewModel?.client,
                             libraryViewModel: self.libraryViewModel,
                             onRemove: {
-                                self.playerService.removeFromQueue(videoIds: Set([song.videoId]))
+                                self.playerService.removeFromQueue(videoIds: Set([entry.song.videoId]))
                             },
                             onTap: {
                                 Task {
-                                    await self.playerService.playFromQueue(at: index)
+                                    await self.playerService.playFromQueue(at: entry.index)
                                 }
                             }
                         )
-                        .id(index)
-                        .accessibilityIdentifier(AccessibilityID.Queue.row(index: index))
+                        .equatable()
+                        .id(entry.id)
+                        .accessibilityIdentifier(AccessibilityID.Queue.row(index: entry.index))
                     }
                 }
                 .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { _ in
-                        self.userIsScrolling = true
-                        self.scrollResumeTask?.cancel()
-                    }
-                    .onEnded { _ in
-                        self.scrollResumeTask = Task {
-                            try? await Task.sleep(for: .seconds(8))
-                            if !Task.isCancelled {
-                                self.userIsScrolling = false
-                            }
+            // The native scroll phases rather than a `simultaneousGesture`: a drag recognizer
+            // competing with the scroll gesture is what this API exists to avoid. `.animating` is
+            // the app's own scroll-to-current animation, so it is deliberately not read as the user
+            // scrolling — that would pause auto-scroll during the very scroll it just performed.
+            .onScrollPhaseChange { _, newPhase, _ in
+                if newPhase == .interacting || newPhase == .decelerating {
+                    self.userIsScrolling = true
+                    self.scrollResumeTask?.cancel()
+                } else if newPhase == .idle {
+                    self.scrollResumeTask?.cancel()
+                    self.scrollResumeTask = Task {
+                        try? await Task.sleep(for: .seconds(8))
+                        if !Task.isCancelled {
+                            self.userIsScrolling = false
                         }
                     }
-            )
+                }
+            }
             .onAppear {
                 self.scrollToCurrentSong(with: proxy, animated: false)
             }
@@ -193,6 +204,27 @@ struct QueueView: View {
             }
         }
         .accessibilityIdentifier(AccessibilityID.Queue.scrollView)
+    }
+
+    /// The queue as rows, each with an identity that survives a removal elsewhere in the queue.
+    ///
+    /// The same video can legitimately sit in the queue twice, so an occurrence count keeps those
+    /// entries distinct without falling back to their position. Building this is a single pass of
+    /// string and integer work, which is what it replaces — not a per-row view tree.
+    private var queueEntries: [QueueEntry] {
+        let queue = self.playerService.queue
+        var occurrences: [String: Int] = [:]
+        occurrences.reserveCapacity(queue.count)
+        var entries: [QueueEntry] = []
+        entries.reserveCapacity(queue.count)
+
+        for (index, song) in queue.enumerated() {
+            let occurrence = occurrences[song.videoId, default: 0]
+            occurrences[song.videoId] = occurrence + 1
+            entries.append(QueueEntry(id: "\(song.videoId)#\(occurrence)", song: song, index: index))
+        }
+
+        return entries
     }
 
     /// The caption that opens the section `row` belongs to, or `nil` for a row in the middle of one.
@@ -240,14 +272,16 @@ struct QueueView: View {
     }
 
     private func scrollToCurrentSong(with proxy: ScrollViewProxy, animated: Bool) {
-        guard self.playerService.queue.indices.contains(self.playerService.currentIndex) else { return }
+        guard self.queueEntries.indices.contains(self.playerService.currentIndex) else { return }
+        // Rows are identified by their queue entry, so the current track is scrolled to by that id.
+        let id = self.queueEntries[self.playerService.currentIndex].id
 
         if animated {
             withAnimation(.spring(duration: 0.45, bounce: 0.0)) {
-                proxy.scrollTo(self.playerService.currentIndex, anchor: .center)
+                proxy.scrollTo(id, anchor: .center)
             }
         } else {
-            proxy.scrollTo(self.playerService.currentIndex, anchor: .center)
+            proxy.scrollTo(id, anchor: .center)
         }
     }
 }
@@ -255,18 +289,45 @@ struct QueueView: View {
 // MARK: - QueueRowView
 
 @available(macOS 26.0, *)
-private struct QueueRowView: View {
+private struct QueueRowView: View, Equatable {
+    /// On-screen size of the row artwork; `ImageCache` doubles it for Retina. Without it the row
+    /// decoded a 320×320 bitmap into a 40×40 slot, on the scroll path.
+    static let thumbnailSize = CGSize(width: 40, height: 40)
+
     let song: Song
-    let isCurrentTrack: Bool
     let index: Int
+    let isCurrentTrack: Bool
+    let isPlaying: Bool
+    let isAutoplayIndicatorVisible: Bool
+    /// True while the panel is scrolling; suppresses hover highlighting.
+    let isScrolling: Bool
+
+    /// Services the row's menu needs. Held but not read here — the menu reads them in its own body,
+    /// so a row does not subscribe the whole list to `FavoritesManager` or to the player.
     let favoritesManager: FavoritesManager
     let playerService: PlayerService
     let client: (any YTMusicClientProtocol)?
     let libraryViewModel: LibraryViewModel?
+
     let onRemove: () -> Void
     let onTap: () -> Void
 
     @State private var isHovering = false
+
+    /// Compares only what the row draws. The closures and service references are excluded, which is
+    /// sound because the menu reads live state and the actions are stateless.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.index == rhs.index
+            && lhs.isCurrentTrack == rhs.isCurrentTrack
+            && lhs.isPlaying == rhs.isPlaying
+            && lhs.isAutoplayIndicatorVisible == rhs.isAutoplayIndicatorVisible
+            && lhs.isScrolling == rhs.isScrolling
+            && lhs.song.videoId == rhs.song.videoId
+            && lhs.song.title == rhs.song.title
+            && lhs.song.artistsDisplay == rhs.song.artistsDisplay
+            && lhs.song.duration == rhs.song.duration
+            && lhs.song.thumbnailURL == rhs.song.thumbnailURL
+    }
 
     var body: some View {
         Button(action: self.onTap) {
@@ -278,7 +339,8 @@ private struct QueueRowView: View {
                 // Thumbnail
                 CachedAsyncImage(
                     url: self.song.thumbnailURL?.highQualityThumbnailURL,
-                    fallbackURL: self.song.thumbnailURL
+                    fallbackURL: self.song.thumbnailURL,
+                    targetSize: Self.thumbnailSize
                 ) { image in
                     image
                         .resizable()
@@ -302,7 +364,7 @@ private struct QueueRowView: View {
                         .foregroundStyle(self.isCurrentTrack ? .red : .primary)
 
                     HStack(spacing: 5) {
-                        if self.playerService.isYouTubeAutoplayIndicatorVisible {
+                        if self.isAutoplayIndicatorVisible {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 8, weight: .semibold))
                                 .padding(.horizontal, 4)
@@ -339,33 +401,15 @@ private struct QueueRowView: View {
             self.isHovering = hovering
         }
         .contextMenu {
-            FavoritesContextMenu.menuItem(for: self.song, manager: self.favoritesManager)
-
-            Divider()
-
-            StartRadioContextMenu.menuItem(for: self.song, playerService: self.playerService)
-
-            Divider()
-
-            ShareContextMenu.menuItem(for: self.song)
-
-            if let client = self.client {
-                Divider()
-
-                AddToPlaylistContextMenu(
-                    song: self.song,
-                    client: client,
-                    libraryViewModel: self.libraryViewModel
-                )
-            }
-
-            if !self.isCurrentTrack {
-                Button(role: .destructive) {
-                    self.onRemove()
-                } label: {
-                    Label("Remove from Queue", systemImage: "minus.circle")
-                }
-            }
+            QueueRowMenuContent(
+                song: self.song,
+                isCurrentTrack: self.isCurrentTrack,
+                favoritesManager: self.favoritesManager,
+                playerService: self.playerService,
+                client: self.client,
+                libraryViewModel: self.libraryViewModel,
+                onRemove: self.onRemove
+            )
         }
     }
 
@@ -374,11 +418,11 @@ private struct QueueRowView: View {
         if self.isCurrentTrack {
             Image(systemName: "waveform")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(self.playerService.isPlaying ? AnyShapeStyle(.red) : AnyShapeStyle(.tertiary))
+                .foregroundStyle(self.isPlaying ? AnyShapeStyle(.red) : AnyShapeStyle(.tertiary))
                 .symbolEffect(
                     .variableColor.iterative,
                     options: .repeating,
-                    isActive: self.playerService.isPlaying
+                    isActive: self.isPlaying
                 )
         } else {
             Text("\(self.index + 1)")
@@ -390,7 +434,8 @@ private struct QueueRowView: View {
     private var backgroundColor: Color {
         if self.isCurrentTrack {
             return Color.red.opacity(0.1)
-        } else if self.isHovering {
+        } else if self.isHovering, !self.isScrolling {
+            // A row passing under a stationary pointer during a flick must not swap its background.
             return Color.primary.opacity(0.05)
         }
         return .clear
@@ -400,6 +445,60 @@ private struct QueueRowView: View {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)
+    }
+}
+
+// MARK: - QueueEntry
+
+/// One row of the queue, with an identity that survives a removal elsewhere in the queue.
+private struct QueueEntry: Identifiable {
+    let id: String
+    let song: Song
+    let index: Int
+}
+
+// MARK: - QueueRowMenuContent
+
+/// The queue row's context menu, as its own view so the favorites and player lookups happen when
+/// the menu is presented rather than in every row's body.
+@available(macOS 26.0, *)
+private struct QueueRowMenuContent: View {
+    let song: Song
+    let isCurrentTrack: Bool
+    let favoritesManager: FavoritesManager
+    let playerService: PlayerService
+    let client: (any YTMusicClientProtocol)?
+    let libraryViewModel: LibraryViewModel?
+    let onRemove: () -> Void
+
+    var body: some View {
+        FavoritesContextMenu.menuItem(for: self.song, manager: self.favoritesManager)
+
+        Divider()
+
+        StartRadioContextMenu.menuItem(for: self.song, playerService: self.playerService)
+
+        Divider()
+
+        ShareContextMenu.menuItem(for: self.song)
+
+        if let client = self.client {
+            Divider()
+
+            AddToPlaylistContextMenu(
+                song: self.song,
+                client: client,
+                libraryViewModel: self.libraryViewModel
+            )
+        }
+
+        if !self.isCurrentTrack {
+            Button(role: .destructive) {
+                self.onRemove()
+            } label: {
+                Label("Remove from Queue", systemImage: "minus.circle")
+            }
+        }
     }
 }
 

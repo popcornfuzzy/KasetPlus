@@ -10,6 +10,28 @@ extension Collection {
     }
 }
 
+// MARK: - Hex Encoding
+
+/// Lowercase hexadecimal digits, shared by every hex encoder in the app.
+private let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+extension Sequence where Element == UInt8 {
+    /// Lowercase hexadecimal representation, written in one pass.
+    ///
+    /// This replaces `String(format: "%02x", $0)` per byte, which allocates a `String` for every
+    /// byte of every hash. Cache keys are computed on every disk lookup and every save, so the
+    /// difference is paid on the hot path rather than once.
+    var hexEncodedString: String {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(self.underestimatedCount * 2)
+        for byte in self {
+            bytes.append(hexDigits[Int(byte >> 4)])
+            bytes.append(hexDigits[Int(byte & 0x0F)])
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+}
+
 // MARK: - TimeInterval Extensions
 
 extension TimeInterval {
