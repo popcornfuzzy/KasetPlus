@@ -56,6 +56,9 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     /// Artificial latency for playlist continuation requests, so tests can exercise page loads
     /// that overlap.
     var playlistContinuationDelay: Duration?
+    /// Artificial latency for `getPlaylist()`, so a test can look at a page while its first request
+    /// is still in flight.
+    var getPlaylistDelay: Duration?
     var shouldAutoUpdatePlaylistLibraryOnMutation = true
     var shouldAutoUpdatePodcastLibraryOnMutation = true
     var shouldAutoUpdateArtistLibraryOnMutation = true
@@ -597,6 +600,9 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self._currentPlaylistId = id
         self._playlistContinuationIndex = 0
         self._playlistRecommendationsIndex = 0
+        if let getPlaylistDelay = self.getPlaylistDelay {
+            try? await Task.sleep(for: getPlaylistDelay)
+        }
         if let error = shouldThrowError { throw error }
         guard let detail = playlistDetails[id] else {
             throw YTMusicError.parseError(message: "Playlist not found: \(id)")
@@ -1069,6 +1075,7 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         self.rateSongDelay = nil
         self.rateSongFailuresBeforeSuccess = 0
         self.getSongDelay = nil
+        self.getPlaylistDelay = nil
         self.getLyricsCalled = false
         self.getLyricsVideoIds = []
         self.getPodcastTranscriptCalled = false

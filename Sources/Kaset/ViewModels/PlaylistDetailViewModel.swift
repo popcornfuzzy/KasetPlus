@@ -27,6 +27,14 @@ final class PlaylistDetailViewModel {
     let client: any YTMusicClientProtocol
     private let logger = DiagnosticsLogger.api
 
+    /// Persisted copy of this page, so a playlist opens on the rows and artwork it held last time
+    /// while the fresh copy loads behind it.
+    private let cache: PlaylistDetailCache
+
+    /// Whether the first page is on its way, so a second `load()` while a stored copy is already on
+    /// screen stays a no-op.
+    private var isFetchingFirstPage = false
+
     /// Video IDs already loaded. Maintained incrementally so appending a page doesn't rebuild a
     /// set over every loaded track.
     private var loadedVideoIds: Set<String> = []
@@ -76,9 +84,28 @@ final class PlaylistDetailViewModel {
     /// is what draws the list, so this too is read from two view trees (see `PageRefreshButton`).
     private(set) var isRefreshing = false
 
-    init(playlist: Playlist, client: any YTMusicClientProtocol) {
+    /// - Parameters:
+    ///   - accountID: The account the page is opened for, when the caller already knows it. Passing it
+    ///     lets the stored page be on screen in the very first frame instead of from `.task`.
+    ///   - cache: Where pages are stored. A test injects its own directory so it never reads or writes
+    ///     the real cache.
+    init(
+        playlist: Playlist,
+        client: any YTMusicClientProtocol,
+        accountID: String? = nil,
+        cache: PlaylistDetailCache = .shared
+    ) {
         self.playlist = playlist
         self.client = client
+        self.accountID = accountID
+        self.cache = cache
+
+        // Seed before the first frame, not in `load()`: `.task` runs once the page is already on
+        // screen, and the loading state shown until then is exactly the spinner a stored page exists
+        // to remove.
+        if self.restoreStoredCopy() {
+            self.seededAccountID = accountID
+        }
     }
 
     deinit {
@@ -105,6 +132,14 @@ final class PlaylistDetailViewModel {
     /// The account whose list this page holds, once one has been loaded.
     private var loadedAccountID: String?
 
+    /// Account whose stored page this page reads and writes. A playlist is the account's own copy, so
+    /// the stored page is filed under the account it was fetched for.
+    private var accountID: String?
+
+    /// Account the page on screen was stored for, so a copy seeded before the account was known is
+    /// dropped rather than read as this account's list.
+    private var seededAccountID: String?
+
     /// Whether a list has been requested for this page at all, so the first request is told apart
     /// from a repeat for the same account even while the ID is still `nil`.
     private var hasLoadedForAccount = false
@@ -119,8 +154,18 @@ final class PlaylistDetailViewModel {
         if self.hasLoadedForAccount, self.loadedAccountID == accountID { return }
 
         let isAccountSwitch = self.hasLoadedForAccount
+        // A page seeded before its account was known belongs to whichever account was active then, so
+        // it is dropped rather than shown as this account's list.
+        if !isAccountSwitch,
+           self.playlistDetail != nil,
+           self.seededAccountID != accountID
+        {
+            self.discardLoadedContentForAccountSwitch()
+        }
+
         self.loadedAccountID = accountID
         self.hasLoadedForAccount = true
+        self.accountID = accountID
         if isAccountSwitch {
             self.discardLoadedContentForAccountSwitch()
         }
@@ -150,11 +195,32 @@ final class PlaylistDetailViewModel {
     }
 
     /// Loads the playlist details including tracks.
+    ///
+    /// A playlist this account has opened before opens on the copy stored last time — rows, header and
+    /// artwork — and the network's answer replaces it behind the page. Only a playlist with nothing
+    /// stored shows the loading state.
     func load() async {
-        guard self.loadingState != .loading else { return }
+        guard !self.isFetchingFirstPage else { return }
+
+        self.isFetchingFirstPage = true
+        let wasRefreshing = self.isRefreshing
+        // A page seeded at construction is already on screen; seeding again would only re-read it.
+        if self.playlistDetail == nil {
+            _ = self.restoreStoredCopy()
+            self.seededAccountID = self.accountID
+        }
+        let showsStoredCopy = self.playlistDetail != nil
+        if showsStoredCopy {
+            self.isRefreshing = true
+        } else {
+            self.loadingState = .loading
+        }
+        defer {
+            self.isFetchingFirstPage = false
+            self.isRefreshing = wasRefreshing
+        }
 
         let generation = self.loadGeneration
-        self.loadingState = .loading
         let playlistTitle = self.playlist.title
         let playlistId = self.playlist.id
         self.logger.info("Loading playlist: \(playlistTitle), ID: \(playlistId)")
@@ -165,14 +231,7 @@ final class PlaylistDetailViewModel {
                 self.logger.debug("Discarding playlist content requested for a list that was replaced")
                 return
             }
-            self.playlistDetail = result.detail
-            self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
-            self.hasMore = result.hasMore
-            self.hasMoreRecommendations = result.hasRecommendations && result.detail.recommendations == nil
-            self.loadingState = .loaded
-            let loadedTrackCount = result.detail.tracks.count
-            let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
-            self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+            self.install(result)
 
             // Keep a page of headroom below the loaded tracks so a fast scroll never waits on the network.
             self.prefillNextPage()
@@ -181,15 +240,69 @@ final class PlaylistDetailViewModel {
                 await self.loadRecommendationsIfNeeded()
             }
         } catch is CancellationError {
-            // Task was cancelled (e.g., user navigated away) — reset to idle so it can retry
+            // Task was cancelled (e.g., user navigated away) — reset so it can retry, unless the stored
+            // copy is still the page.
             guard generation == self.loadGeneration else { return }
             self.logger.debug("Playlist detail load cancelled")
-            self.loadingState = .idle
+            self.loadingState = showsStoredCopy ? .loaded : .idle
         } catch {
             guard generation == self.loadGeneration else { return }
-            self.logger.error("Failed to load playlist: \(error.localizedDescription)")
-            self.loadingState = .error(LoadingError(from: error))
+            if showsStoredCopy {
+                // The stored copy is what there is to read, so a failed refresh leaves it on screen
+                // instead of replacing a readable playlist with an error page.
+                self.logger.warning("Playlist refresh failed, keeping the stored copy: \(error.localizedDescription)")
+            } else {
+                self.logger.error("Failed to load playlist: \(error.localizedDescription)")
+                self.loadingState = .error(LoadingError(from: error))
+            }
         }
+    }
+
+    /// Puts a fetched page on screen and stores it for the next open.
+    private func install(_ result: (detail: PlaylistDetail, hasMore: Bool, hasRecommendations: Bool)) {
+        self.playlistDetail = result.detail
+        self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
+        self.hasMore = result.hasMore
+        self.hasMoreRecommendations = result.hasRecommendations && result.detail.recommendations == nil
+        self.loadingState = .loaded
+        self.cache.save(result.detail, playlistId: self.playlist.id, accountID: self.accountID)
+
+        let loadedTrackCount = result.detail.tracks.count
+        let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
+        self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+    }
+
+    /// Shows the page stored by an earlier session, if there is one for this account.
+    ///
+    /// Everything the header needs is in the stored page — title, credited artists, count, duration and
+    /// the artwork URL — so the header and the list draw on the first frame; the artwork itself comes
+    /// from the image cache's disk copy.
+    /// - Returns: Whether a stored copy is on screen now.
+    @discardableResult
+    private func restoreStoredCopy() -> Bool {
+        guard let stored = self.cache.load(playlistId: self.playlist.id, accountID: self.accountID) else {
+            return false
+        }
+
+        let detail = self.mergingWithNavigationPlaylist(stored)
+        self.playlistDetail = detail
+        self.loadedVideoIds = Set(detail.tracks.map(\.videoId))
+        // The stored copy carries no continuation token, so paging waits for the fresh page: a
+        // continuation request issued against this session before the first page landed would end
+        // paging for the whole playlist.
+        self.hasMore = false
+        // The stored page carries no section token either: the recommendations it did hold stay on
+        // screen, and the fresh page decides whether more of them are to be loaded.
+        self.hasMoreRecommendations = false
+        self.isLoadingRecommendations = false
+        self.loadingState = .loaded
+        self.logger.info("Showing stored playlist copy: \(detail.tracks.count) tracks, ID: \(detail.normalizedId)")
+        return true
+    }
+
+    /// Drops the stored page for a playlist that has just been deleted, so it cannot reopen from it.
+    func forgetStoredCopy() {
+        self.cache.remove(playlistId: self.playlist.id, accountID: self.accountID)
     }
 
     private func fetchPlaylistDetail() async throws -> (detail: PlaylistDetail, hasMore: Bool, hasRecommendations: Bool) {
@@ -240,51 +353,58 @@ final class PlaylistDetailViewModel {
             }
         }
 
-        // Determine the best thumbnail to use:
-        // 1. API response header thumbnail
-        // 2. Original playlist thumbnail (from navigation)
-        // 3. First track's thumbnail as fallback
+        return (
+            detail: self.fillingArtistsFromAlbum(self.mergingWithNavigationPlaylist(detail)),
+            hasMore: hasMore,
+            hasRecommendations: response.recommendationsToken != nil
+        )
+    }
+
+    /// Fills what a header could not read — the title and the artwork — from the playlist the navigation
+    /// carried, which is also what a stored page can lack when the page it was saved from was sparse.
+    ///
+    /// The artwork matters most here: a stored copy is drawn before the network answers, so a page with
+    /// no thumbnail of its own still has to show the one the rows were opened with.
+    private func mergingWithNavigationPlaylist(_ detail: PlaylistDetail) -> PlaylistDetail {
+        // The best thumbnail to use, in order:
+        // 1. the header's own thumbnail
+        // 2. the playlist the navigation carried
+        // 3. the first track's thumbnail as a fallback
         let resolvedThumbnailURL = detail.thumbnailURL
             ?? self.playlist.thumbnailURL
             ?? detail.tracks.first?.thumbnailURL
 
-        // Check if we need to merge with original playlist info
         let needsMerge = detail.title == "Unknown Playlist" && self.playlist.title != "Unknown Playlist"
         let thumbnailMissing = detail.thumbnailURL == nil && resolvedThumbnailURL != nil
 
-        if needsMerge || thumbnailMissing {
-            let mergedTrackCount = max(
-                detail.tracks.count,
-                max(detail.trackCount ?? 0, self.playlist.trackCount ?? 0)
-            )
+        guard needsMerge || thumbnailMissing else { return detail }
 
-            // Merge with original playlist info or add fallback thumbnail
-            // Strip song counts from fallback author since we display the count separately
-            let mergedPlaylist = Playlist(
-                id: playlistId,
-                title: needsMerge ? self.playlist.title : detail.title,
-                description: detail.description ?? self.playlist.description,
-                thumbnailURL: resolvedThumbnailURL,
-                trackCount: mergedTrackCount,
-                author: detail.author ?? self.stripSongCount(from: self.playlist.author)
-            )
-            detail = PlaylistDetail(
-                playlist: mergedPlaylist,
-                tracks: detail.tracks,
-                duration: detail.duration,
-                artists: detail.artists,
-                sortOrder: detail.sortOrder,
-                availableSortOrders: detail.availableSortOrders,
-                isEditable: detail.isEditable,
-                mixPlaylistId: detail.mixPlaylistId,
-                recommendations: detail.recommendations
-            )
-        }
+        let mergedTrackCount = max(
+            detail.tracks.count,
+            max(detail.trackCount ?? 0, self.playlist.trackCount ?? 0)
+        )
 
-        return (
-            detail: self.fillingArtistsFromAlbum(detail),
-            hasMore: hasMore,
-            hasRecommendations: response.recommendationsToken != nil
+        // Strip song counts from the fallback author since the count is displayed separately.
+        let mergedPlaylist = Playlist(
+            id: detail.id,
+            title: needsMerge ? self.playlist.title : detail.title,
+            description: detail.description ?? self.playlist.description,
+            thumbnailURL: resolvedThumbnailURL,
+            trackCount: mergedTrackCount,
+            author: detail.author ?? self.stripSongCount(from: self.playlist.author)
+        )
+
+        return PlaylistDetail(
+            playlist: mergedPlaylist,
+            tracks: detail.tracks,
+            duration: detail.duration,
+            artists: detail.artists,
+            sortOrder: detail.sortOrder,
+            availableSortOrders: detail.availableSortOrders,
+            isEditable: detail.isEditable,
+            mixPlaylistId: detail.mixPlaylistId,
+            libraryPlaylistId: detail.libraryPlaylistId,
+            recommendations: detail.recommendations
         )
     }
 
@@ -440,7 +560,7 @@ final class PlaylistDetailViewModel {
                 trackCount: preservedTrackCount,
                 author: currentDetail.author
             )
-            self.playlistDetail = self.fillingArtistsFromAlbum(PlaylistDetail(
+            let updatedDetail = self.fillingArtistsFromAlbum(PlaylistDetail(
                 playlist: updatedPlaylist,
                 tracks: allTracks,
                 duration: currentDetail.duration,
@@ -451,6 +571,9 @@ final class PlaylistDetailViewModel {
                 mixPlaylistId: currentDetail.mixPlaylistId,
                 recommendations: currentDetail.recommendations
             ))
+            self.playlistDetail = updatedDetail
+            // Store the deeper page too: a playlist left half-way down is where the reader left it.
+            self.cache.save(updatedDetail, playlistId: self.playlist.id, accountID: self.accountID)
             self.hasMore = response.hasMore
 
             let loadedTrackCount = allTracks.count
@@ -533,6 +656,9 @@ final class PlaylistDetailViewModel {
             title: title ?? String(localized: "Recommendations"),
             tracks: songs
         ))
+        if let updated = self.playlistDetail {
+            self.cache.save(updated, playlistId: self.playlist.id, accountID: self.accountID)
+        }
         self.logger.info("Loaded \(songs.count) playlist recommendations")
     }
 
@@ -612,6 +738,7 @@ final class PlaylistDetailViewModel {
             self.loadedVideoIds = Set(result.detail.tracks.map(\.videoId))
             self.hasMore = result.hasMore
             self.hasMoreRecommendations = result.hasRecommendations && result.detail.recommendations == nil
+            self.cache.save(result.detail, playlistId: playlistId, accountID: self.accountID)
             let loadedTrackCount = result.detail.tracks.count
             let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
             self.logger.info("Playlist refreshed: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")

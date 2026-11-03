@@ -132,7 +132,7 @@ extension Playlist {
 /// They are not part of the playlist: they are `musicShelfRenderer` sections that follow the
 /// playlist's own shelf, and adding one is a separate write (`ACTION_ADD_VIDEO`), which the section's
 /// add button sends.
-struct PlaylistRecommendations {
+struct PlaylistRecommendations: Codable {
     /// Section title the page advertised, e.g. "Recommendations".
     let title: String
     let tracks: [Song]
@@ -141,7 +141,9 @@ struct PlaylistRecommendations {
 // MARK: - PlaylistDetail
 
 /// Detailed playlist information including tracks.
-struct PlaylistDetail: Identifiable {
+///
+/// `Codable` so a page can be stored and shown on the next open (see ``PlaylistDetailCache``).
+struct PlaylistDetail: Identifiable, Codable {
     let id: String
     let title: String
     let description: String?

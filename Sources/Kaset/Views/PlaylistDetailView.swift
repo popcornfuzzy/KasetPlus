@@ -1438,6 +1438,7 @@ struct PlaylistDetailView: View {
 
         do {
             try await self.viewModel.client.deletePlaylist(playlistId: self.playlist.id)
+            self.viewModel.forgetStoredCopy()
             self.libraryViewModel?.removeFromLibrary(playlistId: self.playlist.id)
             self.libraryViewModel?.markNeedsReloadOnActivation()
             self.playlistActionError = nil

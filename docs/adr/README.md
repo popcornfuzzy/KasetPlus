@@ -78,3 +78,4 @@ What becomes easier or more difficult because of this change?
 | [0039](0039-discord-rich-presence.md) | Discord Rich Presence | Accepted |
 | [0041](0041-hand-queued-run.md) | The Hand-Queued Run (Spotify-Style Two-Tier Queue) | Accepted |
 | [0042](0042-like-status-authority.md) | One Authority per Question: Where the Transport's Like Status Comes From | Accepted |
+| [0043](0043-playlist-page-cache.md) | A Stored Page per Playlist, Shown Before the Network Answers | Accepted |

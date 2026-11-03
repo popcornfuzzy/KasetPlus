@@ -19,6 +19,7 @@ struct NavigationDestinationsModifier: ViewModifier {
     let artistPath: Binding<NavigationPath>
 
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(AccountService.self) private var accountService
 
     func body(content: Content) -> some View {
         content
@@ -44,7 +45,8 @@ struct NavigationDestinationsModifier: ViewModifier {
                             playlist: playlist,
                             viewModel: PlaylistDetailViewModel(
                                 playlist: playlist,
-                                client: self.client
+                                client: self.client,
+                                accountID: self.accountService.currentAccount?.id
                             ),
                             onNavigateToArtist: { artist in self.artistPath.wrappedValue.append(artist) }
                         )
@@ -54,7 +56,8 @@ struct NavigationDestinationsModifier: ViewModifier {
                         playlist: playlist,
                         viewModel: PlaylistDetailViewModel(
                             playlist: playlist,
-                            client: self.client
+                            client: self.client,
+                            accountID: self.accountService.currentAccount?.id
                         ),
                         onNavigateToArtist: { artist in self.artistPath.wrappedValue.append(artist) }
                     )

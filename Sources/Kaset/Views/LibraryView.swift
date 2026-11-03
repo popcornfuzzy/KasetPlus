@@ -70,6 +70,7 @@ struct LibraryView: View {
     @State var viewModel: LibraryViewModel
     @Environment(PlayerService.self) private var playerService
     @Environment(FavoritesManager.self) private var favoritesManager
+    @Environment(AccountService.self) private var accountService
     @State private var networkMonitor = NetworkMonitor.shared
 
     @State private var navigationPath = NavigationPath()
@@ -112,7 +113,8 @@ struct LibraryView: View {
                     playlist: playlist,
                     viewModel: PlaylistDetailViewModel(
                         playlist: playlist,
-                        client: self.viewModel.client
+                        client: self.viewModel.client,
+                        accountID: self.accountService.currentAccount?.id
                     ),
                     onNavigateToArtist: { artist in self.navigationPath.append(artist) }
                 )

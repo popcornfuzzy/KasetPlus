@@ -856,7 +856,11 @@ struct MainWindow: View {
         DetailNavigationStack(id: "playlist-\(playlist.id)") { path in
             PlaylistDetailView(
                 playlist: playlist,
-                viewModel: PlaylistDetailViewModel(playlist: playlist, client: self.client),
+                viewModel: PlaylistDetailViewModel(
+                    playlist: playlist,
+                    client: self.client,
+                    accountID: self.accountService.currentAccount?.id
+                ),
                 onNavigateToArtist: { artist in path.wrappedValue.append(artist) }
             )
             .navigationDestinations(client: self.client, artistPath: path)
@@ -920,7 +924,11 @@ struct MainWindow: View {
                 DetailNavigationStack(id: "likedMusic") { path in
                     PlaylistDetailView(
                         playlist: self.likedMusicPlaylist,
-                        viewModel: PlaylistDetailViewModel(playlist: self.likedMusicPlaylist, client: self.client),
+                        viewModel: PlaylistDetailViewModel(
+                            playlist: self.likedMusicPlaylist,
+                            client: self.client,
+                            accountID: self.accountService.currentAccount?.id
+                        ),
                         onNavigateToArtist: { artist in path.wrappedValue.append(artist) }
                     )
                     .navigationDestinations(client: self.client, artistPath: path)
