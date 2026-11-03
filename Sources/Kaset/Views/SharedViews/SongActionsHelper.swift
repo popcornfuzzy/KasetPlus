@@ -229,9 +229,23 @@ enum SongActionsHelper {
                 }
             }
             DiagnosticsLogger.api.info("Added playlist to library: \(playlist.title)")
+            ToastCenter.shared.show(
+                String(localized: "Added to Library"),
+                undoTitle: String(localized: "Undo"),
+                undo: {
+                    Task { @MainActor in
+                        _ = await Self.removePlaylistFromLibrary(
+                            playlist,
+                            client: client,
+                            libraryViewModel: libraryViewModel
+                        )
+                    }
+                }
+            )
             return true
         } catch {
             DiagnosticsLogger.api.error("Failed to add playlist to library: \(Self.writeFailure(error), privacy: .public)")
+            ToastCenter.shared.show(String(localized: "Couldn't add to Library"), isError: true)
             return false
         }
     }
@@ -283,9 +297,23 @@ enum SongActionsHelper {
                 }
             }
             DiagnosticsLogger.api.info("Removed playlist from library: \(playlist.title)")
+            ToastCenter.shared.show(
+                String(localized: "Removed from Library"),
+                undoTitle: String(localized: "Undo"),
+                undo: {
+                    Task { @MainActor in
+                        _ = await Self.addPlaylistToLibrary(
+                            playlist,
+                            client: client,
+                            libraryViewModel: libraryViewModel
+                        )
+                    }
+                }
+            )
             return true
         } catch {
             DiagnosticsLogger.api.error("Failed to remove playlist from library: \(Self.writeFailure(error), privacy: .public)")
+            ToastCenter.shared.show(String(localized: "Couldn't remove from Library"), isError: true)
             return false
         }
     }
@@ -313,6 +341,7 @@ enum SongActionsHelper {
             }
         }
         DiagnosticsLogger.api.info("Subscribed to podcast: \(show.title)")
+        ToastCenter.shared.show(String(localized: "Subscribed to Podcast"))
     }
 
     /// Unsubscribes from a podcast show (removes from library).
@@ -339,6 +368,7 @@ enum SongActionsHelper {
             }
         }
         DiagnosticsLogger.api.info("Unsubscribed from podcast: \(show.title)")
+        ToastCenter.shared.show(String(localized: "Unsubscribed from Podcast"))
     }
 
     /// Subscribes to an artist (adds to library).
@@ -365,6 +395,7 @@ enum SongActionsHelper {
                 )
             }
             DiagnosticsLogger.api.info("Subscribed to artist: \(artist.name)")
+            ToastCenter.shared.show(String(localized: "Following Artist"))
         } catch {
             if let libraryViewModel {
                 self.removeArtistFromLibrary(artist, channelId: channelId, libraryViewModel: libraryViewModel)
@@ -399,6 +430,7 @@ enum SongActionsHelper {
                 )
             }
             DiagnosticsLogger.api.info("Unsubscribed from artist: \(artist.name)")
+            ToastCenter.shared.show(String(localized: "Unfollowed Artist"))
         } catch {
             if let libraryViewModel {
                 self.addArtistToLibrary(artist, channelId: channelId, libraryViewModel: libraryViewModel)
@@ -421,12 +453,14 @@ enum SongActionsHelper {
     static func addToQueueNext(_ song: Song, playerService: PlayerService) {
         playerService.insertNextInQueue([song])
         DiagnosticsLogger.ui.info("Added song to play next: \(song.title)")
+        ToastCenter.shared.show(String(localized: "Playing Next"))
     }
 
     /// Adds a song to the end of the queue.
     static func addToQueueLast(_ song: Song, playerService: PlayerService) {
         playerService.appendToQueue([song])
         DiagnosticsLogger.ui.info("Added song to end of queue: \(song.title)")
+        ToastCenter.shared.show(String(localized: "Added to Queue"))
     }
 
     /// Adds multiple songs (e.g., from an album) to play next.

@@ -36,6 +36,27 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - LibrarySortOrder
+
+/// How the library grid is ordered.
+enum LibrarySortOrder: String, CaseIterable, Identifiable {
+    case titleAscending
+    case titleDescending
+    case type
+
+    var id: String {
+        self.rawValue
+    }
+
+    var displayName: String {
+        switch self {
+        case .titleAscending: String(localized: "Title (A–Z)")
+        case .titleDescending: String(localized: "Title (Z–A)")
+        case .type: String(localized: "Type")
+        }
+    }
+}
+
 // MARK: - LibraryView
 
 /// Library view displaying user's playlists and podcast shows.
@@ -49,6 +70,12 @@ struct LibraryView: View {
     @State private var navigationPath = NavigationPath()
     @State private var selectedFilter: LibraryFilter = .all
     @State private var showCreatePlaylistPopover = false
+    @State private var searchText = ""
+    @State private var sortOrder: LibrarySortOrder = .titleAscending
+
+    /// Height shared by every control in the filter row — the type chips, the search pill and the sort
+    /// pill — so the row reads as one line rather than three heights.
+    private static let filterControlHeight: CGFloat = 32
 
     var body: some View {
         PageNavigationStack(id: "library", path: self.$navigationPath) {
@@ -138,7 +165,7 @@ struct LibraryView: View {
     private var scrollingContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                // Filter chips
+                // Filter chips, search, and sort share one row.
                 self.filterChips
 
                 // Combined grid with filtered content
@@ -150,13 +177,77 @@ struct LibraryView: View {
         }
     }
 
+    /// Type chips, with the text filter and the sort menu on the same line: the row is the library's
+    /// whole toolbar, so the grid starts directly beneath it.
     private var filterChips: some View {
         HStack(spacing: 8) {
             ForEach(LibraryFilter.allCases) { filter in
                 self.filterChip(filter)
             }
-            Spacer()
+
+            Spacer(minLength: 12)
+
+            self.searchField
+            self.sortMenu
         }
+    }
+
+    /// Compact text filter, styled like the playlist pages' search: a glyph, a plain field and a clear
+    /// button, sized so it never stretches the row.
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            TextField(String(localized: "Filter library"), text: self.$searchText)
+                .textFieldStyle(.plain)
+                .frame(width: 140)
+
+            if !self.searchText.isEmpty {
+                Button {
+                    self.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Clear filter"))
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: Self.filterControlHeight)
+        .background {
+            Capsule()
+                .fill(Color.secondary.opacity(0.15))
+        }
+    }
+
+    /// Sort menu matching the playlist pages': a static label, with the active order check-marked in
+    /// the menu instead of spelled out in the row. It carries no fill of its own — a borderless menu
+    /// label has no chrome, and the bare label is lighter beside the filled search pill.
+    private var sortMenu: some View {
+        Menu {
+            ForEach(LibrarySortOrder.allCases) { order in
+                Toggle(order.displayName, isOn: Binding(
+                    get: { self.sortOrder == order },
+                    set: { isSelected in
+                        guard isSelected else { return }
+                        self.sortOrder = order
+                    }
+                ))
+            }
+        } label: {
+            Label(String(localized: "Sort"), systemImage: "arrow.up.arrow.down")
+                .padding(.horizontal, 8)
+                .frame(height: Self.filterControlHeight)
+                .contentShape(Rectangle())
+        }
+        // Without this the menu keeps macOS's own pull-down pill and chevron over the capsule above.
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(Text("Sort by \(self.sortOrder.displayName)"))
     }
 
     private func performRefresh() async {
@@ -174,7 +265,7 @@ struct LibraryView: View {
             Text(filter.displayName)
                 .font(.system(size: 13, weight: .medium))
                 .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .frame(height: Self.filterControlHeight)
                 .background {
                     Capsule()
                         .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.15))
@@ -184,7 +275,7 @@ struct LibraryView: View {
         .buttonStyle(.plain)
     }
 
-    /// All library items combined and filtered.
+    /// All library items combined, filtered by type and by the text field, then ordered.
     private var filteredItems: [LibraryItem] {
         var items: [LibraryItem] = []
 
@@ -201,11 +292,17 @@ struct LibraryView: View {
             items = self.viewModel.podcastShows.map { .podcast($0) }
         }
 
-        return items
+        let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            items = items.filter { $0.matches(query) }
+        }
+
+        return items.sorted(by: self.sortOrder.comparator)
     }
 
     private var libraryGrid: some View {
-        let shouldShowCreatePlaylistCard = self.selectedFilter == .all || self.selectedFilter == .playlists
+        let shouldShowCreatePlaylistCard = (self.selectedFilter == .all || self.selectedFilter == .playlists)
+            && self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         return Group {
             if self.filteredItems.isEmpty, !shouldShowCreatePlaylistCard {
@@ -269,26 +366,39 @@ struct LibraryView: View {
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: 12) {
-            Image(systemName: self.selectedFilter.icon)
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-
-            Text(self.emptyStateTitle)
-                .font(.headline)
-                .foregroundStyle(.secondary)
-
+        ContentUnavailableView {
+            Label(self.emptyStateTitle, systemImage: self.selectedFilter.icon)
+        } description: {
             Text(self.emptyStateMessage)
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
+        } actions: {
+            if self.searchText.isEmpty, self.selectedFilter == .all || self.selectedFilter == .playlists {
+                Button(String(localized: "Create Playlist")) {
+                    self.showCreatePlaylistPopover = true
+                }
+                .buttonStyle(.borderedProminent)
+            } else if !self.searchText.isEmpty {
+                Button(String(localized: "Clear Filter")) {
+                    self.searchText = ""
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
         .padding(.vertical, 40)
         .frame(maxWidth: .infinity)
+        .popover(isPresented: self.$showCreatePlaylistPopover, arrowEdge: .bottom) {
+            CreatePlaylistPopover(
+                client: self.viewModel.client,
+                libraryViewModel: self.viewModel
+            )
+        }
     }
 
     private var emptyStateTitle: String {
-        switch self.selectedFilter {
+        if !self.searchText.isEmpty {
+            return String(localized: "No matches")
+        }
+
+        return switch self.selectedFilter {
         case .all:
             String(localized: "Your library is empty")
         case .playlists:
@@ -301,7 +411,11 @@ struct LibraryView: View {
     }
 
     private var emptyStateMessage: String {
-        switch self.selectedFilter {
+        if !self.searchText.isEmpty {
+            return String(localized: "No playlists, artists or podcasts match that filter.")
+        }
+
+        return switch self.selectedFilter {
         case .all:
             String(localized: "Save playlists, follow artists, and subscribe to podcasts on YouTube Music to see them here.")
         case .playlists:
@@ -458,6 +572,59 @@ enum LibraryItem: Identifiable {
             "artist-\(artist.id)"
         case let .podcast(show):
             "podcast-\(show.id)"
+        }
+    }
+
+    /// The name the grid orders by.
+    var title: String {
+        switch self {
+        case let .playlist(playlist): playlist.title
+        case let .artist(artist): artist.name
+        case let .podcast(show): show.title
+        }
+    }
+
+    /// The type group, for the type-major sort.
+    var typeRank: Int {
+        switch self {
+        case .playlist: 0
+        case .artist: 1
+        case .podcast: 2
+        }
+    }
+
+    /// Whether the item's name or author matches the library filter.
+    func matches(_ query: String) -> Bool {
+        self.searchableText.contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var searchableText: [String] {
+        switch self {
+        case let .playlist(playlist):
+            [playlist.title, playlist.author ?? ""]
+        case let .artist(artist):
+            [artist.name]
+        case let .podcast(show):
+            [show.title, show.author ?? ""]
+        }
+    }
+}
+
+// MARK: - LibrarySortOrder + Sorting
+
+extension LibrarySortOrder {
+    /// The ordering applied to the library grid.
+    var comparator: (LibraryItem, LibraryItem) -> Bool {
+        switch self {
+        case .titleAscending:
+            { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .titleDescending:
+            { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedDescending }
+        case .type:
+            { lhs, rhs in
+                if lhs.typeRank != rhs.typeRank { return lhs.typeRank < rhs.typeRank }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
         }
     }
 }

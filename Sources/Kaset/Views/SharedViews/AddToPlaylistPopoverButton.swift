@@ -500,6 +500,15 @@ struct AddToPlaylistPopoverContent: View {
             self.resolvedMembershipByPlaylistId[entry.id] = true
             self.updateMembership(for: entry.id, containsVideo: true)
             self.libraryViewModel?.markNeedsReloadOnActivation()
+            ToastCenter.shared.show(
+                String(localized: "Added to \(entry.title)"),
+                undoTitle: String(localized: "Undo"),
+                undo: {
+                    Task { @MainActor in
+                        _ = await self.removeSong(from: entry, showErrorOnFailure: false)
+                    }
+                }
+            )
         } catch {
             if Self.isAlreadyInPlaylistError(error) {
                 // Some API responses don't mark membership up front; duplicate-add confirms membership.
@@ -509,6 +518,7 @@ struct AddToPlaylistPopoverContent: View {
                 return
             }
             DiagnosticsLogger.api.error("Failed adding song to playlist: \(error.localizedDescription)")
+            ToastCenter.shared.show(String(localized: "Couldn't add to Playlist"), isError: true)
             self.loadingState = .error(LoadingError(from: error))
         }
     }
@@ -523,6 +533,15 @@ struct AddToPlaylistPopoverContent: View {
             self.resolvedMembershipByPlaylistId[entry.id] = false
             self.updateMembership(for: entry.id, containsVideo: false)
             self.libraryViewModel?.markNeedsReloadOnActivation()
+            ToastCenter.shared.show(
+                String(localized: "Removed from \(entry.title)"),
+                undoTitle: String(localized: "Undo"),
+                undo: {
+                    Task { @MainActor in
+                        await self.addSong(to: entry)
+                    }
+                }
+            )
             return true
         } catch {
             DiagnosticsLogger.api.error("Failed removing song from playlist: \(error.localizedDescription)")
@@ -561,6 +580,7 @@ struct AddToPlaylistPopoverContent: View {
             self.resolvedMembershipByPlaylistId[playlist.id] = true
             self.showCreateComposer = false
             self.persistEntriesCache()
+            ToastCenter.shared.show(String(localized: "Created \(playlist.title)"))
         } catch {
             DiagnosticsLogger.api.error("Failed creating playlist from popover: \(error.localizedDescription)")
             self.loadingState = .error(LoadingError(from: error))

@@ -12,6 +12,11 @@ enum FavoritesContextMenu {
         let isPinned = manager.isPinned(song: song)
         Button {
             manager.toggle(song: song)
+            ToastCenter.shared.show(
+                isPinned ? String(localized: "Removed from Favorites") : String(localized: "Added to Favorites"),
+                undoTitle: String(localized: "Undo"),
+                undo: { manager.toggle(song: song) }
+            )
         } label: {
             Label(
                 isPinned ? "Remove from Favorites" : "Add to Favorites",
@@ -26,6 +31,11 @@ enum FavoritesContextMenu {
         let isPinned = manager.isPinned(album: album)
         Button {
             manager.toggle(album: album)
+            ToastCenter.shared.show(
+                isPinned ? String(localized: "Removed from Favorites") : String(localized: "Added to Favorites"),
+                undoTitle: String(localized: "Undo"),
+                undo: { manager.toggle(album: album) }
+            )
         } label: {
             Label(
                 isPinned ? "Remove from Favorites" : "Add to Favorites",
@@ -40,6 +50,11 @@ enum FavoritesContextMenu {
         let isPinned = manager.isPinned(playlist: playlist)
         Button {
             manager.toggle(playlist: playlist)
+            ToastCenter.shared.show(
+                isPinned ? String(localized: "Removed from Favorites") : String(localized: "Added to Favorites"),
+                undoTitle: String(localized: "Undo"),
+                undo: { manager.toggle(playlist: playlist) }
+            )
         } label: {
             Label(
                 isPinned ? "Remove from Favorites" : "Add to Favorites",
@@ -54,6 +69,11 @@ enum FavoritesContextMenu {
         let isPinned = manager.isPinned(artist: artist)
         Button {
             manager.toggle(artist: artist)
+            ToastCenter.shared.show(
+                isPinned ? String(localized: "Removed from Favorites") : String(localized: "Added to Favorites"),
+                undoTitle: String(localized: "Undo"),
+                undo: { manager.toggle(artist: artist) }
+            )
         } label: {
             Label(
                 isPinned ? "Remove from Favorites" : "Add to Favorites",
@@ -68,6 +88,11 @@ enum FavoritesContextMenu {
         let isPinned = manager.isPinned(podcastShow: podcastShow)
         Button {
             manager.toggle(podcastShow: podcastShow)
+            ToastCenter.shared.show(
+                isPinned ? String(localized: "Removed from Favorites") : String(localized: "Added to Favorites"),
+                undoTitle: String(localized: "Undo"),
+                undo: { manager.toggle(podcastShow: podcastShow) }
+            )
         } label: {
             Label(
                 isPinned ? "Remove from Favorites" : "Add to Favorites",

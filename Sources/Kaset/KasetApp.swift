@@ -212,6 +212,9 @@ struct KasetApp: App {
 
                 // Check if user is already logged in from previous session
                 await self.authService.checkLoginStatus()
+                // ...and that the session those cookies describe still works: a stale archive used to
+                // open the main window with an empty account row and nothing that would play.
+                await self.authService.validateSession(using: self.sharedClient)
 
                 // Fetch accounts after login check (for account switcher)
                 await self.accountService.fetchAccounts()
@@ -316,6 +319,24 @@ struct KasetApp: App {
                     self.playerService.cycleRepeatMode()
                 }
                 .keyboardShortcut("r", modifiers: .command)
+
+                Divider()
+
+                // Sleep Timer - set-and-forget, so it lives here rather than in the player bar.
+                Menu("Sleep Timer") {
+                    ForEach(SleepTimerManager.options, id: \.self) { minutes in
+                        Button(String(localized: "\(minutes) Minutes")) {
+                            SleepTimerManager.shared.start(minutes: minutes, player: self.playerService)
+                        }
+                    }
+
+                    Divider()
+
+                    Button(String(localized: "Off")) {
+                        SleepTimerManager.shared.cancel()
+                    }
+                    .disabled(!SleepTimerManager.shared.isActive)
+                }
 
                 Divider()
 

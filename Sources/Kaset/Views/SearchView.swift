@@ -21,6 +21,15 @@ struct SearchView: View {
     /// Index of currently selected suggestion for keyboard navigation.
     @State private var selectedSuggestionIndex: Int = -1
 
+    /// Id of the result row the arrow keys are currently on, once they have moved into the results.
+    @State private var selectedResultID: String?
+
+    /// Recently searched queries, persisted across launches.
+    @State private var searchHistory = SearchHistoryStore.shared
+
+    /// Recently played, loaded only for the empty page's "Jump back in" shelf.
+    @State private var recentHistoryViewModel: HistoryViewModel?
+
     /// Initializes SearchView with optional focus trigger binding.
     init(viewModel: SearchViewModel, focusTrigger: Binding<Bool> = .constant(false)) {
         _viewModel = State(initialValue: viewModel)
@@ -81,10 +90,14 @@ struct SearchView: View {
         .padding(.vertical, 16)
         .onChange(of: self.viewModel.query) { _, _ in
             self.selectedSuggestionIndex = -1
+            self.selectedResultID = nil
             self.viewModel.fetchSuggestions()
         }
         .onChange(of: self.viewModel.suggestions) { _, _ in
             self.selectedSuggestionIndex = -1
+        }
+        .onChange(of: self.viewModel.selectedFilter) { _, _ in
+            self.selectedResultID = nil
         }
     }
 
@@ -101,8 +114,13 @@ struct SearchView: View {
                     if self.selectedSuggestionIndex >= 0,
                        self.selectedSuggestionIndex < self.viewModel.suggestions.count
                     {
-                        self.viewModel.selectSuggestion(self.viewModel.suggestions[self.selectedSuggestionIndex])
+                        let suggestion = self.viewModel.suggestions[self.selectedSuggestionIndex]
+                        self.searchHistory.record(suggestion.query)
+                        self.viewModel.selectSuggestion(suggestion)
+                    } else if let item = self.selectedResult {
+                        self.handleItemTap(item)
                     } else {
+                        self.searchHistory.record(self.viewModel.query)
                         self.viewModel.search()
                     }
                 }
@@ -114,14 +132,18 @@ struct SearchView: View {
                         )
                         return .handled
                     }
-                    return .ignored
+                    guard !self.viewModel.filteredItems.isEmpty else { return .ignored }
+                    self.moveResultSelection(by: 1)
+                    return .handled
                 }
                 .onKeyPress(.upArrow) {
                     if self.viewModel.showSuggestions {
                         self.selectedSuggestionIndex = max(self.selectedSuggestionIndex - 1, -1)
                         return .handled
                     }
-                    return .ignored
+                    guard self.selectedResultID != nil else { return .ignored }
+                    self.moveResultSelection(by: -1)
+                    return .handled
                 }
                 .onKeyPress(.escape) {
                     if self.viewModel.showSuggestions {
@@ -163,6 +185,7 @@ struct SearchView: View {
 
     private func suggestionRow(_ suggestion: SearchSuggestion, index: Int) -> some View {
         Button {
+            self.searchHistory.record(suggestion.query)
             self.viewModel.selectSuggestion(suggestion)
         } label: {
             HStack(spacing: 12) {
@@ -219,7 +242,7 @@ struct SearchView: View {
 
     @ViewBuilder
     private var contentView: some View {
-        if !self.networkMonitor.isConnected {
+        if !self.networkMonitor.isConnected, !self.viewModel.loadingState.hasContent {
             ErrorView(
                 title: String(localized: "No Connection"),
                 message: String(localized: "Please check your internet connection and try again.")
@@ -247,54 +270,219 @@ struct SearchView: View {
     }
 
     private var emptyStateView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                if !self.viewModel.query.isEmpty {
+                    ContentUnavailableView {
+                        Label(String(localized: "Press Return to search"), systemImage: "magnifyingglass")
+                    } description: {
+                        Text(verbatim: "Search for \u{201C}\(self.viewModel.query)\u{201D}")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 60)
+                } else {
+                    if !self.searchHistory.queries.isEmpty {
+                        self.recentSearchesSection
+                    }
 
-            Text(self.viewModel.query.isEmpty ? String(localized: "Search for your favorite music") : String(localized: "Press Enter to search"))
-                .font(.title3)
-                .foregroundStyle(.secondary)
+                    if let items = self.recentlyPlayedItems, !items.isEmpty {
+                        self.jumpBackInSection(items)
+                    }
 
-            Text("Find songs, albums, artists, and playlists")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+                    if self.searchHistory.queries.isEmpty, (self.recentlyPlayedItems?.isEmpty ?? true) {
+                        ContentUnavailableView {
+                            Label(String(localized: "Search for your favorite music"), systemImage: "magnifyingglass")
+                        } description: {
+                            Text("Find songs, albums, artists, and playlists")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task {
+            await self.loadRecentHistoryIfNeeded()
+        }
+    }
+
+    /// The reader's last searches, each one a click away from running again.
+    private var recentSearchesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Recent searches")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                Button(String(localized: "Clear")) {
+                    self.searchHistory.clear()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 180), spacing: 8)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(self.searchHistory.queries, id: \.self) { query in
+                    HStack(spacing: 6) {
+                        Button {
+                            self.runRecentSearch(query)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+
+                                Text(query)
+                                    .font(.system(size: 12))
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            self.searchHistory.remove(query)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(String(localized: "Remove from recent searches"))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: .capsule)
+                }
+            }
+        }
+    }
+
+    private func runRecentSearch(_ query: String) {
+        self.viewModel.query = query
+        self.searchHistory.record(query)
+        self.viewModel.search()
+    }
+
+    /// A shelf of what the reader played last, so the page can be useful before a query is typed.
+    private func jumpBackInSection(_ items: [HomeSectionItem]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Jump back in")
+                .font(.title3)
+                .fontWeight(.semibold)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(items) { item in
+                        HomeSectionItemCard(item: item) {
+                            self.openRecentItem(item)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .scrollClipDisabled()
+        }
+    }
+
+    private func openRecentItem(_ item: HomeSectionItem) {
+        switch item {
+        case let .song(song):
+            Task { await self.playerService.playWithRadio(song: song) }
+        case let .artist(artist):
+            self.navigationPath.append(artist)
+        case let .playlist(playlist):
+            self.navigationPath.append(playlist)
+        case let .album(album):
+            self.navigationPath.append(
+                Playlist(
+                    id: album.id,
+                    title: album.title,
+                    description: nil,
+                    thumbnailURL: album.thumbnailURL,
+                    trackCount: album.trackCount,
+                    author: album.artistsDisplay
+                )
+            )
+        }
+    }
+
+    /// The most recently played songs, one row per video, for the empty page's shelf.
+    private var recentlyPlayedItems: [HomeSectionItem]? {
+        guard let viewModel = self.recentHistoryViewModel, viewModel.loadingState == .loaded else {
+            return nil
+        }
+
+        var seen = Set<String>()
+        var items: [HomeSectionItem] = []
+        for section in viewModel.sections {
+            for item in section.items {
+                guard case .song = item, seen.insert(item.id).inserted else { continue }
+                items.append(item)
+                if items.count == 8 {
+                    return items
+                }
+            }
+        }
+        return items
+    }
+
+    private func loadRecentHistoryIfNeeded() async {
+        guard self.recentHistoryViewModel == nil else { return }
+        let viewModel = HistoryViewModel(client: self.viewModel.client)
+        self.recentHistoryViewModel = viewModel
+        await viewModel.load()
     }
 
     private var noResultsView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
-
-            Text("No results found")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-
-            Text("Try searching for something else")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+        ContentUnavailableView {
+            Label(String(localized: "No results found"), systemImage: "magnifyingglass")
+        } description: {
+            Text("Try a different search, or widen the filter.")
+        } actions: {
+            if self.viewModel.selectedFilter != .all {
+                Button(String(localized: "Show All Results")) {
+                    self.viewModel.selectedFilter = .all
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var resultsView: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(self.viewModel.filteredItems) { item in
-                    self.resultRow(item)
-                    Divider()
-                        .padding(.leading, 72)
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(self.viewModel.filteredItems) { item in
+                        self.resultRow(item, isSelected: item.id == self.selectedResultID)
+                            .id(item.id)
+                        Divider()
+                            .padding(.leading, 72)
+                    }
 
-                // Load more indicator / button
-                if self.viewModel.hasMoreResults {
-                    self.loadMoreView
+                    // Load more indicator / button
+                    if self.viewModel.hasMoreResults {
+                        self.loadMoreView
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .onChange(of: self.selectedResultID) { _, newValue in
+                guard let newValue else { return }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    proxy.scrollTo(newValue, anchor: .center)
                 }
             }
-            .padding(.vertical, 8)
         }
     }
 
@@ -330,7 +518,7 @@ struct SearchView: View {
         }
     }
 
-    private func resultRow(_ item: SearchResultItem) -> some View {
+    private func resultRow(_ item: SearchResultItem, isSelected: Bool) -> some View {
         Button {
             self.handleItemTap(item)
         } label: {
@@ -386,6 +574,7 @@ struct SearchView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 8)
+            .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.interactiveRow(cornerRadius: 6))
@@ -600,6 +789,35 @@ struct SearchView: View {
     }
 
     // MARK: - Helpers
+
+    /// The row Return should open: the highlighted result, when the arrow keys have moved into the list.
+    private var selectedResult: SearchResultItem? {
+        guard let selectedID = self.selectedResultID else { return nil }
+        return self.viewModel.filteredItems.first { $0.id == selectedID }
+    }
+
+    /// Moves the keyboard cursor through the results.
+    ///
+    /// Clearing it at the top hands the arrow keys back to the field, so typing and Escape keep
+    /// working after the reader walked down into the list and back up.
+    private func moveResultSelection(by offset: Int) {
+        let items = self.viewModel.filteredItems
+        guard !items.isEmpty else { return }
+
+        guard let selectedID = self.selectedResultID,
+              let index = items.firstIndex(where: { $0.id == selectedID })
+        else {
+            self.selectedResultID = offset > 0 ? items.first?.id : nil
+            return
+        }
+
+        let next = index + offset
+        guard next >= 0 else {
+            self.selectedResultID = nil
+            return
+        }
+        self.selectedResultID = items[min(next, items.count - 1)].id
+    }
 
     private func iconForItem(_ item: SearchResultItem) -> String {
         switch item {

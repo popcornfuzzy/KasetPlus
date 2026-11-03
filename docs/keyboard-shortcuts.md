@@ -21,6 +21,18 @@ installs a key monitor for the length of a presentation that offers each key to 
 anything inside the player can take it, so a shortcut there never depends on which control in the
 player was clicked last (see [ADR-0026](adr/0026-fullscreen-key-routing.md)).
 
+## Search
+
+| Shortcut | Action                                                        |
+| -------- | ------------------------------------------------------------- |
+| `↑` `↓`  | Move through the suggestions, then through the results        |
+| `Return` | Search, or open the highlighted result                        |
+| `Escape` | Close the suggestions                                          |
+
+Once the arrow keys have walked down into the results, the highlighted row is what `Return` opens
+(playing a song, or pushing an album, artist, playlist or podcast). Walking back to the top hands the
+keys to the field again.
+
 ## Navigation
 
 | Shortcut | Action           |

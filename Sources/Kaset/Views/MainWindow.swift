@@ -224,10 +224,15 @@ struct MainWindow: View {
             }
         }
         .overlay(alignment: .top) {
-            // Error toast for account switching failures
+            // App-wide transient feedback, pinned to the top edge so it reads as a notice rather than a
+            // panel floating in the page: the offline strip, action confirmations, then account errors.
             if !self.playerService.showFullscreenNowPlaying {
-                AccountErrorToast()
-                    .padding(.top, 60)
+                VStack(spacing: 8) {
+                    OfflineBanner()
+                    AppToastOverlay()
+                    AccountErrorToast()
+                }
+                .padding(.top, 10)
             }
         }
         .overlay {
@@ -471,6 +476,10 @@ struct MainWindow: View {
     /// (the `Escape` key, or the close button's click), which is where leaving the player stopped
     /// responding — see `FullscreenNowPlayingView.closeFullscreenNowPlaying`. One runloop turn later the
     /// overlay is gone, that event has finished, and the window is free to lay its titlebar out.
+    /// The auth state the chrome was last laid out for, so a change of window can be told from a
+    /// repeated pass. `nil` until the first one.
+    @State private var chromeAuthState: AuthService.State?
+
     private func scheduleWindowChromeUpdate(for isFullscreenNowPlaying: Bool) {
         self.windowChromeTask?.cancel()
         self.windowChromeTask = Task { @MainActor in
@@ -498,13 +507,57 @@ struct MainWindow: View {
         window.titleVisibility = .hidden
         // The fullscreen Now Playing experience takes over the window, so the toolbar goes with it —
         // the same hidden state SwiftUI's `.toolbarVisibility(.hidden)` used to ask for.
-        window.toolbar?.isVisible = !isFullscreenNowPlaying
+        //
+        // The sign-in screen hides it for the same reason. The toolbar's items belong to the page that
+        // was open (its name, the Now Playing toggles, the back control), and signing out unmounts the
+        // shell without touching the window's toolbar — so they stayed on screen, describing a page that
+        // no longer existed. A signed-out window has no page, and therefore no page chrome.
+        window.toolbar?.isVisible = !isFullscreenNowPlaying && self.authService.state.isLoggedIn
+        // The window changes screens, and width with them: the welcome screen is one pane, the signed-in
+        // window is three. A window that keeps its leading edge grows out to the right of where it was —
+        // sign in on the left of the display and the app's window lands half off it. Every change of
+        // screen is centred instead, so the window grows and shrinks around the middle of the display.
+        //
+        // The launch is the exception: resolving to signed in keeps the frame the reader left, because
+        // that is the position they chose. Only the welcome screen is centred after a launch — the saved
+        // frame belongs to a three-pane window, not to the one the reader signs in on.
+        let state = self.authService.state
+        let previous = self.chromeAuthState
+        self.chromeAuthState = state
+        let launchIsResolving = previous == nil || previous?.isInitializing == true
+
+        if launchIsResolving {
+            if !state.isLoggedIn, !state.isInitializing {
+                Self.centerOnScreen(window)
+            }
+        } else if previous?.isLoggedIn != state.isLoggedIn {
+            Self.centerOnScreen(window)
+        }
         // The other end of the exit sequence (see the log in `body`): the toolbar and the title are back
         // and the window is what it was. The line after which nothing arrives is the step that stalled.
         let message = "Main window chrome for the fullscreen player: fullscreen=\(isFullscreenNowPlaying) "
             + "toolbarVisible=\(window.toolbar?.isVisible ?? false) "
             + "titleVisible=\(window.titleVisibility == .visible) key=\(window.isKeyWindow)"
         DiagnosticsLogger.ui.notice("\(message, privacy: .public)")
+    }
+
+    /// Centres the window on the display it is on, inside the area the menu bar and Dock leave free.
+    /// `NSWindow.center()` centres in the screen's full frame, which puts the window's top edge under
+    /// the menu bar on a display whose Dock is hidden.
+    private static func centerOnScreen(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen),
+              let screen = window.screen ?? NSScreen.main
+        else {
+            return
+        }
+
+        let visible = screen.visibleFrame
+        let size = window.frame.size
+        let origin = NSPoint(
+            x: visible.midX - size.width / 2,
+            y: visible.midY - size.height / 2
+        )
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
     }
 
     // MARK: - Main Content
@@ -893,6 +946,10 @@ struct MainWindow: View {
     }
 
     private func handleAuthStateChange(oldState: AuthService.State, newState: AuthService.State) {
+        // Signing in or out changes whether the window has a toolbar at all. Queued for the next runloop
+        // turn like the fullscreen change, so it never lays the titlebar out inside this update.
+        self.scheduleWindowChromeUpdate(for: self.playerService.showFullscreenNowPlaying)
+
         switch newState {
         case .initializing:
             // Still checking login status, do nothing

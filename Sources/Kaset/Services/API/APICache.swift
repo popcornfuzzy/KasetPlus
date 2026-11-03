@@ -39,6 +39,12 @@ final class APICache {
     /// Maximum number of cached entries before LRU eviction kicks in.
     private static let maxEntries = 50
 
+    /// How long a response saved by an earlier session stays readable offline.
+    private static let staleAge: TimeInterval = 14 * 24 * 60 * 60
+
+    /// How many responses are kept on disk.
+    private static let maxDiskEntries = 80
+
     /// Pre-allocated dictionary with initial capacity to reduce rehashing.
     private var cache: [String: CacheEntry]
 
@@ -54,18 +60,23 @@ final class APICache {
     }
 
     /// Gets cached data if available and not expired.
+    ///
+    /// Offline, an expired entry falls back to the response saved by an earlier session rather than
+    /// leaving the reader with nothing.
     func get(key: String) -> [String: Any]? {
-        guard var entry = cache[key] else { return nil }
+        if var entry = cache[key] {
+            if !entry.isExpired {
+                // Update last accessed time for LRU tracking
+                entry.lastAccessed = Date()
+                self.cache[key] = entry
+                return entry.data
+            }
 
-        if entry.isExpired {
             self.cache.removeValue(forKey: key)
-            return nil
         }
 
-        // Update last accessed time for LRU tracking
-        entry.lastAccessed = Date()
-        self.cache[key] = entry
-        return entry.data
+        guard !NetworkMonitor.shared.isConnected else { return nil }
+        return self.staleDiskEntry(for: key)
     }
 
     /// Stores data in the cache with the specified TTL.
@@ -85,7 +96,22 @@ final class APICache {
         }
 
         self.cache[key] = CacheEntry(data: data, timestamp: now, ttl: ttl)
+        self.persistToDisk(key: key, data: data)
     }
+
+    // MARK: - Disk (offline fallback)
+
+    /// Where responses are mirrored so a launch without a network is not a blank app.
+    private lazy var diskDirectory: URL? = {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = appSupport
+            .appendingPathComponent("Kaset", isDirectory: true)
+            .appendingPathComponent("APICache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }()
 
     private static let logger = DiagnosticsLogger.api
 
@@ -122,6 +148,7 @@ final class APICache {
     /// Invalidates all cached entries.
     func invalidateAll() {
         self.cache.removeAll()
+        self.removeDiskEntries(matching: nil)
     }
 
     /// Invalidates entries matching the given prefix.
@@ -142,6 +169,93 @@ final class APICache {
     var stats: (count: Int, expired: Int) {
         let expired = self.cache.values.filter(\.isExpired).count
         return (self.cache.count, expired)
+    }
+
+    // MARK: - Disk Helpers
+
+    private func diskFileURL(for key: String, in directory: URL) -> URL? {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let name = digest.compactMap { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(name).appendingPathExtension("json")
+    }
+
+    private func persistToDisk(key: String, data: [String: Any]) {
+        guard let directory = self.diskDirectory,
+              let fileURL = self.diskFileURL(for: key, in: directory),
+              JSONSerialization.isValidJSONObject(data)
+        else { return }
+
+        let envelope: [String: Any] = [
+            "key": key,
+            "storedAt": Date().timeIntervalSince1970,
+            "data": data,
+        ]
+
+        do {
+            let encoded = try JSONSerialization.data(withJSONObject: envelope)
+            try encoded.write(to: fileURL, options: .atomic)
+            self.pruneDiskEntries(in: directory)
+        } catch {
+            Self.logger.debug("APICache: could not persist response: \(error.localizedDescription)")
+        }
+    }
+
+    /// Returns a response saved by an earlier session, while the app is offline only.
+    ///
+    /// Serving it online would hide a changed feed behind old data; offline the alternative is an
+    /// empty page, so the last known answer wins.
+    private func staleDiskEntry(for key: String) -> [String: Any]? {
+        guard let directory = self.diskDirectory,
+              let fileURL = self.diskFileURL(for: key, in: directory),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let modified = attributes[.modificationDate] as? Date,
+              Date().timeIntervalSince(modified) < Self.staleAge,
+              let raw = try? Data(contentsOf: fileURL),
+              let object = try? JSONSerialization.jsonObject(with: raw),
+              let envelope = object as? [String: Any],
+              (envelope["key"] as? String) == key,
+              let data = envelope["data"] as? [String: Any]
+        else {
+            return nil
+        }
+
+        return data
+    }
+
+    private func pruneDiskEntries(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ), files.count > Self.maxDiskEntries else { return }
+
+        let ordered = files.sorted { lhs, rhs in
+            let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return lhsDate < rhsDate
+        }
+
+        for file in ordered.prefix(files.count - Self.maxDiskEntries) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    /// Removes every saved response, or those whose key matches a prefix.
+    private func removeDiskEntries(matching prefix: String?) {
+        guard let directory = self.diskDirectory,
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return }
+
+        for file in files {
+            if let prefix {
+                guard let raw = try? Data(contentsOf: file),
+                      let object = try? JSONSerialization.jsonObject(with: raw),
+                      let envelope = object as? [String: Any],
+                      let key = envelope["key"] as? String,
+                      key.hasPrefix(prefix)
+                else { continue }
+            }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     // MARK: - Private Helpers

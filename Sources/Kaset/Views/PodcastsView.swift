@@ -14,7 +14,7 @@ struct PodcastsView: View {
     var body: some View {
         PageNavigationStack(id: "podcasts", path: self.$navigationPath) {
             Group {
-                if !self.networkMonitor.isConnected {
+                if !self.networkMonitor.isConnected, !self.viewModel.loadingState.hasContent {
                     ErrorView(
                         title: String(localized: "No Connection"),
                         message: String(localized: "Please check your internet connection and try again.")

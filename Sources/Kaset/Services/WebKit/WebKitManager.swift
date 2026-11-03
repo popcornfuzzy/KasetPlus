@@ -288,6 +288,13 @@ enum KeychainCookieStorage {
 enum LegacyCookieMigration {
     private static let logger = DiagnosticsLogger.webKit
 
+    /// Set once the file-based store has been handed over to the Keychain.
+    ///
+    /// Without it, "Keychain is empty" was read as "migration never ran" — but an empty Keychain is
+    /// also what signing out produces, so the next launch imported the old session back and the app
+    /// opened signed in with a cookie set the API rejects: skeleton rows, nothing playing.
+    private static let completedKey = "kaset.legacyCookieMigrationCompleted"
+
     /// Returns the URL for the legacy cookie backup file.
     private static var legacyFileURL: URL? {
         guard let appSupport = FileManager.default.urls(
@@ -307,6 +314,9 @@ enum LegacyCookieMigration {
     static func migrateIfNeeded() -> Bool {
         // Nothing to migrate to in UI test mode, where the Keychain is left alone entirely.
         guard !UITestConfig.isUITestMode else { return false }
+
+        // One-time, and one time only: from here on the Keychain is the source of truth.
+        guard !UserDefaults.standard.bool(forKey: Self.completedKey) else { return false }
 
         // If Keychain already has cookies, do not repeatedly migrate on every startup.
         guard !KeychainCookieStorage.hasCookieItem() else { return false }
@@ -373,14 +383,16 @@ enum LegacyCookieMigration {
         }
 
         self.logger.info("✓ Successfully migrated \(validCookies.count) cookies to Keychain")
+        UserDefaults.standard.set(true, forKey: Self.completedKey)
         #if !DEBUG
             Self.deleteLegacyFile()
         #endif
         return true
     }
 
-    /// Deletes the legacy cookie file.
-    private static func deleteLegacyFile() {
+    /// Deletes the legacy cookie file — also the DEBUG build's export of the cookie archive, which is
+    /// the same path. Sign-out calls this so the file cannot be migrated back after the reader leaves.
+    static func deleteLegacyFile() {
         guard let fileURL = legacyFileURL else { return }
 
         do {
@@ -709,10 +721,15 @@ final class WebKitManager: NSObject, WebKitManagerProtocol {
 
         self.logger.info("Clearing all WebKit data")
 
+        // A backup queued by the removal below would otherwise write the archive straight back.
+        self.cookieDebounceTask?.cancel()
+
         await self.dataStore.removeData(ofTypes: allTypes, modifiedSince: dateFrom)
 
-        // Also clear cookies from Keychain
+        // The Keychain, and the legacy/debug file that startup migration reads: signing out has to
+        // survive a relaunch, and a session that only survives as a file on disk is not signed out.
         KeychainCookieStorage.deleteCookies()
+        LegacyCookieMigration.deleteLegacyFile()
 
         self.logger.info("WebKit data cleared successfully")
     }

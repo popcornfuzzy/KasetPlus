@@ -98,6 +98,64 @@ struct AuthServiceTests {
         #expect(self.mockWebKitManager.callSequence == ["waitForInitialCookieRestore", "getSAPISID"])
     }
 
+    @Test("Validating a restored session keeps a real account signed in")
+    func validateSessionKeepsRealAccount() async {
+        self.authService.completeLogin(sapisid: "test-sapisid")
+        let client = MockYTMusicClient()
+        client.accountsListResponse = AccountsListResponse(
+            googleEmail: "test@gmail.com",
+            accounts: [UserAccount(
+                id: "primary",
+                name: "Test",
+                handle: nil,
+                brandId: nil,
+                thumbnailURL: nil,
+                isSelected: true
+            )]
+        )
+
+        await self.authService.validateSession(using: client)
+
+        #expect(self.authService.state == .loggedIn(sapisid: "test-sapisid"))
+        #expect(self.mockWebKitManager.clearAllDataCalled == false)
+    }
+
+    @Test("Validating a restored session signs out when no account comes back")
+    func validateSessionSignsOutWithoutAccounts() async {
+        self.authService.completeLogin(sapisid: "stale-sapisid")
+        let client = MockYTMusicClient()
+
+        await self.authService.validateSession(using: client)
+
+        #expect(self.authService.state == .loggedOut)
+        #expect(self.authService.needsReauth == false)
+        #expect(self.mockWebKitManager.clearAllDataCalled == true)
+    }
+
+    @Test("Validating a restored session signs out when the API rejects it")
+    func validateSessionSignsOutOnAuthError() async {
+        self.authService.completeLogin(sapisid: "stale-sapisid")
+        let client = MockYTMusicClient()
+        client.shouldThrowError = YTMusicError.authExpired
+
+        await self.authService.validateSession(using: client)
+
+        #expect(self.authService.state == .loggedOut)
+        #expect(self.mockWebKitManager.clearAllDataCalled == true)
+    }
+
+    @Test("Validating a restored session keeps it when the network is down")
+    func validateSessionKeepsSessionOnNetworkFailure() async {
+        self.authService.completeLogin(sapisid: "test-sapisid")
+        let client = MockYTMusicClient()
+        client.shouldThrowError = YTMusicError.networkError(underlying: URLError(.notConnectedToInternet))
+
+        await self.authService.validateSession(using: client)
+
+        #expect(self.authService.state == .loggedIn(sapisid: "test-sapisid"))
+        #expect(self.mockWebKitManager.clearAllDataCalled == false)
+    }
+
     @Test("State equality")
     func stateEquatable() {
         let state1 = AuthService.State.loggedOut

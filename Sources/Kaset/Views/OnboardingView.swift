@@ -32,27 +32,33 @@ struct OnboardingView: View {
             // Features
             VStack(alignment: .leading, spacing: 20) {
                 FeatureRow(
-                    icon: "play.circle.fill",
-                    title: "Background Playback",
-                    description: "Keep listening even when the window is closed"
+                    icon: "text.line.last.and.arrowtriangle.forward",
+                    title: "Lyrics That Keep Up",
+                    description: "Synced, word-by-word lyrics in the sidebar or fullscreen"
                 )
 
                 FeatureRow(
-                    icon: "rectangle.grid.2x2.fill",
-                    title: "Native Interface",
-                    description: "Built with SwiftUI for a true macOS experience"
+                    icon: "text.badge.plus",
+                    title: "One Click to a Playlist",
+                    description: "Save any song to a playlist right from the player bar"
+                )
+
+                FeatureRow(
+                    icon: "list.bullet.rectangle",
+                    title: "Your Queue, Your Rules",
+                    description: "Reorder, shuffle, and tune what plays next"
+                )
+
+                FeatureRow(
+                    icon: "airplayaudio",
+                    title: "Everywhere You Listen",
+                    description: "Cast to a speaker, share with Discord, keep playing when the window closes"
                 )
 
                 FeatureRow(
                     icon: "keyboard.fill",
-                    title: "Media Keys",
-                    description: "Control playback with your keyboard"
-                )
-
-                FeatureRow(
-                    icon: "person.crop.circle.fill",
-                    title: "Your Library",
-                    description: "Access your playlists and liked songs"
+                    title: "Built for the Keyboard",
+                    description: "Space to play, ⌘→ to skip, ⌘K to ask for anything"
                 )
             }
             .padding(.horizontal, 60)

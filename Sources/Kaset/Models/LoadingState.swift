@@ -19,6 +19,8 @@ struct LoadingError {
     let title: String
     let message: String
     let isRetryable: Bool
+    /// Whether the session itself is the problem, so retrying the request cannot help.
+    let isAuthExpired: Bool
     let underlyingError: (any Error)?
 
     /// Creates a LoadingError from any Error.
@@ -27,16 +29,19 @@ struct LoadingError {
             self.title = ytError.userFriendlyTitle
             self.message = ytError.userFriendlyMessage
             self.isRetryable = ytError.isRetryable
+            self.isAuthExpired = if case .authExpired = ytError { true } else { false }
             self.underlyingError = ytError
         } else if (error as NSError).domain == NSURLErrorDomain {
             self.title = "Connection Error"
             self.message = "Unable to connect. Please check your internet connection."
             self.isRetryable = true
+            self.isAuthExpired = false
             self.underlyingError = error
         } else {
             self.title = "Error"
             self.message = error.localizedDescription
             self.isRetryable = true
+            self.isAuthExpired = false
             self.underlyingError = error
         }
     }
@@ -46,6 +51,7 @@ struct LoadingError {
         self.title = "Error"
         self.message = message
         self.isRetryable = isRetryable
+        self.isAuthExpired = false
         self.underlyingError = nil
     }
 
@@ -54,6 +60,7 @@ struct LoadingError {
         self.title = title
         self.message = message
         self.isRetryable = isRetryable
+        self.isAuthExpired = false
         self.underlyingError = nil
     }
 }
@@ -70,5 +77,17 @@ extension LoadingState: Equatable {
         default:
             false
         }
+    }
+}
+
+// MARK: - LoadingState + Content
+
+extension LoadingState {
+    /// Whether the page has content to keep on screen.
+    ///
+    /// A dropped connection should not replace a library or feed the reader already has in front of
+    /// them; the pages use this to tell "nothing loaded yet" from "loaded, and now offline".
+    var hasContent: Bool {
+        self == .loaded || self == .loadingMore
     }
 }
