@@ -21,6 +21,14 @@ struct PlaylistTrackRow: View, Equatable {
     /// full width of the list — see `body`.
     static let contentInset: CGFloat = 24
 
+    /// Width of the position column, shared by the track number and the now-playing indicator. The
+    /// number is centered rather than right-aligned: right-aligning it in a column wide enough for
+    /// three digits left a single-digit track floating in empty space.
+    static let indexColumnWidth: CGFloat = 22
+
+    /// Spacing between the row's leading columns: position, artwork, title.
+    static let columnSpacing: CGFloat = 12
+
     /// Hover/press highlight fill, matching `InteractiveRowStyle`'s default.
     static let highlightColor = Color.primary.opacity(0.06)
 
@@ -135,11 +143,18 @@ struct PlaylistTrackRow: View, Equatable {
         .overlay(alignment: .bottom) {
             if self.showsSeparator {
                 Divider()
-                    // For albums: 28 (index) + 12 (spacing)
-                    // For playlists: 28 (index) + 12 (spacing) + 40 (thumbnail) + 16 (spacing)
-                    .padding(.leading, Self.contentInset + (self.isAlbum ? 40 : 96))
+                    // The rule starts where the title column does, so it reads as the row's divider
+                    // rather than as a page-wide line.
+                    .padding(.leading, self.titleLeadingInset)
             }
         }
+    }
+
+    /// Where the row's title column starts: after the position column and, for a playlist, after
+    /// its artwork.
+    private var titleLeadingInset: CGFloat {
+        let artwork = self.isAlbum ? 0 : Self.thumbnailSize.width + 16
+        return Self.contentInset + Self.indexColumnWidth + Self.columnSpacing + artwork
     }
 
     /// Highlight is shown only while hovering *and* not scrolling: rows passing under a stationary
@@ -178,7 +193,7 @@ struct PlaylistTrackRow: View, Equatable {
     }
 
     private var rowLabel: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.columnSpacing) {
             // Now playing indicator or index
             Group {
                 if self.isCurrentTrack {
@@ -193,7 +208,7 @@ struct PlaylistTrackRow: View, Equatable {
                     Color.clear
                 }
             }
-            .frame(width: 28, alignment: .trailing)
+            .frame(width: Self.indexColumnWidth, alignment: .center)
 
             // Thumbnail - only show for playlists (different album art per track)
             // Albums share the same artwork, so we hide per-track thumbnails

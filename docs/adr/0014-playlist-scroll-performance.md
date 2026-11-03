@@ -58,9 +58,10 @@ scrolling smooth, which is what this ADR now specifies.
 ### Track lists are rendered by an AppKit-backed `List`
 
 `PlaylistDetailView` renders its header, divider and tracks inside a `List`
-(`.listStyle(.plain)`, hidden row separators, clear row backgrounds, zero `listRowInsets` with the
-row applying the page's 24 pt inset to its own content) instead of a `ScrollView` +
-`LazyVStack`. NSTableView lays out and reuses row views and scrolls by moving the clip view, so
+(`.listStyle(.plain)`, hidden row separators, clear row backgrounds, the list's own 8 pt row inset
+taken back with negative `listRowInsets`, and the row applying its own content inset) instead of a
+`ScrollView` + `LazyVStack`. NSTableView lays out and reuses row views and scrolls by moving the
+clip view, so
 the per-frame cost stops scaling with the realised rows' view-tree size while the row design
 survives intact: the row still draws its own separator, keeps its context menu, ellipsis menu and
 add-to-playlist popover.
@@ -78,8 +79,9 @@ table and on every `ListTableRowView`/`ListTableCellView`, and `deselectAll` fro
 because it only covers SwiftUI's own focus effect. There is no public API that removes it, so the
 decoration is now made to agree with the row instead of being fought.
 
-That works because the row *is* the element the decoration is drawn around. `.listRowInsets(EdgeInsets())`
-at the call site makes the row span the full width of the list, `PlaylistTrackRow.contentInset`
+That works because the row *is* the element the decoration is drawn around. `listRowInsets` at the
+call site — negative by the 8 pt the list insets each row's content by, which zeroing the insets does
+not remove on macOS 26 — makes the row span the full width of the list, `PlaylistTrackRow.contentInset`
 keeps the content at the page's 24 pt inset, and the row draws its hover/press highlight itself as a
 full-bleed rectangle rather than letting `InteractiveRowStyle` paint an inset rounded pill around
 the play button alone. The framework's highlight, the outline and the row's own highlight are then

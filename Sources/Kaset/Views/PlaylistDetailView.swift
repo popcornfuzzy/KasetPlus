@@ -75,6 +75,14 @@ struct PlaylistDetailView: View {
     /// How many upcoming rows' artwork to warm in the image cache.
     private static let thumbnailPrefetchWindow = 60
 
+    /// Row insets that let a track row's content reach the page's edges.
+    ///
+    /// `List`'s plain table insets every row's content by half its 17 pt inter-cell spacing (8 pt a
+    /// side, measured on macOS 26), which left the row's full-bleed highlight a gutter short of the
+    /// edges. Negative insets are the only way back at the SwiftUI level: zeroed content margins,
+    /// hidden scroll indicators and a zeroed inter-cell spacing all leave the gutter (measured).
+    private static let edgeToEdgeRowInsets = EdgeInsets(top: 0, leading: -8, bottom: 0, trailing: -8)
+
     /// Edge length of the header thumbnail. It also sets the height of the header's info column, so
     /// the action row lines up with the thumbnail's bottom edge.
     private static let artworkSize: CGFloat = 180
@@ -1116,10 +1124,10 @@ struct PlaylistDetailView: View {
             )
             .equatable()
             .listRowSeparator(.hidden)
-            // No row insets: the row spans the full width of the list and insets its own content,
-            // so its highlight can be full-bleed like the decoration `List` draws around the row a
-            // right-click lands on (see ADR-0014). An inset row cannot be made to line up with it.
-            .listRowInsets(EdgeInsets())
+            // Pulled back to the row view's full width, so the row spans the list and its highlight
+            // can be full-bleed like the decoration `List` draws around the row a right-click lands
+            // on (see ADR-0014 and `edgeToEdgeRowInsets`).
+            .listRowInsets(Self.edgeToEdgeRowInsets)
             .listRowBackground(Color.clear)
         }
 
@@ -1182,7 +1190,7 @@ struct PlaylistDetailView: View {
             )
             .equatable()
             .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets())
+            .listRowInsets(Self.edgeToEdgeRowInsets)
             .listRowBackground(Color.clear)
         }
     }

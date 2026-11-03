@@ -478,8 +478,9 @@ requires the work to be `Sendable`; when it is not, move it into a `nonisolated`
 - [ ] Large lists use their own row view (not inline row builders in the parent body) so a
       parent update doesn't rebuild every visible row — see
       [adr/0014](adr/0014-playlist-scroll-performance.md)
-- [ ] Rich rows in a `List` draw their highlight **full-bleed** at row level (zero
-      `listRowInsets` + an internal content inset). Right-clicking a row makes SwiftUI decorate
+- [ ] Rich rows in a `List` draw their highlight **full-bleed** at row level (negative
+      `listRowInsets` — `List` itself insets each row's content by 8 pt a side on macOS 26 — plus an
+      internal content inset). Right-clicking a row makes SwiftUI decorate
       the whole row — full-width fill plus a 2 pt accent outline — and that decoration cannot be
       removed (`selectionHighlightStyle = .none`, `focusRingType = .none` on the table/row/cell
       views, `deselectAll` and `.focusEffectDisabled()` all leave it in place). A highlight that
