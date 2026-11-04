@@ -29,6 +29,15 @@ final class SyncedLyricsService {
     /// Identifier of the variant on screen, when a variant list is available.
     private(set) var selectedLyricsVariantID: String?
 
+    /// Community standing of the version on screen — its count and this
+    /// listener's own vote — when the provider that supplied it lets listeners
+    /// vote (Unison). `nil` for every catalog provider.
+    private(set) var currentVote: LyricsVoteState?
+    /// True while a vote is being written, so the footer's buttons can settle.
+    private(set) var isVoting = false
+    /// Set when the last vote could not be recorded; the footer explains it.
+    private(set) var voteErrorMessage: String?
+
     private var providers: [LyricsProvider]
     private var cache: [String: LyricResult] = [:]
     private let cacheStore: LyricsCacheStore?
@@ -214,6 +223,86 @@ final class SyncedLyricsService {
             videoId: videoId,
             requestID: self.fetchGeneration
         )
+        guard let provider = self.activeVoteProvider else {
+            self.currentVote = nil
+            return
+        }
+        self.installVoteState(recordID: id)
+        if let lyricsID = self.currentVote?.lyricsID {
+            Task { await self.refreshVoteState(lyricsID: lyricsID, provider: provider, videoId: videoId) }
+        }
+    }
+
+    // MARK: - Voting
+
+    /// Records the listener's vote on the version on screen, or takes it back
+    /// when they press the direction they already chose.
+    ///
+    /// The count moves immediately — a vote is one tap, and waiting on the
+    /// network to show it reads as a broken button — and the server's own
+    /// number replaces it once the write lands.
+    func toggleVote(_ direction: LyricsVoteDirection) async {
+        guard let previous = self.currentVote,
+              !self.isVoting,
+              let provider = self.activeVoteProvider
+        else { return }
+
+        let target: LyricsVoteDirection? = previous.direction == direction ? nil : direction
+        self.isVoting = true
+        self.voteErrorMessage = nil
+        self.currentVote = previous.applying(target)
+
+        do {
+            try await provider.vote(target, lyricsID: previous.lyricsID)
+            if let state = try? await provider.voteState(lyricsID: previous.lyricsID),
+               self.currentVote?.lyricsID == previous.lyricsID
+            {
+                self.currentVote = state
+            }
+        } catch {
+            // The track may have changed while the write was in flight: undo
+            // only the state this vote changed.
+            if self.currentVote?.lyricsID == previous.lyricsID {
+                self.currentVote = previous
+            }
+            self.voteErrorMessage = String(localized: "Your vote wasn't saved.")
+            DiagnosticsLogger.api.warning("Unison vote failed: \(error.localizedDescription)")
+        }
+
+        self.isVoting = false
+    }
+
+    /// The provider that lets listeners vote on the lyrics it supplied.
+    private var activeVoteProvider: (any LyricsVoteProvider)? {
+        guard let providerName = self.activeProvider else { return nil }
+        return self.providers.first(where: { $0.name == providerName }) as? any LyricsVoteProvider
+    }
+
+    /// Seeds the vote state from the variant list, so the count is on screen
+    /// before the record is read back.
+    private func installVoteState(recordID: String?) {
+        guard let recordID, let lyricsID = Int(recordID) else {
+            self.currentVote = nil
+            return
+        }
+        let variant = self.availableLyricsVariants.first(where: { $0.id == recordID })
+        self.currentVote = LyricsVoteState(
+            lyricsID: lyricsID,
+            count: variant?.voteCount,
+            direction: variant?.userVote
+        )
+    }
+
+    /// Reads the record back with this listener's key for the authoritative
+    /// count and their own vote.
+    private func refreshVoteState(
+        lyricsID: Int,
+        provider: any LyricsVoteProvider,
+        videoId: String
+    ) async {
+        guard let state = try? await provider.voteState(lyricsID: lyricsID) else { return }
+        guard self.currentLyricsVideoId == videoId, self.currentVote?.lyricsID == lyricsID else { return }
+        self.currentVote = state
     }
 
     /// Asks the provider that produced the displayed result for its other
@@ -231,12 +320,31 @@ final class SyncedLyricsService {
         // not install another song's versions.
         guard self.currentLyricsVideoId == info.videoId, self.activeProvider == providerName else { return }
         self.availableLyricsVariants = variants
-        self.selectedLyricsVariantID = variants.first?.id
+
+        // The record on screen decides the vote, and a fallback lookup can
+        // serve one that is not this video's best-ranked version.
+        let shownRecordID = Self.recordID(of: self.currentLyrics) ?? variants.first?.id
+        self.selectedLyricsVariantID = variants.contains(where: { $0.id == shownRecordID })
+            ? shownRecordID
+            : variants.first?.id
+
+        // Only a provider that takes votes gets a vote control; a version
+        // list on its own is not something to vote on.
+        guard let voteProvider = provider as? any LyricsVoteProvider else {
+            self.currentVote = nil
+            return
+        }
+        self.installVoteState(recordID: shownRecordID)
+
+        guard let lyricsID = self.currentVote?.lyricsID else { return }
+        await self.refreshVoteState(lyricsID: lyricsID, provider: voteProvider, videoId: info.videoId)
     }
 
     private func resetVariants() {
         self.availableLyricsVariants = []
         self.selectedLyricsVariantID = nil
+        self.currentVote = nil
+        self.voteErrorMessage = nil
     }
 
     private func finishSearch(
@@ -406,6 +514,15 @@ final class SyncedLyricsService {
         switch result {
         case let .synced(lyrics): lyrics.source
         case let .plain(lyrics): lyrics.source
+        case .unavailable: nil
+        }
+    }
+
+    /// The provider's identifier for the record these lyrics came from.
+    private static func recordID(of result: LyricResult) -> String? {
+        switch result {
+        case let .synced(lyrics): lyrics.attribution?.recordID
+        case let .plain(lyrics): lyrics.attribution?.recordID
         case .unavailable: nil
         }
     }

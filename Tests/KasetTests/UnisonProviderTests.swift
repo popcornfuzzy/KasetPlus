@@ -226,10 +226,15 @@ struct UnisonProviderTests {
         #expect(lyrics.attribution?.submitterProfileURL?.absoluteString == "https://unison.boidu.dev/curator/k1")
     }
 
-    @Test("a record without a submitter carries no attribution")
-    func noSubmitterNoAttribution() throws {
+    @Test("a record without a submitter names no one but still carries its record")
+    func noSubmitterNoCredit() throws {
         let entry = try Self.decodeEntry(#"{"id":1,"videoId":"v","format":"plain","lyrics":"Hello"}"#)
-        #expect(UnisonProvider.attribution(for: entry) == nil)
+        // The credit names nobody, so nothing is drawn with it; the record id
+        // still travels, because it is what a vote on these lyrics names.
+        let attribution = try #require(UnisonProvider.attribution(for: entry))
+        #expect(attribution.hasSubmitter == false)
+        #expect(attribution.submitterName == nil)
+        #expect(attribution.recordID == "1")
     }
 
     // MARK: - Variants

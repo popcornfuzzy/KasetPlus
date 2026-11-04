@@ -31,6 +31,9 @@ struct UnisonLyricsEntry: Decodable, Sendable, Equatable {
     let language: String?
     let score: Int?
     let voteCount: Int?
+    /// This listener's own vote on the record, when the read carried their
+    /// `x-key-id`.
+    let userVote: Int?
     let confidence: String?
     let lyrics: String?
     let submitter: UnisonSubmitter?
@@ -72,8 +75,9 @@ final class UnisonProvider: LyricsProvider {
     static let variantLimit = 25
 
     private let session: URLSession
+    private let voteSigner: UnisonVoteSigner
 
-    init(session: URLSession? = nil) {
+    init(session: URLSession? = nil, voteKeyStore: (any UnisonVoteKeyStore)? = nil) {
         if let session {
             self.session = session
         } else {
@@ -82,6 +86,7 @@ final class UnisonProvider: LyricsProvider {
             configuration.timeoutIntervalForResource = 20
             self.session = URLSession(configuration: configuration)
         }
+        self.voteSigner = UnisonVoteSigner(store: voteKeyStore ?? KeychainUnisonVoteKeyStore())
     }
 
     // MARK: - Public
@@ -180,23 +185,25 @@ final class UnisonProvider: LyricsProvider {
     }
 
     /// Credits the member who submitted the lyrics, with a link to their public
-    /// Unison profile. Returns `nil` when the record carries no submitter.
+    /// Unison profile, and names the record itself. Returns `nil` only when the
+    /// record has neither a submitter nor an id.
     static func attribution(for entry: UnisonLyricsEntry, providerName: String = "Unison") -> LyricsAttribution? {
-        guard let submitter = entry.submitter else { return nil }
-
-        let name = submitter.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = entry.submitter?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = (name?.isEmpty == false) ? name : nil
-        let profileURL = submitter.keyId.flatMap { keyId in
+        let profileURL = entry.submitter?.keyId.flatMap { keyId in
             URL(string: "https://unison.boidu.dev/curator/\(keyId)")
         }
-        let avatarURL = submitter.avatarUrl.flatMap(URL.init(string:))
+        let avatarURL = entry.submitter?.avatarUrl.flatMap(URL.init(string:))
+        // An anonymous record still has an id, and the id is what a vote names.
+        let recordID = entry.id.map(String.init)
 
-        guard displayName != nil || profileURL != nil || avatarURL != nil else { return nil }
+        guard displayName != nil || profileURL != nil || avatarURL != nil || recordID != nil else { return nil }
         return LyricsAttribution(
             providerName: providerName,
             submitterName: displayName,
             submitterProfileURL: profileURL,
-            submitterAvatarURL: avatarURL
+            submitterAvatarURL: avatarURL,
+            recordID: recordID
         )
     }
 
@@ -275,12 +282,14 @@ extension UnisonProvider: LyricsVariantProvider {
     func variants(for info: LyricsSearchInfo) async -> [LyricsVariant] {
         do {
             let entries = try await self.fetchVariants(videoId: info.videoId)
-            return entries.enumerated().compactMap { index, entry in
+            return entries.enumerated().compactMap { index, entry -> LyricsVariant? in
                 guard let result = Self.parse(entry, source: self.name), result.isAvailable else { return nil }
                 return LyricsVariant(
                     id: Self.variantID(for: entry, index: index),
                     label: Self.variantLabel(for: entry),
-                    result: result
+                    result: result,
+                    voteCount: entry.voteCount,
+                    userVote: entry.userVote.flatMap(LyricsVoteDirection.init(rawValue:))
                 )
             }
         } catch is CancellationError {
@@ -290,4 +299,90 @@ extension UnisonProvider: LyricsVariantProvider {
             return []
         }
     }
+}
+
+// MARK: - LyricsVoteProvider
+
+extension UnisonProvider: LyricsVoteProvider {
+    /// Reads the record back with this listener's key, which is what makes the
+    /// response carry `userVote` as well as `voteCount`.
+    func voteState(lyricsID: Int) async throws -> LyricsVoteState? {
+        var request = URLRequest(url: Self.recordURL(lyricsID: lyricsID))
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(self.voteSigner.keyID, forHTTPHeaderField: "x-key-id")
+
+        let (data, response) = try await self.session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 404 { return nil }
+        guard (200 ..< 300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+
+        let envelope = try JSONDecoder().decode(UnisonEnvelope.self, from: data)
+        guard envelope.success, let entry = envelope.data else { return nil }
+        return Self.voteState(from: entry, lyricsID: lyricsID)
+    }
+
+    /// Casts or removes a vote. Unison names the voter by the signing key, so
+    /// the signed body is the whole authentication — there is no token to
+    /// carry.
+    func vote(_ direction: LyricsVoteDirection?, lyricsID: Int) async throws {
+        var request = URLRequest(url: Self.voteURL(lyricsID: lyricsID))
+        request.httpMethod = direction == nil ? "DELETE" : "POST"
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try self.voteSigner.signedBody(vote: direction)
+
+        let (data, response) = try await self.session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200 ..< 300).contains(http.statusCode) else {
+            let envelope = try? JSONDecoder().decode(UnisonErrorEnvelope.self, from: data)
+            throw UnisonRequestError(
+                statusCode: http.statusCode,
+                message: envelope?.error ?? "Unison rejected the vote."
+            )
+        }
+    }
+
+    /// The record's standing as the API spelled it: `voteCount` is the net
+    /// count, and `userVote` is `1`/`-1` once the read carried this listener's
+    /// key.
+    static func voteState(from entry: UnisonLyricsEntry, lyricsID: Int? = nil) -> LyricsVoteState? {
+        guard let id = lyricsID ?? entry.id else { return nil }
+        return LyricsVoteState(
+            lyricsID: id,
+            count: entry.voteCount,
+            direction: entry.userVote.flatMap(LyricsVoteDirection.init(rawValue:))
+        )
+    }
+
+    private static func recordURL(lyricsID: Int) -> URL {
+        Self.baseURL
+            .appendingPathComponent("lyrics")
+            .appendingPathComponent(String(lyricsID))
+    }
+
+    private static func voteURL(lyricsID: Int) -> URL {
+        Self.recordURL(lyricsID: lyricsID).appendingPathComponent("vote")
+    }
+}
+
+// MARK: - UnisonRequestError
+
+/// A write Unison answered with a non-2xx status, carrying the API's own
+/// message so a failed vote can say why.
+struct UnisonRequestError: LocalizedError, Equatable {
+    let statusCode: Int
+    let message: String
+
+    var errorDescription: String? { self.message }
+}
+
+// MARK: - UnisonErrorEnvelope
+
+/// A failed response's body (`success: false` plus `error`/`code`/`hint`).
+private struct UnisonErrorEnvelope: Decodable {
+    let success: Bool?
+    let error: String?
+    let code: String?
 }

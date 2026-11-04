@@ -176,8 +176,8 @@ struct LyricsSourceFooter: View {
         }
     }
 
-    /// Menu for switching between the community versions the current provider offers. Hidden unless
-    /// there is more than one.
+    /// Menu for switching between the community versions the current provider offers, each with the
+    /// community's verdict on it. Hidden unless there is more than one.
     @ViewBuilder
     private var variantPicker: some View {
         let variants = self.syncedLyricsService.availableLyricsVariants
@@ -188,9 +188,9 @@ struct LyricsSourceFooter: View {
                         self.syncedLyricsService.selectLyricsVariant(id: variant.id)
                     } label: {
                         if variant.id == self.syncedLyricsService.selectedLyricsVariantID {
-                            Label(variant.label, systemImage: "checkmark")
+                            Label(Self.variantTitle(variant), systemImage: "checkmark")
                         } else {
-                            Text(variant.label)
+                            Text(Self.variantTitle(variant))
                         }
                     }
                 }
@@ -207,5 +207,12 @@ struct LyricsSourceFooter: View {
             .help(String(localized: "Switch between community lyric versions"))
             .accessibilityLabel(String(localized: "Lyric versions"))
         }
+    }
+
+    /// A version's menu row: its fidelity and submitter, then the community's
+    /// vote count when the provider reports one.
+    private static func variantTitle(_ variant: LyricsVariant) -> String {
+        guard let count = variant.voteCount else { return variant.label }
+        return "\(variant.label) · \(String(localized: "\(count) votes"))"
     }
 }

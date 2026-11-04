@@ -59,6 +59,12 @@ struct LyricsVariant: Identifiable, Equatable, Sendable {
 
     /// The lyrics this variant renders, including its attribution.
     let result: LyricResult
+
+    /// Net community votes for this version, when the provider reports them.
+    var voteCount: Int? = nil
+
+    /// The listener's own vote on this version, when the provider reports it.
+    var userVote: LyricsVoteDirection? = nil
 }
 
 // MARK: - LyricsVariantProvider
@@ -70,6 +76,21 @@ struct LyricsVariant: Identifiable, Equatable, Sendable {
 protocol LyricsVariantProvider: LyricsProvider {
     /// Every alternative this provider has for the track, best-ranked first.
     func variants(for info: LyricsSearchInfo) async -> [LyricsVariant]
+}
+
+// MARK: - LyricsVoteProvider
+
+/// A lyrics provider whose community lets listeners vote on a version.
+///
+/// A vote is a write, and Unison authenticates writes with a signed key, so the
+/// provider also answers how *this* listener voted. Only Unison implements it.
+protocol LyricsVoteProvider: LyricsProvider {
+    /// The record's community standing, including this listener's own vote.
+    /// `nil` when the provider no longer serves that record.
+    func voteState(lyricsID: Int) async throws -> LyricsVoteState?
+
+    /// Records `direction`, or removes the listener's vote when it is `nil`.
+    func vote(_ direction: LyricsVoteDirection?, lyricsID: Int) async throws
 }
 
 // MARK: - Result capability

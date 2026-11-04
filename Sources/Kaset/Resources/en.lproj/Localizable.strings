@@ -414,6 +414,14 @@
 
 "%lld versions" = "%lld versions";
 
+"%lld votes" = "%lld votes";
+
+"Upvote these lyrics" = "Upvote these lyrics";
+
+"Downvote these lyrics" = "Downvote these lyrics";
+
+"Your vote wasn't saved." = "Your vote wasn't saved.";
+
 "Open the submitter's profile" = "Open the submitter's profile";
 
 "Lyrics by %@, opens profile" = "Lyrics by %@, opens profile";

@@ -76,6 +76,10 @@ enum AccessibilityID {
         static let queuePage = "nowPlayingSidebar.queuePage"
         /// The refresh control in the expanded lyric sheet's footer (its own bottom-trailing corner).
         static let lyricsRefreshButton = "nowPlayingSidebar.lyricsRefresh"
+        /// The community vote controls in the lyric sheet's footer.
+        static let lyricsVoteUp = "nowPlayingSidebar.lyricsVoteUp"
+        static let lyricsVoteDown = "nowPlayingSidebar.lyricsVoteDown"
+        static let lyricsVoteCount = "nowPlayingSidebar.lyricsVoteCount"
     }
 
     // MARK: - Queue View

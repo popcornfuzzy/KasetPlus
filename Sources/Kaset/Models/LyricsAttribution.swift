@@ -20,6 +20,14 @@ struct LyricsAttribution: Equatable, Codable, Sendable {
     /// Avatar image for the submitter, if the provider exposes one.
     let submitterAvatarURL: URL?
 
+    /// Provider-scoped identifier of the record these lyrics came from, when
+    /// the provider lets its community vote on it (Unison's lyrics id).
+    ///
+    /// Carried here because attribution is the metadata that travels with a
+    /// result through parsing, display conversion and the cache; the record is
+    /// what a vote names, and an anonymous record still has one.
+    var recordID: String? = nil
+
     /// Whether there is a person to name in the credit.
     var hasSubmitter: Bool {
         self.submitterName != nil
