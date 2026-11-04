@@ -763,6 +763,177 @@ func exploreContinuation(_ token: String, endpoint: String = "browse", verbose: 
     }
 }
 
+// MARK: - Cross-Device Session Probing
+
+/// Endpoint names that could carry a playback session started on another device.
+///
+/// YouTube Music's phone ↔ web handoff is served by the web client's own InnerTube calls, but the
+/// endpoint has never been documented or published: `music/get_queue` only resolves the IDs it is
+/// handed, and `next`/`player` carry no session or device fields. These are the names worth asking for,
+/// and the distinction the probe is really after is the status code:
+///
+/// - **404** — no such endpoint.
+/// - **400** — the path exists and wants parameters. Those are the ones to follow up on.
+/// - **200** — it answered; the top-level keys say whether it describes a device, a queue or nothing of
+///   the sort.
+///
+/// A candidate found this way is a lead, not a confirmed source: the thing that settles it is a capture
+/// of `music.youtube.com` while a phone is playing, filtered to `youtubei/v1`.
+let crossDeviceSessionCandidates: [String] = [
+    // The plain names the feature would have if it were a first-class endpoint.
+    "now_playing",
+    "music/now_playing",
+    "music/get_now_playing",
+    "music/get_session",
+    "music/get_state",
+    "music/get_playback_state",
+    "music/playback_state",
+    "playback",
+    "playback/get_state",
+    "playback/session",
+    "session",
+    "music/session",
+    "remote",
+    "music/remote",
+    "device",
+    "devices",
+    "music/devices",
+    "sync",
+    "music/sync",
+    // The media-connect family: internal client names that look like this surface exist
+    // (`MEDIA_CONNECT_FRONTEND`), so the endpoints under them are worth asking for directly.
+    "media_connect",
+    "media_connect/get_state",
+    "media_connect/session",
+    "media_connect/devices",
+    "media_connect/playback",
+    "music/media_connect",
+    "cast/session",
+    "music/cast_session",
+    // Control: a known endpoint, to prove the probe can tell 400 from 404.
+    "music/get_queue",
+]
+
+/// What one probe answered.
+struct SessionProbeResult {
+    let endpoint: String
+    let statusCode: Int?
+    let keys: [String]
+    let message: String?
+    let data: [String: Any]?
+}
+
+/// Probes one endpoint, reporting what it answered rather than throwing.
+///
+/// Deliberately not `makeRequest`: an endpoint that does not exist answers with a body that is not
+/// JSON (or with none at all), and the shared helper treats that as a failure — which loses the one
+/// thing the probe reads. The status is the answer, so it is taken here and the body is optional.
+func probeSessionEndpoint(_ endpoint: String) async -> SessionProbeResult {
+    let urlString = "\(baseURL)/\(endpoint)?key=\(apiKey)&prettyPrint=false"
+    guard let url = URL(string: urlString) else {
+        return SessionProbeResult(
+            endpoint: endpoint,
+            statusCode: nil,
+            keys: [],
+            message: "Invalid URL",
+            data: nil
+        )
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    for (key, value) in buildHeaders(authenticated: true) {
+        request.setValue(value, forHTTPHeaderField: key)
+    }
+
+    var body: [String: Any] = [:]
+    body["context"] = buildContext()
+    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+    do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let error = json?["error"] as? [String: Any]
+        return SessionProbeResult(
+            endpoint: endpoint,
+            statusCode: statusCode,
+            keys: json?.keys.sorted() ?? [],
+            message: error?["message"] as? String,
+            data: json
+        )
+    } catch {
+        return SessionProbeResult(
+            endpoint: endpoint,
+            statusCode: nil,
+            keys: [],
+            message: error.localizedDescription,
+            data: nil
+        )
+    }
+}
+
+/// Probes the candidate endpoints for another device's playback session, or one named endpoint.
+///
+/// The session is account-level, so the probes are authenticated: the same cookies and
+/// `SAPISIDHASH` the app uses for the library are what the web client would send.
+func exploreCrossDeviceSession(_ endpoint: String? = nil, verbose: Bool = false, outputFile: String? = nil) async {
+    let candidates = endpoint.map { [$0] } ?? crossDeviceSessionCandidates
+    let hasCookies = loadCookiesFromAppBackup() != nil
+
+    print("🔍 Probing \(candidates.count) endpoint(s) for a playback session started on another device")
+    print("   Auth: \(hasCookies ? "✅ cookies available (requests run as the app's account)" : "❌ no cookies found — account-level data will be missing")")
+    print("   404 = the path does not exist · 400 = the path exists and wants parameters · 200 = it answered")
+    print()
+
+    var answered: [SessionProbeResult] = []
+    var existing: [SessionProbeResult] = []
+
+    for candidate in candidates {
+        let result = await probeSessionEndpoint(candidate)
+        switch result.statusCode {
+        case 200:
+            answered.append(result)
+            print("   ✅ HTTP 200  \(candidate)")
+            print("        keys: \(result.keys.prefix(12).joined(separator: ", "))")
+        case 400:
+            existing.append(result)
+            print("   ⚠️  HTTP 400  \(candidate)\(result.message.map { " — \($0)" } ?? "")")
+        case let code?:
+            print("   ·  HTTP \(code)  \(candidate)\(result.message.map { " — \($0)" } ?? "")")
+        case nil:
+            print("   ❌ \(candidate) — \(result.message ?? "unknown error")")
+        }
+    }
+
+    print()
+    if answered.isEmpty, existing.isEmpty {
+        print("No candidate answered: the endpoint is not among these names. A capture of")
+        print("music.youtube.com while a phone is playing, filtered to `youtubei/v1`, is what names it.")
+    } else {
+        if !existing.isEmpty {
+            print("Paths that exist: \(existing.map(\.endpoint).joined(separator: ", "))")
+        }
+        if let first = answered.first, let data = first.data {
+            print("First answer (\(first.endpoint)):")
+            print(analyzeResponse(data, verbose: verbose))
+            if verbose,
+               let pretty = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted),
+               let text = String(data: pretty, encoding: .utf8)
+            {
+                print(text)
+            }
+        }
+    }
+
+    if let outputFile, let data = (answered.first ?? existing.first)?.data,
+       let pretty = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted)
+    {
+        try? pretty.write(to: URL(fileURLWithPath: outputFile))
+        print("\n💾 Saved to: \(outputFile)")
+    }
+}
+
 // MARK: - Song / Video Variant Exploration
 
 /// Describes one queue panel renderer as `videoId | musicVideoType | title`.
@@ -2097,6 +2268,7 @@ func showHelp() {
       continuation <token> [ep]      Explore a continuation (ep: 'browse' or 'next')
       transcript <videoId>           Explore the transcript (caption) flow for a video
       chapters <videoId>             Explore where a video's chapters live in the payloads
+      session [endpoint]             Probe for a playback session started on another device
       list                           List all known endpoints
       auth                           Check authentication status
       accounts                       Discover available accounts (via authuser)
@@ -2258,6 +2430,10 @@ func runMain() async {
             return
         }
         await exploreChapters(filteredArgs[1], verbose: verbose)
+
+    case "session":
+        let sessionEndpoint = filteredArgs.count >= 2 ? filteredArgs[1] : nil
+        await exploreCrossDeviceSession(sessionEndpoint, verbose: verbose, outputFile: outputFile)
 
     case "list":
         listEndpoints()

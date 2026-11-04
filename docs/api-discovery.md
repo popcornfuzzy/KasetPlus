@@ -964,6 +964,24 @@ which is the same condition under which YouTube Music exposes the sort menu at a
 
 These endpoints were discovered through API exploration (2024-12-22) but are not part of the documented API surface. Some may be useful for app functionality.
 
+### Cross-device playback session (phone → desktop)
+
+With a phone playing, the web player offers that session ("From your iPhone") and adopts its queue and
+position. That state is account-level and server-side. It is **not Google Cast, not the Lounge API, and
+no endpoint for it is documented or known to any third-party client**:
+
+| What was tried | What it answers |
+|----------------|-----------------|
+| `music/get_queue` | A stateless resolver: it expands the `videoIds`/`playlistId` you send, so it cannot name another device's queue. |
+| `next`, `player` | No device or session fields in the WEB_REMIX responses any client library models. |
+| Lounge (`www.youtube.com/api/lounge/bc/bind`, `pairing/get_*`) | A different system: authorized per screen by a `lounge_token`, so a paired screen can be driven but an account's screens cannot be enumerated. |
+
+`swift run api-explorer session` probes the plausible endpoint names and reports what each one is:
+**404** (no such path), **400** (the path exists and wants parameters — the ones to pursue) or **200**
+(it answered, and the top-level keys say what it returned). A hit here is a lead, not a confirmed
+source: the thing that settles it is a capture of `music.youtube.com` while a phone plays, filtered to
+`youtubei/v1`. `session <endpoint>` probes one name directly, once a capture names one.
+
 ### Potentially Useful Undocumented Endpoints
 
 | Endpoint | Type | Auth | Parameters | Description |
