@@ -107,6 +107,12 @@ struct KasetApp: App {
         // Set shared instance for AppleScript access
         PlayerService.shared = player
 
+        // The queue the listener left is part of the app's state, so it is restored while that state is
+        // being built rather than from a lifecycle callback: the main window below is created from the
+        // restored track (`pendingPlayVideoId`) and its preload starts from the saved position, so both
+        // have to see it before the root view exists.
+        player.restoreQueueFromPersistence()
+
         // Create account service
         let account = AccountService(ytMusicClient: client, authService: auth)
 

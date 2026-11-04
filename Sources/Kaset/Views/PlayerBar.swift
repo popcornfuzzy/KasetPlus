@@ -188,17 +188,12 @@ struct PlayerBar: View {
             .disabled(false)
         }
         .onChange(of: self.playerService.progress) { _, newValue in
-            // Sync local seek value when not actively seeking
-            if !self.isSeeking, self.playerService.duration > 0 {
-                self.seekValue = newValue / self.playerService.duration
-            }
-            // Only update formatted strings when the second changes to reduce Text view updates
-            let currentSecond = Int(newValue)
-            if currentSecond != self.lastProgressSecond {
-                self.lastProgressSecond = currentSecond
-                self.formattedProgress = self.formatTime(newValue)
-                self.formattedRemaining = "-\(self.formatTime(self.playerService.duration - newValue))"
-            }
+            self.syncProgressDisplay(to: newValue)
+        }
+        // The length and the position are one row of the bar: a restored session has both before
+        // anything plays, and a length can arrive on its own once the API knows the track.
+        .onChange(of: self.playerService.duration) { _, _ in
+            self.syncProgressDisplay(to: self.playerService.progress)
         }
         .onChange(of: self.playerService.volume) { _, newValue in
             // Sync local volume value when not actively adjusting
@@ -209,6 +204,12 @@ struct PlayerBar: View {
         .onAppear {
             // Sync local volume value from saved state on initial load
             self.volumeValue = self.playerService.volume
+            // A bar that appears on a session that is already under way — a restored one waiting for
+            // its first press of play, a song playing while the window was rebuilt — has to show that
+            // session's position from its first frame. Everything below is written by `onChange`, which
+            // never fires for a value that did not move while this bar existed, so the bar read 0:00 at
+            // an empty slider until the first observation after launch.
+            self.syncProgressDisplay(to: self.playerService.progress)
         }
     }
 
@@ -514,6 +515,23 @@ struct PlayerBar: View {
             await self.playerService.seek(to: seekTime)
             self.isSeeking = false
         }
+    }
+
+    /// Takes the service's position into the bar's own display state.
+    private func syncProgressDisplay(to progress: TimeInterval) {
+        let duration = self.playerService.duration
+        // Sync local seek value when not actively seeking
+        if !self.isSeeking, duration > 0 {
+            self.seekValue = progress / duration
+        }
+        // Only update the formatted position when the second changes to reduce Text view updates;
+        // the remaining time is cheap and also follows a length that arrives on its own.
+        let currentSecond = Int(progress)
+        if currentSecond != self.lastProgressSecond {
+            self.lastProgressSecond = currentSecond
+            self.formattedProgress = self.formatTime(progress)
+        }
+        self.formattedRemaining = "-\(self.formatTime(duration - progress))"
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

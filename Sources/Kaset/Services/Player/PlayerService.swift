@@ -302,6 +302,15 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Whether a restored load should automatically resume after seeking to the saved position.
     var shouldAutoResumeAfterRestoredLoad: Bool = false
 
+    /// When the listening position was last written to the saved playback session.
+    ///
+    /// The session carries the position a restored one resumes from, and it used to be written only
+    /// when the queue changed and on a normal quit — so a crash, a force quit or a machine that shut
+    /// the app down left the song at the position the queue last changed at instead of where it was
+    /// left. The observation pipeline now checkpoints the position as it advances; this is the
+    /// throttle's memory.
+    @ObservationIgnored var lastPlaybackPositionSaveInstant: ContinuousClock.Instant?
+
     /// Like status of the current track.
     var currentTrackLikeStatus: LikeStatus = .indifferent
 

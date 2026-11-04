@@ -4,6 +4,14 @@ import Foundation
 
 @MainActor
 extension PlayerService {
+    /// How often the advancing position is written to the saved playback session.
+    ///
+    /// The observer reports about once a second, and writing the queue on each report would be a
+    /// UserDefaults write per second. A restored session only has to be within a few seconds of where
+    /// the song was, so the checkpoint is coarse on purpose — and a pause is written at once, because a
+    /// pause is the listener saying "this is where I stopped".
+    static let playbackPositionSaveInterval: Duration = .seconds(10)
+
     /// Updates playback state from the persistent WebView observer.
     func updatePlaybackState(isPlaying: Bool, progress: Double, duration: Double) {
         let previousProgress = self.progress
@@ -150,6 +158,7 @@ private extension PlayerService {
         duration: Double,
         previousProgress: TimeInterval
     ) {
+        let wasPlaying = self.state == .playing
         self.progress = progress
         self.duration = duration
 
@@ -165,6 +174,25 @@ private extension PlayerService {
         if duration > 0, progress >= duration - 4 {
             self.songNearingEnd = true
         }
+
+        self.checkpointPlaybackPosition(isPlaying: isPlaying, wasPlaying: wasPlaying)
+    }
+
+    /// Writes where the song has got to, so a launch that never reaches a normal quit still restores
+    /// the position the listener left rather than the one the queue last changed at.
+    func checkpointPlaybackPosition(isPlaying: Bool, wasPlaying: Bool) {
+        guard self.duration > 0 else { return }
+
+        let didPause = wasPlaying && !isPlaying
+        if !didPause,
+           let lastSave = self.lastPlaybackPositionSaveInstant,
+           ContinuousClock.now - lastSave < Self.playbackPositionSaveInterval
+        {
+            return
+        }
+
+        self.lastPlaybackPositionSaveInstant = ContinuousClock.now
+        self.saveQueueForPersistence(isCheckpoint: true)
     }
 
     func reconcileRestoredPlaybackState(

@@ -643,7 +643,10 @@ extension PlayerService {
     private static let savedPlaybackSessionKey = "kaset.saved.playbackSession"
 
     /// Saves the current queue to UserDefaults for restoration on next launch.
-    func saveQueueForPersistence() {
+    /// - Parameter isCheckpoint: The write is a position checkpoint rather than a queue change. Those
+    ///   happen every few seconds during playback, so they leave a debug entry instead of the info line
+    ///   a queue change does.
+    func saveQueueForPersistence(isCheckpoint: Bool = false) {
         guard !self.queue.isEmpty else {
             self.removeSavedPlaybackSession()
             self.logger.info("Cleared saved playback session (queue is empty)")
@@ -674,7 +677,13 @@ extension PlayerService {
             UserDefaults.standard.set(queueData, forKey: Self.savedQueueKey)
             UserDefaults.standard.set(safeIndex, forKey: Self.savedQueueIndexKey)
             UserDefaults.standard.set(sessionData, forKey: Self.savedPlaybackSessionKey)
-            self.logger.info("Saved playback session with \(self.queue.count) songs at index \(safeIndex)")
+            if isCheckpoint {
+                self.logger.debug(
+                    "Checkpointed playback session at \(Int(clampedProgress))s of \(Int(resolvedDuration))s"
+                )
+            } else {
+                self.logger.info("Saved playback session with \(self.queue.count) songs at index \(safeIndex)")
+            }
         } catch {
             self.logger.error("Failed to save playback session: \(error.localizedDescription)")
         }

@@ -60,8 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // thing the app cannot log about itself. See `MainThreadStallReporter`.
         MainThreadStallReporter.shared.start()
 
-        // Restore saved queue if available
-        self.playerService?.restoreQueueFromPersistence()
+        // The saved session is restored as the service graph is built (`KasetApp.init`), before the root
+        // view that reads it exists: this callback runs after the window has already been created from
+        // the restored track. Quitting writes the session back (`applicationWillTerminate`).
     }
 
     // MARK: - Focus & click tracing

@@ -335,6 +335,50 @@ struct PlayerServiceQueueTests {
         #expect(newService.currentTrackFeedbackTokens == songs[1].feedbackTokens)
     }
 
+    @Test("The listening position is checkpointed while the song plays")
+    func playbackPositionIsCheckpointedWhilePlaying() async {
+        // A launch that never reaches a normal quit still has to resume where the song was, so the
+        // position is written as playback advances instead of only when the queue changes.
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updatePlaybackState(isPlaying: true, progress: 51, duration: 200)
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+        #expect(restored.progress == 51)
+    }
+
+    @Test("A pause checkpoints the position at once, inside the save interval")
+    func pauseCheckpointsThePositionImmediately() async {
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updatePlaybackState(isPlaying: true, progress: 10, duration: 200)
+        // Inside the interval, so only the pause can be what writes this position.
+        self.playerService.updatePlaybackState(isPlaying: false, progress: 12, duration: 200)
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+        #expect(restored.progress == 12)
+    }
+
+    @Test("Observations between checkpoints do not rewrite the saved session")
+    func playbackCheckpointsAreThrottled() async {
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 0)
+
+        self.playerService.updatePlaybackState(isPlaying: true, progress: 10, duration: 200)
+        self.playerService.updatePlaybackState(isPlaying: true, progress: 11, duration: 200)
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+        #expect(restored.progress == 10)
+    }
+
     @Test("Resume on a restored song session loads playback")
     func resumeDeferredRestoredSession() async {
         // Arrange
