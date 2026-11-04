@@ -136,6 +136,10 @@ final class PlaylistDetailViewModel {
     /// the stored page is filed under the account it was fetched for.
     private var accountID: String?
 
+    /// When this page's model was made, so the log can report how long an open took to reach the screen
+    /// and to be replaced by the fresh copy. Read by `PlaylistDetailView`.
+    let createdAt: ContinuousClock.Instant = .now
+
     /// Account the page on screen was stored for, so a copy seeded before the account was known is
     /// dropped rather than read as this account's list.
     private var seededAccountID: String?
@@ -269,7 +273,9 @@ final class PlaylistDetailViewModel {
 
         let loadedTrackCount = result.detail.tracks.count
         let totalTrackCount = result.detail.trackCount ?? loadedTrackCount
-        self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore)")
+        let age = (ContinuousClock.Instant.now - self.createdAt)
+            .formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow))
+        self.logger.info("Playlist loaded: \(loadedTrackCount) loaded tracks, total: \(totalTrackCount), hasMore: \(self.hasMore), \(age) after the page was made")
     }
 
     /// Shows the page stored by an earlier session, if there is one for this account.
@@ -280,9 +286,11 @@ final class PlaylistDetailViewModel {
     /// - Returns: Whether a stored copy is on screen now.
     @discardableResult
     private func restoreStoredCopy() -> Bool {
+        let readStarted = ContinuousClock.Instant.now
         guard let stored = self.cache.load(playlistId: self.playlist.id, accountID: self.accountID) else {
             return false
         }
+        let readDuration = ContinuousClock.Instant.now - readStarted
 
         let detail = self.mergingWithNavigationPlaylist(stored)
         self.playlistDetail = detail
@@ -296,7 +304,9 @@ final class PlaylistDetailViewModel {
         self.hasMoreRecommendations = false
         self.isLoadingRecommendations = false
         self.loadingState = .loaded
-        self.logger.info("Showing stored playlist copy: \(detail.tracks.count) tracks, ID: \(detail.normalizedId)")
+        self.logger.info(
+            "Showing stored playlist copy: \(detail.tracks.count) tracks, ID: \(detail.normalizedId), read in \(readDuration.formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow)))"
+        )
         return true
     }
 

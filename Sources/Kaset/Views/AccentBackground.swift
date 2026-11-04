@@ -69,6 +69,10 @@ struct AccentBackground: View {
         }
     }
 
+    /// Size the palette is sampled from. `ColorExtractor` draws its sample at 8×8, so a small copy of
+    /// the artwork is all this needs — and it is a size the image cache already keeps.
+    private static let paletteSampleSize = CGSize(width: 64, height: 64)
+
     private func loadPalette() async {
         guard let url = imageURL else {
             self.palette = .default
@@ -76,20 +80,14 @@ struct AccentBackground: View {
             return
         }
 
-        // Fetch image data
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let extracted = await ColorExtractor.extractPalette(from: data)
-            self.palette = extracted
-            self.isLoaded = true
-        } catch is CancellationError {
-            // Task was cancelled (e.g., imageURL changed) - expected behavior, no logging needed
-            return
-        } catch {
-            DiagnosticsLogger.ui.debug("Failed to extract accent colors: \(error.localizedDescription)")
-            self.palette = .default
-            self.isLoaded = true
-        }
+        // Through the image cache, never straight to the network: a page opened before has its artwork
+        // on disk, so a stored page opens with its own background instead of starting a request for a
+        // colour — which is what kept the page visibly settling for about a second after a cached open.
+        // On a first open the cache fetches the picture exactly as before.
+        let image = await ImageCache.shared.image(for: url, targetSize: Self.paletteSampleSize)
+        guard !Task.isCancelled else { return }
+        self.palette = image.map { ColorExtractor.extractPalette(from: $0) } ?? .default
+        self.isLoaded = true
     }
 }
 

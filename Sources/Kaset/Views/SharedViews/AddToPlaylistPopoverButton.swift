@@ -1,5 +1,62 @@
 import SwiftUI
 
+// MARK: - AddToPlaylistOrdering
+
+/// How the Add-to-Playlist popover arranges the playlists it offers.
+///
+/// `playlist/get_add_to_playlist` answers in alphabetical order, not in library order, so the list is
+/// re-ordered against the library. Playlists already holding the song come first.
+enum AddToPlaylistOrdering {
+    /// Playlists of podcast episodes rather than of songs — "New Episodes" (`RDPN`) and "Episodes for
+    /// Later" (`SE`). The library keeps them beside the playlists, but a song is not added to them.
+    static let podcastAutoPlaylistIds: Set<String> = ["RDPN", "SE"]
+
+    /// Arranges `entries` with the song's playlists first, then in library order.
+    ///
+    /// Entries the library does not list keep their relative order after the ranked ones.
+    static func arranged(
+        _ entries: [AddToPlaylistEntry],
+        libraryOrder: [String],
+        containsVideo: (AddToPlaylistEntry) -> Bool
+    ) -> [AddToPlaylistEntry] {
+        var rankById: [String: Int] = [:]
+        var rank = 0
+        for playlistId in libraryOrder {
+            let normalizedId = Self.normalizedPlaylistId(playlistId)
+            guard !Self.podcastAutoPlaylistIds.contains(normalizedId), rankById[normalizedId] == nil else {
+                continue
+            }
+            rankById[normalizedId] = rank
+            rank += 1
+        }
+
+        return entries
+            .filter { !Self.podcastAutoPlaylistIds.contains(Self.normalizedPlaylistId($0.id)) }
+            .enumerated()
+            .sorted { lhs, rhs in
+                let lhsContainsVideo = containsVideo(lhs.element)
+                let rhsContainsVideo = containsVideo(rhs.element)
+                if lhsContainsVideo != rhsContainsVideo {
+                    return lhsContainsVideo
+                }
+
+                let lhsRank = rankById[Self.normalizedPlaylistId(lhs.element.id)] ?? Int.max
+                let rhsRank = rankById[Self.normalizedPlaylistId(rhs.element.id)] ?? Int.max
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    /// The ID without the `VL` browse alias YouTube Music wraps a playlist ID in.
+    static func normalizedPlaylistId(_ playlistId: String) -> String {
+        playlistId.hasPrefix("VL") ? String(playlistId.dropFirst(2)) : playlistId
+    }
+}
+
 // MARK: - AddToPlaylistEntriesCache
 
 @MainActor
@@ -107,7 +164,10 @@ struct AddToPlaylistContextMenu: View {
     let libraryViewModel: LibraryViewModel?
 
     private var playlists: [Playlist] {
-        self.libraryViewModel?.playlists ?? []
+        (self.libraryViewModel?.playlists ?? []).filter { playlist in
+            !AddToPlaylistOrdering.podcastAutoPlaylistIds
+                .contains(AddToPlaylistOrdering.normalizedPlaylistId(playlist.id))
+        }
     }
 
     var body: some View {
@@ -168,6 +228,9 @@ struct AddToPlaylistPopoverContent: View {
     private let membershipProbeLimit = 8
     private let entriesCacheMaxAge: TimeInterval = 10 * 60
 
+    /// Duration of the reorder when a list arrives in a different order than the rows on screen.
+    private static let reorderAnimation = Animation.easeInOut(duration: 0.22)
+
     @State private var entries: [AddToPlaylistEntry] = []
     @State private var loadingState = LoadingState.idle
     @State private var mutatingIds: Set<String> = []
@@ -176,6 +239,11 @@ struct AddToPlaylistPopoverContent: View {
     @State private var isCreating = false
     @State private var resolvedMembershipByPlaylistId: [String: Bool] = [:]
     @State private var probingMembershipPlaylistIds: Set<String> = []
+
+    /// The library's playlist IDs in YouTube Music's order, fetched when the popover opens.
+    /// The library view model's snapshot is the fallback: it is drawn from the landing preview, which
+    /// omits playlists the account has not used recently.
+    @State private var libraryOrder: [String] = []
 
     init(
         song: Song,
@@ -192,14 +260,6 @@ struct AddToPlaylistPopoverContent: View {
     var body: some View {
         GlassEffectContainer(spacing: 8) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Add to Playlist")
-                    .font(.headline)
-
-                Text(self.song.title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
                 Group {
                     switch self.loadingState {
                     case .idle, .loading:
@@ -232,13 +292,15 @@ struct AddToPlaylistPopoverContent: View {
             await self.loadEntries()
         }
         .onChange(of: self.libraryPlaylistOrder) { _, _ in
-            self.entries = self.sortedEntries(self.entries)
+            self.applyEntries(self.sortedEntries(self.entries))
             self.persistEntriesCache()
         }
         .onChange(of: self.likeStatusManager.lastLikeEvent) { _, event in
             guard let event, event.videoId == self.song.videoId else { return }
             self.updateLikedSongsMembership(containsVideo: event.status == .like)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(String(localized: "Add to Playlist"))
     }
 
     private var entriesList: some View {
@@ -451,7 +513,7 @@ struct AddToPlaylistPopoverContent: View {
             accountID: self.activeAccountID,
             maxAge: self.entriesCacheMaxAge
         ) {
-            self.entries = self.sortedEntries(cachedEntries)
+            self.applyEntries(self.sortedEntries(cachedEntries))
             self.loadingState = .loaded
         }
         await self.refreshEntriesFromNetwork(showLoadingIndicator: self.entries.isEmpty)
@@ -463,17 +525,23 @@ struct AddToPlaylistPopoverContent: View {
         }
 
         do {
-            let fetchedEntries = try await self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
-            // The library order is populated asynchronously; re-sort after each network
-            // response and again when the view model changes.
-            self.entries = self.sortedEntries(fetchedEntries)
+            async let fetchedEntries = self.client.getAddToPlaylistEntries(videoId: self.song.videoId)
+            async let fetchedLibraryOrder = self.fetchLibraryOrder()
+
+            let entries = try await fetchedEntries
+            let libraryOrder = await fetchedLibraryOrder
+            if !libraryOrder.isEmpty {
+                self.libraryOrder = libraryOrder
+            }
+
+            self.seedLikedSongsMembershipFromSongStatus()
+            self.seedMembershipCacheFromEntries()
+            self.applyEntries(self.sortedEntries(entries))
             AddToPlaylistEntriesCache.shared.setEntries(
                 self.entries,
                 videoId: self.song.videoId,
                 accountID: self.activeAccountID
             )
-            self.seedMembershipCacheFromEntries()
-            self.seedLikedSongsMembershipFromSongStatus()
             self.loadingState = .loaded
 
             Task {
@@ -499,6 +567,7 @@ struct AddToPlaylistPopoverContent: View {
             PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: entry.id)
             self.resolvedMembershipByPlaylistId[entry.id] = true
             self.updateMembership(for: entry.id, containsVideo: true)
+            self.reorderEntries()
             self.libraryViewModel?.markNeedsReloadOnActivation()
             ToastCenter.shared.show(
                 String(localized: "Added to \(entry.title)"),
@@ -515,6 +584,7 @@ struct AddToPlaylistPopoverContent: View {
                 PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: entry.id)
                 self.resolvedMembershipByPlaylistId[entry.id] = true
                 self.updateMembership(for: entry.id, containsVideo: true)
+                self.reorderEntries()
                 return
             }
             DiagnosticsLogger.api.error("Failed adding song to playlist: \(error.localizedDescription)")
@@ -532,6 +602,7 @@ struct AddToPlaylistPopoverContent: View {
             PlaylistMembershipManager.shared.markOptimisticRemove(videoId: self.song.videoId, playlistId: entry.id)
             self.resolvedMembershipByPlaylistId[entry.id] = false
             self.updateMembership(for: entry.id, containsVideo: false)
+            self.reorderEntries()
             self.libraryViewModel?.markNeedsReloadOnActivation()
             ToastCenter.shared.show(
                 String(localized: "Removed from \(entry.title)"),
@@ -575,9 +646,13 @@ struct AddToPlaylistPopoverContent: View {
                 ),
                 at: 0
             )
-            self.entries = self.sortedEntries(self.entries)
             PlaylistMembershipManager.shared.markOptimisticAdd(videoId: self.song.videoId, playlistId: playlist.id)
             self.resolvedMembershipByPlaylistId[playlist.id] = true
+            // YouTube Music puts a new playlist at the top of the library.
+            if !self.libraryOrder.isEmpty {
+                self.libraryOrder.insert(playlist.id, at: 0)
+            }
+            self.reorderEntries()
             self.showCreateComposer = false
             self.persistEntriesCache()
             ToastCenter.shared.show(String(localized: "Created \(playlist.title)"))
@@ -653,6 +728,7 @@ struct AddToPlaylistPopoverContent: View {
             self.resolvedMembershipByPlaylistId[entry.id] = containsVideo
             self.updateMembership(for: entry.id, containsVideo: containsVideo)
         }
+        self.reorderEntries()
     }
 
     private func resolveMembershipFromPlaylistContents() async {
@@ -707,6 +783,8 @@ struct AddToPlaylistPopoverContent: View {
                 )
             }
         }
+
+        self.reorderEntries()
     }
 
     private func shouldShowMembershipLoading(for entry: AddToPlaylistEntry) -> Bool {
@@ -740,6 +818,18 @@ struct AddToPlaylistPopoverContent: View {
         self.libraryViewModel?.playlists.map(\.id) ?? []
     }
 
+    /// Orders the entries against the library's own order.
+    private func fetchLibraryOrder() async -> [String] {
+        do {
+            return try await self.client.getLibraryPlaylists().map(\.id)
+        } catch {
+            DiagnosticsLogger.api.debug(
+                "Failed fetching the library order for the add-to-playlist popover: \(error.localizedDescription)"
+            )
+            return []
+        }
+    }
+
     private func persistEntriesCache() {
         AddToPlaylistEntriesCache.shared.setEntries(
             self.entries,
@@ -749,38 +839,38 @@ struct AddToPlaylistPopoverContent: View {
     }
 
     private func sortedEntries(_ entries: [AddToPlaylistEntry]) -> [AddToPlaylistEntry] {
-        guard let libraryViewModel, !libraryViewModel.playlists.isEmpty else {
-            return entries
-        }
-
-        var orderById: [String: Int] = [:]
-        for (index, playlist) in libraryViewModel.playlists.enumerated() {
-            let normalizedId = Self.normalizedPlaylistId(playlist.id)
-            if orderById[normalizedId] == nil {
-                orderById[normalizedId] = index
-            }
-            if orderById[playlist.id] == nil {
-                orderById[playlist.id] = index
-            }
-        }
-
-        return entries
-            .enumerated()
-            .sorted { lhs, rhs in
-                let lhsRank = orderById[Self.normalizedPlaylistId(lhs.element.id)] ?? Int.max
-                let rhsRank = orderById[Self.normalizedPlaylistId(rhs.element.id)] ?? Int.max
-                if lhsRank != rhsRank {
-                    return lhsRank < rhsRank
-                }
-                return lhs.offset < rhs.offset
-            }
-            .map { $0.element }
+        AddToPlaylistOrdering.arranged(
+            entries,
+            libraryOrder: self.libraryOrder.isEmpty ? self.libraryPlaylistOrder : self.libraryOrder,
+            containsVideo: { self.containsVideo(for: $0) }
+        )
     }
 
-    private static func normalizedPlaylistId(_ playlistId: String) -> String {
-        if playlistId.hasPrefix("VL") {
-            return String(playlistId.dropFirst(2))
+    /// Shows an arranged list, animating the move when rows are already on screen.
+    ///
+    /// The sheet opens with the cache or the network list, and the order can change under it as the
+    /// library order and membership resolve. Sliding the rows to their places makes that a reorder the
+    /// reader can follow rather than a list that is suddenly different.
+    private func applyEntries(_ arranged: [AddToPlaylistEntry]) {
+        guard arranged.map(\.id) != self.entries.map(\.id) else { return }
+
+        guard !self.entries.isEmpty else {
+            // Nothing is moving yet: the first list is not a reorder of an empty one.
+            self.entries = arranged
+            return
         }
-        return playlistId
+
+        withAnimation(Self.reorderAnimation) {
+            self.entries = arranged
+        }
+    }
+
+    /// Re-applies the order after membership changed, so a playlist the song just joined moves up.
+    private func reorderEntries() {
+        let arranged = self.sortedEntries(self.entries)
+        guard arranged.map(\.id) != self.entries.map(\.id) else { return }
+
+        self.applyEntries(arranged)
+        self.persistEntriesCache()
     }
 }

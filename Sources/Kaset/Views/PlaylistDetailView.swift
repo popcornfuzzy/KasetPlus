@@ -236,6 +236,11 @@ struct PlaylistDetailView: View {
         // reload the page instead of leaving the previous channel's rows — and their like state —
         // on screen. See `PlaylistDetailViewModel.loadIfAccountChanged`.
         .task(id: self.accountService.currentAccount?.id) {
+            // Logged before the loads below: this is the page reaching the screen, and the wait being
+            // reported is the open's, not the network's.
+            self.logger.info(
+                "Playlist page on screen \((ContinuousClock.Instant.now - self.viewModel.createdAt).formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow))) after its model was made: \(self.playlist.id)"
+            )
             // The header's library control states membership, which is read off the window's library
             // snapshot — and a window that has never shown the Library has none, so the control read "Add
             // to Library" on pages the account already owned. The two loads go together: the page never
@@ -416,7 +421,9 @@ struct PlaylistDetailView: View {
         ZStack(alignment: .bottomLeading) {
             HStack(alignment: .top, spacing: 20) {
                 // Thumbnail
-                CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL) { image in
+                // The identity lets an artwork the previous open cached paint on the first frame
+                // instead of fading in from the placeholder a moment after the page opens.
+                CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL, identity: detail.normalizedId) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
