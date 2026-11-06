@@ -191,6 +191,28 @@ extension URL {
 
         return candidates
     }
+
+    /// The artist-page header image re-cut as the square avatar YouTube shows beside an artist's name.
+    ///
+    /// An artist page's header serves the channel's *banner* — `=w540-h225` up to `=w2880-h1200`, a 2.4:1
+    /// letterbox — and drawing that inside the header's circle showed one magnified centre slice of it,
+    /// which is what read as a low-resolution picture. The same signed image path answers a
+    /// `=w544-h544` request with the square avatar (it is the crop YouTube puts in the page's own
+    /// metadata), so the header draws this and keeps the banner as its fallback.
+    var squareArtistAvatarURL: URL? {
+        guard self.host?.contains("ytimg.com") == true
+            || self.host?.contains("googleusercontent.com") == true,
+            let separator = self.absoluteString.lastIndex(of: "=")
+        else {
+            return nil
+        }
+
+        // Only a `w<width>-h<height>…` size token can be re-cut; anything else is left to the caller.
+        let token = self.absoluteString[self.absoluteString.index(after: separator)...]
+        guard token.hasPrefix("w"), token.contains("-h") else { return nil }
+
+        return URL(string: String(self.absoluteString[..<separator]) + "=w544-h544-p-l90-rj")
+    }
 }
 
 // MARK: - String Extensions

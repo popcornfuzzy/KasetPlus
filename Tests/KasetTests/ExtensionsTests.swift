@@ -116,6 +116,50 @@ struct ExtensionsTests {
         #expect(highQuality?.absoluteString == "https://i.ytimg.com/vi/abc/w400-h400-l90-rj")
     }
 
+    // MARK: - Artist Avatar (square cut) Tests
+
+    @Test("Cuts an artist's header banner into the square avatar")
+    func squareArtistAvatarFromBanner() throws {
+        // An artist page's immersive header serves the channel's banner (`=w540-h225` …
+        // `=w2880-h1200`), and drawing that letterbox in the header's 180pt circle showed one magnified
+        // centre slice of it. The same image path answers `=w544-h544-p-l90-rj` with the square avatar.
+        let url = try #require(
+            URL(string: "https://yt3.googleusercontent.com/abc=w2880-h1200-p-l90-rj")
+        )
+
+        #expect(
+            url.squareArtistAvatarURL?.absoluteString
+                == "https://yt3.googleusercontent.com/abc=w544-h544-p-l90-rj"
+        )
+    }
+
+    @Test("Cuts a small artist thumbnail into the square avatar")
+    func squareArtistAvatarFromSmallThumbnail() throws {
+        let url = try #require(URL(string: "https://yt3.googleusercontent.com/abc=w60-h60-l90-rj"))
+
+        #expect(
+            url.squareArtistAvatarURL?.absoluteString
+                == "https://yt3.googleusercontent.com/abc=w544-h544-p-l90-rj"
+        )
+    }
+
+    @Test("Leaves image URLs without a size token to the banner")
+    func squareArtistAvatarWithoutSizeToken() throws {
+        let namedStill = try #require(URL(string: "https://i.ytimg.com/vi/abc/maxresdefault.jpg"))
+        #expect(namedStill.squareArtistAvatarURL == nil)
+
+        let channelAvatar = try #require(
+            URL(string: "https://yt3.googleusercontent.com/abc=s120-c-k-c0x00ffffff-no-rj")
+        )
+        #expect(channelAvatar.squareArtistAvatarURL == nil)
+    }
+
+    @Test("Does not re-cut non-YouTube image URLs")
+    func squareArtistAvatarNonYouTubeURL() throws {
+        let url = try #require(URL(string: "https://example.com/image=w120-h120.jpg"))
+        #expect(url.squareArtistAvatarURL == nil)
+    }
+
     @Test("Promotes an sddefault still to the large named variants first")
     func promotesSddefaultStill() throws {
         // `i.ytimg.com` serves its large stills only by name, and the API answers `sddefault.jpg`

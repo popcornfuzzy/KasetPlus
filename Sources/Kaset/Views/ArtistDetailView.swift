@@ -95,9 +95,14 @@ struct ArtistDetailView: View {
     }
 
     private func headerView(_ detail: ArtistDetail) -> some View {
-        HStack(alignment: .top, spacing: 20) {
+        // The header carries the channel's banner, not the artist's picture: the square cut is the
+        // avatar YouTube itself renders here (see `squareArtistAvatarURL`), and the banner stays the
+        // fallback for a picture the square cut cannot serve.
+        let avatarURL = detail.thumbnailURL?.squareArtistAvatarURL
+            ?? detail.thumbnailURL?.highQualityThumbnailURL
+        return HStack(alignment: .top, spacing: 20) {
             // Thumbnail
-            CachedAsyncImage(url: detail.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(url: avatarURL, fallbackURL: detail.thumbnailURL) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
