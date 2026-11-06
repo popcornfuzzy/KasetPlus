@@ -860,6 +860,46 @@ struct SyncedLyricsServiceTests {
         #expect(await provider.callCount() == 1)
     }
 
+    @Test("reloading providers re-searches the track on screen instead of leaving it loading")
+    func providerReloadRefreshesCurrentTrack() async {
+        let settings = SettingsManager.shared
+        let previousSynced = settings.syncedLyricsEnabled
+        settings.syncedLyricsEnabled = true
+        defer { settings.syncedLyricsEnabled = previousSynced }
+
+        let synced = Self.makeSyncedLyrics(source: "Reloaded Source", lineText: "Reloaded line")
+        let provider = MockLyricsProvider(name: "ReloadedProvider", result: .synced(synced))
+        let service = SyncedLyricsService(providers: [provider])
+        let info = Self.makeSearchInfo(videoId: "video-provider-reload")
+
+        await service.fetchLyrics(for: info)
+        #expect(await provider.callCount() == 1)
+
+        service.reloadProviderFromSettings()
+        await service.providerReloadTask?.value
+
+        // The old set's result is dropped, and the search the reload restarted is what puts a sheet back:
+        // without it the surface stayed on its loading state until the song changed.
+        #expect(await provider.callCount() == 2)
+        #expect(service.currentLyrics == .synced(synced))
+        #expect(service.currentLyricsVideoId == info.videoId)
+        #expect(service.isLoading == false)
+    }
+
+    @Test("reloading providers before any search leaves nothing loading")
+    func providerReloadWithoutSearchStaysQuiet() async {
+        let provider = MockLyricsProvider(name: "UnusedProvider", result: .unavailable)
+        let service = SyncedLyricsService(providers: [provider])
+
+        service.reloadProviderFromSettings()
+        await service.providerReloadTask?.value
+
+        #expect(service.providerReloadTask == nil)
+        #expect(service.isLoading == false)
+        #expect(service.currentLyrics == .unavailable)
+        #expect(await provider.callCount() == 0)
+    }
+
     private static func makeSearchInfo(videoId: String) -> LyricsSearchInfo {
         LyricsSearchInfo(
             title: "Test Song",

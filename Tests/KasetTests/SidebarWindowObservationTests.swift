@@ -19,6 +19,15 @@ import Testing
 @MainActor
 @Suite(.tags(.model))
 struct SidebarWindowObservationTests {
+    /// A table with a row count the test can move, so a scroll can reach a list that has rows.
+    private final class StubSource: NSObject, NSTableViewDataSource {
+        var rows = 0
+
+        func numberOfRows(in tableView: NSTableView) -> Int {
+            self.rows
+        }
+    }
+
     /// Advances the run loop so the view's move into the window is delivered.
     private func pump(_ seconds: Double) {
         let deadline = Date().addingTimeInterval(seconds)
@@ -84,6 +93,61 @@ struct SidebarWindowObservationTests {
             coordinator.windowObserverCount <= 2,
             "the coordinator registered \(coordinator.windowObserverCount) window observers"
         )
+        window.orderOut(nil)
+    }
+
+    /// A row the list builds *after* the emphasis loop has looked once still gets the window's emphasis.
+    ///
+    /// This is the launch report: the window was key and the selected row drew with the dimmed highlight,
+    /// and a click in the sidebar was what put it right. The click was a focus change, which is a repair
+    /// this coordinator already follows — the rows themselves were not, and the list builds them late (the
+    /// library arrives after launch, and a row scrolled into view is built the same way). A corrected pass
+    /// therefore has to be followed by a list that keeps being followed.
+    @Test("A row built after the first pass is stamped when the list scrolls")
+    func scrollingRestampsRows() {
+        let source = StubSource()
+        source.rows = 40
+        let table = NSTableView(frame: NSRect(x: 0, y: 0, width: 200, height: 320))
+        table.dataSource = source
+        table.rowHeight = 24
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = table
+
+        let row = NSTableRowView(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        let pane = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 320))
+        pane.addSubview(scrollView)
+        pane.addSubview(row)
+
+        let configurator = SidebarBackingStyleConfigurator()
+        let coordinator = configurator.makeCoordinator()
+
+        let anchor = SidebarBackingStyleConfigurator.BackingView(frame: NSRect(x: 0, y: 0, width: 240, height: 320))
+        anchor.coordinator = coordinator
+        pane.addSubview(anchor)
+
+        let splitView = NSSplitView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+        splitView.isVertical = true
+        splitView.addSubview(pane)
+        let window = self.host(splitView)
+
+        // A row as the list builds one: not in the window's state.
+        let emphasized = window.isKeyWindow
+        row.isEmphasized = !emphasized
+        coordinator.attach(to: anchor)
+        self.pump(0.3)
+
+        #expect(coordinator.observedTable === table, "the coordinator never found the list's table")
+        #expect(row.isEmphasized == emphasized, "the first pass did not stamp the row")
+
+        // What a scroll does: the row is a fresh view in the wrong state, and only a re-stamp of the rows
+        // on screen can bring it back in step.
+        row.isEmphasized = !emphasized
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 96))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        self.pump(0.3)
+
+        #expect(row.isEmphasized == emphasized, "the list's scroll left the row in the dimmed style")
         window.orderOut(nil)
     }
 }

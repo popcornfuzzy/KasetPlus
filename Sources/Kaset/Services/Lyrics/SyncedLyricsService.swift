@@ -39,10 +39,17 @@ final class SyncedLyricsService {
     private(set) var voteErrorMessage: String?
 
     private var providers: [LyricsProvider]
+    /// Whether the provider list was handed in rather than built from settings (tests, previews).
+    /// An injected set is authoritative: reloading settings never replaces it.
+    private let usesInjectedProviders: Bool
     private var cache: [String: LyricResult] = [:]
     private let cacheStore: LyricsCacheStore?
     private var fetchGeneration = 0
     private var inFlightSearches: [String: InFlightSearch] = [:]
+    /// The search the track on screen was last asked for, so a provider change can run it again.
+    private var lastSearchInfo: LyricsSearchInfo?
+    /// The search a provider reload restarted, awaitable by tests.
+    private(set) var providerReloadTask: Task<Void, Never>?
 
     /// The title and byline each result was searched with.
     ///
@@ -54,6 +61,7 @@ final class SyncedLyricsService {
 
     init(providers: [LyricsProvider]? = nil, cacheStore: LyricsCacheStore? = nil) {
         self.providers = providers ?? Self.providersForCurrentSettings()
+        self.usesInjectedProviders = providers != nil
         self.cacheStore = cacheStore
     }
 
@@ -71,13 +79,29 @@ final class SyncedLyricsService {
         }
     }
 
+    /// Rebuilds the provider set after one is enabled, disabled or reordered, and re-runs the
+    /// search for the track on screen.
+    ///
+    /// The result on display is dropped: it came from the old set, and `applySearchResult` only swaps
+    /// in a *strictly better* result, so keeping it would let a reorder never take effect. The search
+    /// itself has to be restarted here — the lyric surfaces re-search only when the track or its words
+    /// change, and a provider change is neither, so they were left on their loading state until the
+    /// song changed.
+    ///
+    /// Called by the settings pane once an edit settles, so a burst of reorders costs one search
+    /// rather than one per step.
     func reloadProviderFromSettings() {
-        self.providers = Self.providersForCurrentSettings()
+        if !self.usesInjectedProviders {
+            self.providers = Self.providersForCurrentSettings()
+        }
         self.fetchGeneration += 1
+        self.providerReloadTask?.cancel()
+        self.providerReloadTask = nil
         for flight in self.inFlightSearches.values {
             Task { await flight.flight.cancel() }
         }
         self.inFlightSearches.removeAll()
+        self.cache.removeAll()
         self.cacheStore?.removeAll(except: nil)
         self.currentLyrics = .unavailable
         self.activeProvider = nil
@@ -88,6 +112,9 @@ final class SyncedLyricsService {
         self.searchingForBetterLyrics = false
         self.searchedTexts.removeAll()
         self.resetVariants()
+
+        guard let info = self.lastSearchInfo, SettingsManager.shared.syncedLyricsEnabled else { return }
+        self.providerReloadTask = Task { await self.fetchLyrics(for: info, forceRefresh: true) }
     }
 
     func clearCache(keepCurrent: Bool = true) {
@@ -110,6 +137,8 @@ final class SyncedLyricsService {
     }
 
     func fetchLyrics(for info: LyricsSearchInfo, forceRefresh: Bool = false) async {
+        self.lastSearchInfo = info
+
         guard !self.providers.isEmpty else {
             self.currentLyrics = .unavailable
             self.activeProvider = nil

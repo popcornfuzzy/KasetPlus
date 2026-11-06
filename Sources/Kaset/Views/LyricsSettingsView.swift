@@ -16,6 +16,11 @@ struct LyricsSettingsView: View {
     /// The provider currently being dragged. Set on drag start and cleared on
     /// drop so the drop delegate can resolve the live reorder.
     @State private var draggingProvider: SettingsManager.LyricsProviderID?
+    /// A refresh waiting for the current edit to settle. Reordering several providers or flipping a
+    /// few switches in a row is one edit, and each step of it must not cost a lyrics search.
+    @State private var pendingReload: Task<Void, Never>?
+    /// Whether a provider change has been made since the lyrics service last read the settings.
+    @State private var hasPendingProviderChange = false
 
     var body: some View {
         Form {
@@ -83,7 +88,7 @@ struct LyricsSettingsView: View {
                                     self.settings.moveLyricsProvider(dragged, to: target)
                                 }
                             },
-                            finalize: { self.reload() }
+                            finalize: { self.providerSettingsDidChange() }
                         )
                     )
                     .contextMenu {
@@ -167,6 +172,10 @@ struct LyricsSettingsView: View {
         .formStyle(.grouped)
         .frame(minWidth: 400, minHeight: 300)
         .navigationTitle("Lyrics")
+        .onDisappear {
+            // Closing the pane (or leaving this tab) must not drop the edit that was still settling.
+            self.applyPendingProviderChange()
+        }
     }
 
     // MARK: - Bindings
@@ -176,7 +185,7 @@ struct LyricsSettingsView: View {
             get: { self.settings.isLyricsProviderEnabled(provider) },
             set: { enabled in
                 self.settings.setLyricsProvider(provider, enabled: enabled)
-                self.reload()
+                self.providerSettingsDidChange()
             }
         )
     }
@@ -185,10 +194,28 @@ struct LyricsSettingsView: View {
 
     private func move(_ provider: SettingsManager.LyricsProviderID, by offset: Int) {
         self.settings.moveLyricsProvider(provider, by: offset)
-        self.reload()
+        self.providerSettingsDidChange()
     }
 
-    private func reload() {
+    /// Records a provider change and books the one search that will apply it, restarting the wait so
+    /// a burst of edits settles into a single refresh instead of one search per step.
+    private func providerSettingsDidChange() {
+        self.hasPendingProviderChange = true
+        self.pendingReload?.cancel()
+        self.pendingReload = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self.applyPendingProviderChange()
+        }
+    }
+
+    /// Rebuilds the provider set from the settings that are now stored: the edit settled, or the pane
+    /// went away. Nothing is searched when the change was already applied.
+    private func applyPendingProviderChange() {
+        self.pendingReload?.cancel()
+        self.pendingReload = nil
+        guard self.hasPendingProviderChange else { return }
+        self.hasPendingProviderChange = false
         self.syncedLyricsService.reloadProviderFromSettings()
     }
 

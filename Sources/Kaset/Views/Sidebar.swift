@@ -8,6 +8,13 @@ struct Sidebar: View {
     @Environment(AuthService.self) private var authService
     @Environment(\.colorScheme) private var colorScheme
     @State private var isPlaylistsExpanded = false
+    /// Whether this sidebar's window is the key window, as its backing coordinator reads it.
+    ///
+    /// A selected row's pill is AppKit's (a dimmed grey when the window is not key), and the row's text
+    /// has to follow the *same* fact: white on the coloured pill, and the plain label colour on the dimmed
+    /// one. Asking SwiftUI separately (`.controlActiveState`) would be a second opinion that can disagree
+    /// with the one stamping the pill, so the coordinator that stamps it reports it here.
+    @State private var isWindowKey = true
 
     private var sidebarLibraryPlaylists: [Playlist] {
         guard let libraryViewModel else { return [] }
@@ -116,7 +123,9 @@ struct Sidebar: View {
                 // the material, which is what left the column looking like a flat grey sheet no matter
                 // what stood behind it — and what stopped the sidebar's own vibrancy from compositing.
                 .scrollContentBackground(.hidden)
-                .background(SidebarBackingStyleConfigurator())
+                .background(SidebarBackingStyleConfigurator { isWindowKey in
+                    self.isWindowKey = isWindowKey
+                })
                 .clipShape(Rectangle())
                 .animation(nil, value: self.selection)
                 .accessibilityIdentifier(AccessibilityID.Sidebar.container)
@@ -174,11 +183,19 @@ struct Sidebar: View {
     /// way Apple Music tints its sidebar icons and keeps its labels black.
     ///
     /// A *selected* row's glyph goes white with its label: the selection tint is a filled pill, and a red
-    /// glyph on it reads as a second, competing colour — Apple Music whitens both halves of the row.
+    /// glyph on it reads as a second, competing colour — Apple Music whitens both halves of the row. On an
+    /// inactive window the pill is a flat grey instead, and white on it is unreadable, so the glyph takes
+    /// the label's colour there.
     private func iconForeground(for value: SidebarSelection) -> AnyShapeStyle {
-        self.selection == value
-            ? AnyShapeStyle(.white)
-            : AnyShapeStyle(PackageResourceLookup.brandAccent)
+        guard self.selection == value else {
+            return AnyShapeStyle(PackageResourceLookup.brandAccent)
+        }
+        return AnyShapeStyle(self.isWindowKey ? Color.white : self.labelForeground)
+    }
+
+    /// The label colour of an unselected row: full contrast, in the scheme's own ink.
+    private var labelForeground: Color {
+        self.colorScheme == .dark ? .white : .black
     }
 
     /// A row's label, in a colour no appearance can re-resolve.
@@ -186,14 +203,16 @@ struct Sidebar: View {
     /// A literal, rather than `.primary`, because the sidebar draws in a **vibrant** appearance: `.primary`
     /// *is* `NSColor.labelColor`, and the vibrant appearances resolve it to a lower-alpha colour — black @
     /// 0.70 under `VibrantLight` against 0.85 under `Aqua` (measured; the table is on
-    /// `EmphasizedMaterialView`). A literal colour is not resolved that way. White on the selection tint,
-    /// which is what the system draws a selected sidebar row with, and the label colour of the scheme
-    /// otherwise.
+    /// `EmphasizedMaterialView`). A literal colour is not resolved that way.
+    ///
+    /// White only on a **coloured** selection pill. AppKit draws the pill grey while the window is not key
+    /// (or while the row is unemphasized), and white on that grey is the unreadable row this is about, so
+    /// an inactive selection takes the ordinary label colour.
     private func rowForeground(for value: SidebarSelection) -> AnyShapeStyle {
-        if self.selection == value {
+        if self.selection == value, self.isWindowKey {
             return AnyShapeStyle(.white)
         }
-        return AnyShapeStyle(self.colorScheme == .dark ? Color.white : Color.black)
+        return AnyShapeStyle(self.labelForeground)
     }
 
 
@@ -226,6 +245,9 @@ struct Sidebar: View {
 /// window observations are the part that failed silently once (see `Coordinator.observeWindowKeyState`),
 /// and nothing SwiftUI does exposes them.
 struct SidebarBackingStyleConfigurator: NSViewRepresentable {
+    /// Reports whether the window is key, so the rows' *text* can follow the pill AppKit draws for them.
+    var onKeyStateChange: (Bool) -> Void = { _ in }
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -233,11 +255,13 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = BackingView(frame: .zero)
         view.coordinator = context.coordinator
+        context.coordinator.onKeyStateChange = self.onKeyStateChange
         context.coordinator.attach(to: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onKeyStateChange = self.onKeyStateChange
         context.coordinator.attach(to: nsView)
     }
 
@@ -258,7 +282,7 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
         }
     }
 
-    /// Two things the SwiftUI source cannot state:
+    /// Three things the SwiftUI source cannot state:
     ///
     /// - The list's scrollers are visually heavy against the sidebar's material, so they are made
     ///   overlay-style and translucent.
@@ -268,6 +292,8 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
     ///   `rowEmphasized=false` on an **active** window (the `Sidebar surface rows:` diagnostic in
     ///   `WindowShell`), so the selected row's highlight drew in the dimmed style. This keeps it in step
     ///   the way the platform does, including going back to dim when the window is not key.
+    /// - **Whether the window is key**, reported to the SwiftUI sidebar so its labels can match the pill
+    ///   (see `Sidebar.rowForeground(for:)`).
     @MainActor
     final class Coordinator {
         private weak var anchor: NSView?
@@ -291,6 +317,12 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
         }
         /// The passes that re-stamp emphasis after a focus change (see `repairEmphasis`).
         private var emphasisRepairTask: Task<Void, Never>?
+        /// The key state reported to the SwiftUI sidebar, and where it goes.
+        var onKeyStateChange: ((Bool) -> Void)?
+        private var reportedKeyState: Bool?
+        /// The list's table this coordinator follows, and what it watches on it (see `observeListChanges`).
+        private(set) weak var observedTable: NSTableView?
+        private var listObservers: [any NSObjectProtocol] = []
 
         func attach(to view: NSView) {
             self.anchor = view
@@ -299,38 +331,58 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
 
             // The list's table and its rows are built an arbitrary number of layout passes after this
             // view exists, so one walk can run before there is anything to find. Retried on a short
-            // timer until rows are actually styled, then stopped — never a permanent poll.
+            // timer until the rows are styled **and stay styled**, then stopped — never a permanent poll.
             guard self.settleTask == nil else { return }
             self.settleTask = Task { @MainActor [weak self] in
-                var styled = false
-                for _ in 0 ..< 12 where !styled {
+                var stablePasses = 0
+                for _ in 0 ..< 32 {
                     try? await Task.sleep(for: .milliseconds(250))
                     guard let self, !Task.isCancelled else { return }
-                    styled = self.restyle()
+                    let pass = self.restyle()
+                    // Both halves of the list are rebuilt for a while after launch — the library loads and
+                    // the table reloads, which builds fresh row views that come back unemphasized — so a
+                    // single corrected pass is not the same as a settled one. Anything that changes the
+                    // rows resets the count.
+                    stablePasses = (pass.rows > 0 && pass.corrections == 0) ? stablePasses + 1 : 0
+                    if stablePasses >= 16 {
+                        break
+                    }
                 }
                 self?.settleTask = nil
             }
         }
 
+        /// What one emphasis pass found, so the settle loop can tell corrected rows from settled ones.
+        struct EmphasisPass {
+            /// Row views seen in the pane.
+            var rows = 0
+            /// Row views (and their highlight effect views) whose emphasis had to be changed.
+            var corrections = 0
+        }
+
         @discardableResult
-        private func restyle() -> Bool {
-            guard let anchor = self.anchor else { return false }
+        private func restyle() -> EmphasisPass {
+            guard let anchor = self.anchor else { return EmphasisPass() }
             SidebarBackingStyleConfigurator.configureScrollers(from: anchor)
+            if let pane = self.sidebarPane() {
+                self.observeListChanges(in: pane)
+            }
             return self.applyRowEmphasis()
         }
 
-        /// Whether there are any rows to style, so the retry loop can stop.
         @discardableResult
-        private func applyRowEmphasis() -> Bool {
-            guard let pane = self.sidebarPane(), let window = pane.window else { return false }
+        private func applyRowEmphasis() -> EmphasisPass {
+            guard let pane = self.sidebarPane(), let window = pane.window else { return EmphasisPass() }
             let emphasized = window.isKeyWindow
-            var rowCount = 0
+            self.reportKeyState(emphasized)
+            var pass = EmphasisPass()
 
             for view in SidebarBackingStyleConfigurator.descendants(of: pane) {
                 if let row = view as? NSTableRowView {
-                    rowCount += 1
+                    pass.rows += 1
                     if row.isEmphasized != emphasized {
                         row.isEmphasized = emphasized
+                        pass.corrections += 1
                     }
                 } else if let effectView = view as? NSVisualEffectView,
                           effectView.superview is NSTableRowView
@@ -339,11 +391,64 @@ struct SidebarBackingStyleConfigurator: NSViewRepresentable {
                     // emphasis switch.
                     if effectView.isEmphasized != emphasized {
                         effectView.isEmphasized = emphasized
+                        pass.corrections += 1
                     }
                 }
             }
 
-            return rowCount > 0
+            return pass
+        }
+
+        /// Tells the SwiftUI sidebar whether the window is key, so its labels can follow the pill.
+        ///
+        /// Deferred by a turn: `attach` runs inside a SwiftUI update, and writing the sidebar's own state
+        /// from there is a mutation during that update.
+        private func reportKeyState(_ emphasized: Bool) {
+            guard self.reportedKeyState != emphasized else { return }
+            self.reportedKeyState = emphasized
+            let report = self.onKeyStateChange
+            Task { @MainActor in
+                report?(emphasized)
+            }
+        }
+
+        /// Follows the list's table, so rows it builds later are followed too.
+        ///
+        /// `applyRowEmphasis` stamps the row views that exist, and a table does not keep them: a row
+        /// scrolled into view is built fresh, comes back unemphasized, and is not the row the settle loop
+        /// stamped. So the list's clip view is watched, and a scroll re-stamps what is now on screen.
+        private func observeListChanges(in pane: NSView) {
+            guard let table = Self.firstTableView(in: pane) else { return }
+            guard self.observedTable !== table else { return }
+
+            for observer in self.listObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            self.listObservers = []
+            self.observedTable = table
+
+            // A scroll builds the rows that come into view the same way, and a bounds change is the
+            // notification a clip view sends as it scrolls. Stamped straight away, so the row is not drawn
+            // dim for the frame it appears in.
+            if let clipView = table.enclosingScrollView?.contentView {
+                clipView.postsBoundsChangedNotifications = true
+                self.listObservers.append(NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: clipView,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { _ = self?.applyRowEmphasis() }
+                })
+            }
+        }
+
+        private static func firstTableView(in root: NSView) -> NSTableView? {
+            for view in SidebarBackingStyleConfigurator.descendants(of: root) {
+                if let table = view as? NSTableView {
+                    return table
+                }
+            }
+            return nil
         }
 
         /// The sidebar pane's own view: the highest ancestor of this view that is still inside the pane.
