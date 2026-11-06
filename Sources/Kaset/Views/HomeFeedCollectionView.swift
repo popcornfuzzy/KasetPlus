@@ -193,10 +193,23 @@ final class HomeCollectionView: NSCollectionView {
 
     private func updateEdgeFade() {
         self.wantsLayer = true
-        self.edgeFade.frame = self.bounds
         if self.layer?.mask !== self.edgeFade {
             self.layer?.mask = self.edgeFade
         }
+
+        // A mask is a bare `CALayer`, not a view's backing layer, so every property set on it animates
+        // implicitly. Collapsing a sidebar resized the page once per animation step, and the mask glided
+        // to each new width on its own quarter-second — a mask smaller than the view it masks makes
+        // everything outside it transparent, so the columns the mask had not reached yet drew as bare
+        // page colour: a thick band of background beside the content, with the fade trailing behind a
+        // page that had already resized. A mask *is* each pass's bounds; it never travels to them.
+        // Disabling actions for the whole update makes the frame and the ramp land in the pass that
+        // asked for them.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        self.edgeFade.frame = self.bounds
 
         let width = max(self.bounds.width, 1)
         guard abs(width - self.fadedWidth) > 0.5 else { return }

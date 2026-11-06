@@ -51,6 +51,18 @@ player.
 Lifting the hold also realigns the page: YouTube's player was told playback started and would
 otherwise take the next play/pause click as a *pause*.
 
+The hold can also be lifted from inside the page — by the first click or keystroke the user makes in
+it — and that is a lift Swift has to hear about. The gate posts `PRELOAD_HOLD_RELEASED` and the
+WebView takes the page as playback, exactly as revealing the mini player does. Without it Swift kept
+the page marked silent while the page played: its playback observations were dropped, so the player
+bar read paused over audible music, its position never moved, and the song that was playing was one
+the app never learned about.
+
+The same rule is why the shell is never driven. A play or a skip aimed at a page with no track is
+refused (`PlayerWebViewPage.acceptsPlaybackCommands`): the shell is warm, not playing, and what
+YouTube Music's own player would start there is a song Kaset has no row for — the wrong song, under a
+bar that cannot say what it is.
+
 ### A page that is not being played from must not report
 
 `SingletonPlayerWebView.page` records what the page is for — `empty`, `shell`, `preloaded`,

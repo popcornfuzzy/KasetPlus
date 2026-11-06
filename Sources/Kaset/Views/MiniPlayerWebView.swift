@@ -245,6 +245,14 @@ final class SingletonPlayerWebView {
     /// Value of the query flag that marks a page loaded only to be ready.
     static let preloadQueryFlagValue = "1"
 
+    /// The message the page posts when it lifts its own preload hold.
+    ///
+    /// The gate lifts the hold on the first click or keystroke the user makes *inside* the page, and
+    /// only the page knows that happened. Without the report Swift kept the page marked silent while
+    /// it played: every observation of it was dropped, so the bar read paused over audible music and
+    /// the song playing never reached the app.
+    static let preloadHoldReleasedMessageType = "PRELOAD_HOLD_RELEASED"
+
     /// The query item that marks a page as loaded only to be ready.
     private static var preloadHoldQueryItem: URLQueryItem {
         URLQueryItem(name: Self.preloadQueryFlagName, value: Self.preloadQueryFlagValue)
@@ -524,15 +532,26 @@ final class SingletonPlayerWebView {
         !(self.webView?.isLoading ?? true)
     }
 
+    /// Takes the page as the app's player because the page lifted its own preload hold.
+    ///
+    /// The page can lift the hold on its own (a click or a keystroke in it), and it does so inside the
+    /// document: Swift is not the one asking, and nothing else tells it. A page the user reached into is
+    /// playback from then on, exactly as a revealed mini player is — what it plays from here is audio
+    /// the app has to track rather than a placeholder it may ignore.
+    func notePageLiftedItsPreloadHold() {
+        guard self.page.isSilent else { return }
+        self.logger.info("The page lifted its own preload hold; taking it as playback")
+        self.page = .playback
+    }
+
     /// Whether a page for `videoId` is up and usable for playback.
     ///
     /// Kaset's own watch page for the track qualifies, and so does a finished preload of it — that is
-    /// the case the preload exists for, and playing it needs no navigation. A preload still loading
-    /// does not: the track then takes the ordinary path, which navigates properly rather than asking a
-    /// page that is not there yet to play.
+    /// the case the preload exists for, and playing it needs no navigation. A page still loading does
+    /// not, whichever page it is: a preload handed over while its document was coming up has no player
+    /// in it yet, and asking it to play would drop the press instead of starting the track.
     func canPlay(videoId: String) -> Bool {
         guard self.currentVideoId == videoId else { return false }
-        guard self.page == .preloaded else { return true }
         return self.isPageReady
     }
 
@@ -1315,6 +1334,21 @@ final class SingletonPlayerWebView {
                   let type = body["type"] as? String
             else { return }
 
+            // The page lifted its own preload hold: the user clicked or typed in the page, and from
+            // here it is the app's player. Only the page's own stand-down arrives this way — a hold
+            // Kaset released is already handed over (`releasePreloadHold`) before the page reports it,
+            // so the silent-page guard below leaves that echo alone.
+            if type == SingletonPlayerWebView.preloadHoldReleasedMessageType {
+                Task { @MainActor in
+                    guard SingletonPlayerWebView.shared.page.isSilent else { return }
+                    SingletonPlayerWebView.shared.notePageLiftedItsPreloadHold()
+                    // A session that was waiting to be resumed is not waiting any more: the page is
+                    // playing, from the position its own URL gave it.
+                    self.playerService.clearRestoredPlaybackSessionState()
+                }
+                return
+            }
+
             // A page that is not being played from must not report: the shell has no track, and a
             // preloaded page is a player that was told it started when its autoplay was swallowed.
             // Believing either would put a track that is not playing into the app's state.
@@ -1606,7 +1640,11 @@ final class SingletonPlayerWebView {
     ///
     /// Lifting the hold also realigns the page: YouTube's player was told playback started and would
     /// otherwise take the next play/pause click as a *pause*.
-    private static var preloadGateScript: String {
+    ///
+    /// The page's own stand-down is reported to the app (`preloadHoldReleasedMessageType`), because a
+    /// page that is playing must stop being treated as silent — see `notePageLiftedItsPreloadHold`.
+    /// Exposed for tests, which pin that report.
+    static var preloadGateScript: String {
         """
         (function() {
             'use strict';
@@ -1650,6 +1688,14 @@ final class SingletonPlayerWebView {
                 }
                 const video = document.querySelector('video');
                 if (video) { try { video.pause(); } catch (error) {} }
+
+                // The hold was lifted from inside the page rather than by Kaset, so the app has not
+                // heard of it: report it, or a page that is playing keeps being treated as silent
+                // and everything it says is thrown away.
+                try {
+                    const bridge = window.webkit.messageHandlers.singletonPlayer;
+                    if (bridge) { bridge.postMessage({ type: '\(Self.preloadHoldReleasedMessageType)' }); }
+                } catch (error) {}
             }
 
             window.__kasetPreloadStandDown = standDown;

@@ -284,6 +284,28 @@ struct PlayerBarLoadingTests {
         #expect(PlayerWebViewPage.playback.isSilent == false)
     }
 
+    @Test("Kaset drives a preload and a playing page, never the warm shell")
+    func transportOnlyDrivesPagesCarryingATrack() {
+        #expect(PlayerWebViewPage.preloaded.acceptsPlaybackCommands)
+        #expect(PlayerWebViewPage.playback.acceptsPlaybackCommands)
+
+        // The shell is warm, not playing. A play or a skip aimed at it would start whatever YouTube
+        // Music's own player holds — the account's last song — on a page whose reports the app
+        // deliberately ignores, which is audible music under a bar saying paused.
+        #expect(PlayerWebViewPage.shell.acceptsPlaybackCommands == false)
+        #expect(PlayerWebViewPage.empty.acceptsPlaybackCommands == false)
+    }
+
+    @Test("A page that lifts its own preload hold tells the app")
+    func gateReportsItsOwnStandDown() {
+        // The gate can be lifted from inside the page (a click or a keystroke there), and only the
+        // page knows. The report is what lets the WebView stop treating a playing page as silent.
+        let script = SingletonPlayerWebView.preloadGateScript
+        #expect(script.contains("messageHandlers.singletonPlayer"))
+        #expect(script.contains(SingletonPlayerWebView.preloadHoldReleasedMessageType))
+        #expect(script.contains("__kasetPreloadStandDown"))
+    }
+
     @Test("A shell reports nothing, a preload reports only the track it holds, a playing page reports all")
     func pageObservationScopes() {
         #expect(PlayerWebViewPage.empty.observation == .none)

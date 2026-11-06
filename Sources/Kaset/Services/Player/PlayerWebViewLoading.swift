@@ -140,6 +140,20 @@ enum PlayerWebViewPage: Equatable {
     var isSilent: Bool {
         self == .shell || self == .preloaded
     }
+
+    /// Whether Kaset's own transport may drive the page's player.
+    ///
+    /// The shell is hosted at launch only to warm the app, and it carries no track of Kaset's: asking
+    /// its player to play starts whatever YouTube Music itself holds (the account's last song), on a
+    /// page whose reports the app deliberately ignores — a bar saying paused over a song nobody chose.
+    /// A preloaded page is the pending track and may be driven (that is what lifts its hold), and a
+    /// playback page is the one already playing.
+    var acceptsPlaybackCommands: Bool {
+        switch self {
+        case .empty, .shell: false
+        case .preloaded, .playback: true
+        }
+    }
 }
 
 // MARK: - PlayerWebViewPreload

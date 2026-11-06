@@ -3,9 +3,23 @@ import WebKit
 // MARK: - SingletonPlayerWebView Playback Controls Extension
 
 extension SingletonPlayerWebView {
+    /// The WebView, when the page in it is one Kaset's transport may drive.
+    ///
+    /// A page with no track of Kaset's — the shell, or nothing at all — is refused here rather than in
+    /// every caller: a command aimed at it would start the page's own player, which the app cannot
+    /// name and does not believe (see ``PlayerWebViewPage/acceptsPlaybackCommands``).
+    private func transportWebView() -> WKWebView? {
+        guard let webView else { return nil }
+        guard self.page.acceptsPlaybackCommands else {
+            self.logger.debug("Ignoring a playback command: the \(String(describing: self.page)) page carries no track")
+            return nil
+        }
+        return webView
+    }
+
     /// Toggle play/pause.
     func playPause() {
-        guard let webView else { return }
+        guard let webView = self.transportWebView() else { return }
 
         // The user asked for sound: a preloaded page stops being held before it is toggled.
         self.releasePreloadHold()
@@ -31,7 +45,7 @@ extension SingletonPlayerWebView {
 
     /// Play (resume).
     func play() {
-        guard let webView else { return }
+        guard let webView = self.transportWebView() else { return }
 
         self.releasePreloadHold()
 
@@ -47,7 +61,7 @@ extension SingletonPlayerWebView {
 
     /// Pause.
     func pause() {
-        guard let webView else { return }
+        guard let webView = self.transportWebView() else { return }
 
         let script = """
             (function() {
@@ -61,7 +75,7 @@ extension SingletonPlayerWebView {
 
     /// Skip to next track.
     func next() {
-        guard let webView else { return }
+        guard let webView = self.transportWebView() else { return }
 
         self.releasePreloadHold()
 
@@ -81,7 +95,7 @@ extension SingletonPlayerWebView {
 
     /// Go to previous track.
     func previous() {
-        guard let webView else { return }
+        guard let webView = self.transportWebView() else { return }
 
         self.releasePreloadHold()
 
