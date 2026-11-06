@@ -85,26 +85,6 @@ extension HomeSectionItem: CustomTestStringConvertible {
     }
 }
 
-// MARK: - FavoriteItem + CustomTestStringConvertible
-
-/// Provides readable test descriptions for FavoriteItem in test failure logs.
-extension FavoriteItem: CustomTestStringConvertible {
-    public var testDescription: String {
-        switch itemType {
-        case let .song(song):
-            "Favorite[Song]: \(song.testDescription)"
-        case let .album(album):
-            "Favorite[Album]: \(album.testDescription)"
-        case let .playlist(playlist):
-            "Favorite[Playlist]: \(playlist.testDescription)"
-        case let .artist(artist):
-            "Favorite[Artist]: \(artist.testDescription)"
-        case let .podcastShow(show):
-            "Favorite[Podcast]: \(show.testDescription)"
-        }
-    }
-}
-
 // MARK: - PodcastShow + CustomTestStringConvertible
 
 /// Provides readable test descriptions for PodcastShow in test failure logs.

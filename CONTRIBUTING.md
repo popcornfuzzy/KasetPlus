@@ -14,7 +14,7 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ```bash
 # Clone the repository
-git clone https://github.com/popcornfuzzy/kaset.git
+git clone https://github.com/popcornfuzzy/KasetPlus.git
 cd kaset
 
 # Build from command line

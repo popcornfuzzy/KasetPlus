@@ -7,7 +7,6 @@ import SwiftUI
 struct SearchView: View {
     @State var viewModel: SearchViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @State private var navigationPath = NavigationPath()
@@ -610,10 +609,6 @@ struct SearchView: View {
 
         Divider()
 
-        FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
-
-        Divider()
-
         LikeDislikeContextMenu(song: song, likeStatusManager: self.likeStatusManager)
 
         Divider()
@@ -720,8 +715,6 @@ struct SearchView: View {
 
         Divider()
 
-        FavoritesContextMenu.menuItem(for: album, manager: self.favoritesManager)
-
         ShareContextMenu.menuItem(for: album)
     }
 
@@ -734,8 +727,6 @@ struct SearchView: View {
         }
 
         Divider()
-
-        FavoritesContextMenu.menuItem(for: artist, manager: self.favoritesManager)
 
         ShareContextMenu.menuItem(for: artist)
     }
@@ -761,8 +752,6 @@ struct SearchView: View {
             Divider()
         }
 
-        FavoritesContextMenu.menuItem(for: playlist, manager: self.favoritesManager)
-
         Divider()
 
         ShareContextMenu.menuItem(for: playlist)
@@ -784,9 +773,6 @@ struct SearchView: View {
             Label("View Podcast", systemImage: "mic.fill")
         }
 
-        Divider()
-
-        FavoritesContextMenu.menuItem(for: show, manager: self.favoritesManager)
     }
 
     // MARK: - Helpers
@@ -876,5 +862,4 @@ extension SearchResultItem {
     let client = YTMusicClient(authService: authService, webKitManager: .shared)
     SearchView(viewModel: SearchViewModel(client: client), focusTrigger: $focusTrigger)
         .environment(PlayerService())
-        .environment(FavoritesManager.shared)
 }

@@ -228,37 +228,6 @@ Provides tactile feedback on Macs with Force Touch trackpads:
 
 **Accessibility**: Respects user preference (Settings → General) and system "Reduce Motion" setting.
 
-### FavoritesManager
-
-**File**: `Sources/Kaset/Services/FavoritesManager.swift`
-
-Manages user-curated Favorites section on Home view:
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `items` | `[FavoriteItem]` | Ordered list of pinned items |
-| `isVisible` | `Bool` | `true` when items exist |
-
-**Supported Item Types**: Song, Album, Playlist, Artist
-
-**Key Methods**:
-- `add(_:)` — Adds item to front of list (no duplicates)
-- `remove(contentId:)` — Removes by videoId/browseId
-- `toggle(_:)` — Adds if not pinned, removes if pinned
-- `move(from:to:)` — Reorders via drag-and-drop
-- `isPinned(contentId:)` — Checks if item is in Favorites
-
-**Persistence**:
-- **Location**: `~/Library/Application Support/Kaset/favorites.json`
-- **Format**: JSON-encoded `[FavoriteItem]`
-- **Writes**: Async on background thread via `Task.detached`
-- **Reads**: Synchronous at init (one-time on app launch)
-
-**Related Files**:
-- `Sources/Kaset/Models/FavoriteItem.swift` — Data model with `ItemType` enum
-- `Sources/Kaset/Views/SharedViews/FavoritesSection.swift` — Horizontal scrolling UI
-- `Sources/Kaset/Views/SharedViews/FavoritesContextMenu.swift` — Shared context menu items
-
 ### NotificationService
 
 **File**: `Sources/Kaset/Services/Notification/NotificationService.swift`
@@ -1188,12 +1157,11 @@ Reusable components used across the app:
 | `SkeletonView` | Shimmer placeholder for loading content |
 | `EqualizerView` | Animated bars for "now playing" indicator |
 | `HomeSectionItemCard` | Card component for carousel items |
+| `HomeFeedCollectionView` | Home's feed as one `NSCollectionView` with orthogonal shelf sections (see [ADR-0046](adr/0046-home-native-shelf-feed.md)) |
 | `InteractiveCardStyle` | Hover/press effects for cards |
 | `NavigationDestinationsModifier` | Centralized navigation destination handling |
 | `ShareContextMenu` | Context menu for sharing content |
 | `StartRadioContextMenu` | Radio controls: context menu items for a song, plus the playlist/album radio action (see [ADR-0033](adr/0033-playlist-header-action-row.md)) |
-| `FavoritesSection` | Horizontal scrolling favorites row |
-| `FavoritesContextMenu` | Context menu for favorites management |
 | `SongActionsHelper` | Common song action handlers |
 | `AnimationModifiers` | Reusable animation view modifiers |
 

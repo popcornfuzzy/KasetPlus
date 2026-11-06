@@ -142,7 +142,6 @@ struct NowPlayingSidebarCreditNavigationTests {
         .environment(SyncedLyricsService())
         .environment(CanvasService())
         .environment(PodcastTranscriptService(client: client))
-        .environment(FavoritesManager.shared)
 
         let root = HStack(spacing: 0) {
             page.frame(width: Self.pageWidth)
@@ -325,7 +324,6 @@ struct NowPlayingSidebarCreditNavigationTests {
         .environment(SyncedLyricsService())
         .environment(CanvasService())
         .environment(PodcastTranscriptService(client: client))
-        .environment(FavoritesManager.shared)
 
         // The window's own shape: two AppKit panes, each a hosting controller, the column a sibling of
         // the page rather than a sibling view inside one hierarchy.

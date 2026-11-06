@@ -21,7 +21,6 @@ struct QueueSectionHeaderTests {
             currentIndex: currentIndex,
             manualQueueCount: manualQueueCount,
             isPlaying: false,
-            favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
             onReorder: { _, _ in nil },
             onRemove: { _ in },

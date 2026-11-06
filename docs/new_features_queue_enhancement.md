@@ -52,7 +52,7 @@ This document details the proposed enhancements to the Queue (Up Next) feature i
 
 - **Accessibility** — Phase 2 exit criteria should explicitly require VoiceOver labels for the drag handle (e.g. "Reorder, song title") and for drop targets. Phase 5 already mentions VoiceOver; ensure drag/drop is covered.
 - **Clear confirmation** — Phase 5 says "Clear shows confirmation for >10 items". Align with existing `QueueView` behavior (destructive "Clear" without confirmation); if adding confirmation, specify copy (e.g. "Clear 12 songs from queue?") and destructive action.
-- **Queue persistence** — Recommend as a **follow-up** (see [Queue persistence and undo](#queue-persistence-and-undo-follow-up) below). Use file-based JSON in Application Support (same pattern as `FavoritesManager`); no SQLite needed for a small history.
+- **Queue persistence** — Recommend as a **follow-up** (see [Queue persistence and undo](#queue-persistence-and-undo-follow-up) below). Use file-based JSON in Application Support (the same pattern the app's stored pages use); no SQLite needed for a small history.
 
 ### Removals / Simplifications
 
@@ -525,9 +525,6 @@ struct QueueContextMenu: View {
 
             Divider()
 
-            // Existing: Favorites
-            FavoritesContextMenu(song: song)
-
             // Existing: Like/Dislike
             LikeDislikeContextMenu(song: song)
 
@@ -960,13 +957,13 @@ No new API endpoints required—all features use existing YouTube Music API.
 
 ## Queue persistence and undo (follow-up)
 
-Persisting the queue across app restarts and offering **"Restore previous queue"** (undo) when the user accidentally replaces the queue is feasible without a database. The recommended approach is **file-based storage** in Application Support, matching the existing `FavoritesManager` pattern. SQLite is unnecessary for a single current queue plus a small history of 3 snapshots.
+Persisting the queue across app restarts and offering **"Restore previous queue"** (undo) when the user accidentally replaces the queue is feasible without a database. The recommended approach is **file-based storage** in Application Support, matching the app's existing file-based JSON pattern. SQLite is unnecessary for a single current queue plus a small history of 3 snapshots.
 
 ### Why file-based (JSON) instead of SQLite?
 
 | Approach | Typical use on macOS | For queue + 3 history |
 |--------|-----------------------|------------------------|
-| **JSON/PropertyList in Application Support** | App state, last-used data, small lists | ✅ Ideal: one file for "last queue", one for "history" (or combined). No schema, Codable, same pattern as `FavoritesManager`. |
+| **JSON/PropertyList in Application Support** | App state, last-used data, small lists | ✅ Ideal: one file for "last queue", one for "history" (or combined). No schema, Codable, same pattern as the app's stored pages. |
 | **UserDefaults** | Preferences, small key-value | Possible but better to keep prefs separate from "documents"; Application Support is clearer. |
 | **SQLite** | Large datasets, search, relations | Overkill for 3 queue snapshots; adds dependency or C API usage. Common in Mail, Safari, etc., not for tiny state. |
 | **SwiftData / Core Data** | Rich object graphs, many entities | Heavier than needed for a few arrays of songs. |
@@ -1022,7 +1019,7 @@ Build `PersistedSong` from `Song` (or a subset of fields). On restore, either us
   `~/Library/Application Support/Kaset/queue_history.json`  
   Array of up to 3 `PersistedQueueSnapshot` values (newest first). Before any "replace queue" action, push current snapshot to this array (trim to 3); on "Restore previous queue", pop the first and apply it, then save.
 
-Reuse the same `Application Support/Kaset` directory and `FileManager` patterns as `FavoritesManager` and `WebKitManager` (create directory if needed, write atomically if desired).
+Reuse the same `Application Support/Kaset` directory and `FileManager` patterns as `WebKitManager` (create directory if needed, write atomically if desired).
 
 ### Undo UI
 

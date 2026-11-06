@@ -18,16 +18,28 @@ struct InteractiveCardStyle: ButtonStyle {
     /// Optional haptic feedback type to trigger on press.
     var hapticFeedback: HapticService.FeedbackType?
 
+    /// Whether the card answers the pointer.
+    ///
+    /// A horizontal row passes `false` for as long as it is being scrolled: cards travelling under a
+    /// stationary pointer must not swap their scale and shadow mid-flick, which costs a layer
+    /// transaction per card and is why list rows suspend hover the same way (ADR-0014).
+    var isHoverEnabled: Bool = true
+
     @State private var isHovering = false
+
+    /// Hover feedback is shown only while hovering *and* enabled.
+    private var showsHover: Bool {
+        self.isHovering && self.isHoverEnabled
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? self.pressScale : (self.isHovering ? self.hoverScale : 1.0))
+            .scaleEffect(configuration.isPressed ? self.pressScale : (self.showsHover ? self.hoverScale : 1.0))
             .shadow(
-                color: self.showShadow && self.isHovering ? .black.opacity(0.15) : .clear,
-                radius: self.isHovering ? 12 : 0,
+                color: self.showShadow && self.showsHover ? .black.opacity(0.15) : .clear,
+                radius: self.showsHover ? 12 : 0,
                 x: 0,
-                y: self.isHovering ? 4 : 0
+                y: self.showsHover ? 4 : 0
             )
             .animation(AppAnimation.spring, value: configuration.isPressed)
             .animation(AppAnimation.spring, value: self.isHovering)
@@ -152,17 +164,21 @@ extension ButtonStyle where Self == InteractiveCardStyle {
     }
 
     /// Interactive card style with custom parameters.
+    /// - Parameter isHoverEnabled: Pass `false` while a row is scrolling so cards passing under the
+    ///   pointer do not animate their hover scale and shadow.
     static func interactiveCard(
         showShadow: Bool = true,
         hoverScale: CGFloat = 1.02,
         pressScale: CGFloat = 0.98,
-        hapticFeedback: HapticService.FeedbackType? = nil
+        hapticFeedback: HapticService.FeedbackType? = nil,
+        isHoverEnabled: Bool = true
     ) -> InteractiveCardStyle {
         InteractiveCardStyle(
             showShadow: showShadow,
             hoverScale: hoverScale,
             pressScale: pressScale,
-            hapticFeedback: hapticFeedback
+            hapticFeedback: hapticFeedback,
+            isHoverEnabled: isHoverEnabled
         )
     }
 }

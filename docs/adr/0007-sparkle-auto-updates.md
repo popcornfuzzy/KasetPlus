@@ -182,10 +182,16 @@ See [testing.md](../testing.md#update-installation-sparkle).
 #### Migration Note
 
 The entitlement belongs to the **installed** build, not to the update: the running app is the one
-that has to reach the installer service. Releases published before this was fixed (0.7 and 0.7.1)
-ship without it, so their copy of Kaset cannot install any later update, including the first fixed
-one. Those users have to download that release from GitHub once, after which automatic updates work
-again. This is worth a line in the release notes rather than a silent dead end.
+that has to reach the installer service. Releases published before this was fixed (0.7, 0.7.1 and
+0.8 — still the latest stable release) ship without it, so their copy of Kaset cannot install any
+later update, including the first fixed one. Those users have to download that release from GitHub
+once, after which automatic updates work again. This is worth a line in the release notes rather
+than a silent dead end.
+
+Checked against the published artifacts: the 0.8 DMG's app has no `SUEnableInstallerLauncherService`
+and no `-spki`/`-spks` exceptions, and a build with that same configuration reproduces
+`Failed to gain authorization required to update target` followed by
+`An error occurred while launching the installer.` The 0.9 prereleases do carry both settings.
 
 ### Key Generation
 

@@ -19,7 +19,7 @@
 
 	<!-- Sparkle Auto-Update Configuration -->
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/popcornfuzzy/kaset/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/popcornfuzzy/KasetPlus/main/appcast.xml</string>
 
 	<!-- Kaset is sandboxed, so Sparkle has to install updates from outside the
 	     sandbox through its Installer service. Without this key the updater tries

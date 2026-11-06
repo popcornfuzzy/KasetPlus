@@ -35,7 +35,7 @@ enum WhatsNewProvider {
                     subtitle: "Access your playlists and liked songs"
                 ),
             ],
-            learnMoreURL: URL(string: "https://github.com/popcornfuzzy/kaset/releases")
+            learnMoreURL: URL(string: "https://github.com/popcornfuzzy/KasetPlus/releases")
         ),
     ]
 

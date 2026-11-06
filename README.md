@@ -42,7 +42,7 @@ This is a fork of [Kaset made by sozercan](https://github.com/sozercan/kaset) th
 
 ### Download
 
-Download the latest release from the [Releases](https://github.com/popcornfuzzy/kaset/releases) page.
+Download the latest release from the [Releases](https://github.com/popcornfuzzy/KasetPlus/releases) page.
 
 
 **Note:** The app is not signed.

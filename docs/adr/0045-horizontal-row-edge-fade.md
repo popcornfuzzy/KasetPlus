@@ -7,9 +7,8 @@ Accepted
 ## Context
 
 Every shelf in the app — Home, Explore, Charts, New Releases, Moods & Genres, a
-mood's page, Podcasts, artist pages, Search's "Jump back in", Favorites — is a
-horizontal `ScrollView` of cards laid out inside a page that pads its content by
-24 pt. A row with more cards than fit ends in a hard vertical cut exactly where
+mood's page, Podcasts, artist pages, Search's "Jump back in" — is a horizontal
+`ScrollView` of cards laid out inside a page that pads its content by 24 pt. A row with more cards than fit ends in a hard vertical cut exactly where
 the page's trailing edge meets the Now Playing column: the next card is visible
 for half its width and then simply stops. At night that reads as a shelf glued
 to the column; in light mode, where the cards' trailing edges fade into a white
@@ -26,7 +25,7 @@ Two ways of drawing that were rejected:
   surfaces differ. A fixed colour would have made a visible band over exactly
   the pages it was meant to soften.
 - **A static mask** that always fades the trailing edge by a fixed width. This
-  dims shelves that never overflow (three favorites, two albums) and dims a
+  dims shelves that never overflow (two albums, a couple of singles) and dims a
   card that is fully visible at the end of a row, so it lies about what is
   under it.
 
@@ -60,6 +59,12 @@ applied to every horizontal card row:
 - **`.contentMargins(.trailing, pageInset, for: .scrollContent)` gives the row's
   end its inset back**, so a shelf scrolled all the way keeps its last card
   clear of the column exactly as it did before the fade existed.
+- **Hover is suspended while the row scrolls.** The modifier publishes `rowIsScrolling` into the
+  environment and the cards it holds pass `isHoverEnabled: false` to `InteractiveCardStyle` while
+  it is true, so a card travelling under a stationary pointer does not start scale, shadow and
+  material work mid-flick. This is the rule ADR-0014 applies to list rows, where hover tracking was
+  measured at 12–15% of main-thread samples; on a shelf it is even more clearly wasted work, since a
+  card that slides under the pointer was not being pointed at.
 - **Hover bleed: the mask is given 20 pt of headroom.** A mask clips to its own
   bounds, and a row's bounds are exactly its cards, so the hovered card's
   `interactiveCard` scale and 12 pt shadow were sliced off along the row's top,
@@ -86,6 +91,13 @@ applied to every horizontal card row:
   clipped: the mask has to end at the page edge for the fade to work. The
   leading edge gets its room from the page padding; there is none on the right,
   because that is where the fade lives.
+- The shelves' cards now pass `targetSize` to `CachedAsyncImage` (`ImageCache` doubles it for
+  Retina): a 160 pt card decodes 320 px instead of the 640 px its default target produced, and the
+  same was fixed for the podcast and artist-page cards. Decode work was already being
+  paid on the scroll path for cold artwork, which is the second of ADR-0014's five costs.
+- The scroll-phase watch lives on the row, so a row inside a page that is itself scrolling (a
+  vertical page scroll under the pointer) does not suspend hover: only the row's own horizontal
+  gesture does.
 - The fade needs the row to *be* a scroll view. Content that scrolls some other
   way (a `LazyHGrid`, a paged control) gets nothing from the modifier and would
   have to feed `HorizontalRowEdgeFade.EdgeFades` itself if it wants the same

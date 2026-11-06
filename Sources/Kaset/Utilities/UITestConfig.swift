@@ -32,9 +32,6 @@ enum UITestConfig {
     /// Whether the current track has video available.
     static let mockHasVideoKey = "MOCK_HAS_VIDEO"
 
-    /// JSON-encoded mock favorites data.
-    static let mockFavoritesKey = "MOCK_FAVORITES"
-
     /// JSON-encoded mock accounts data for account switcher UI tests.
     static let mockAccountsKey = "MOCK_ACCOUNTS"
 

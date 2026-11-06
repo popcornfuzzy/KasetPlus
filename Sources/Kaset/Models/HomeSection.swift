@@ -3,7 +3,7 @@ import Foundation
 // MARK: - HomeSection
 
 /// Represents a section on the YouTube Music home page.
-struct HomeSection: Identifiable {
+struct HomeSection: Identifiable, Codable, Equatable {
     let id: String
     let title: String
     let items: [HomeSectionItem]
@@ -22,7 +22,10 @@ struct HomeSection: Identifiable {
 // MARK: - HomeSectionItem
 
 /// An item within a home section (can be song, album, playlist, or artist).
-enum HomeSectionItem: Identifiable {
+///
+/// `Equatable` so a card can compare against the value it was last given (see
+/// `HomeSectionItemCard`): every payload is `Hashable`, so this is the free synthesis.
+enum HomeSectionItem: Identifiable, Equatable, Codable, Hashable {
     case song(Song)
     case album(Album)
     case playlist(Playlist)

@@ -70,7 +70,6 @@ struct KasetApp: App {
     let sharedClient: any YTMusicClientProtocol
     let notificationService: NotificationService
     let updaterService = UpdaterService()
-    let favoritesManager = FavoritesManager.shared
     let likeStatusManager = SongLikeStatusManager.shared
     let accountService: AccountService
     let scrobblingCoordinator: ScrobblingCoordinator
@@ -189,7 +188,6 @@ struct KasetApp: App {
             .environment(self.authService)
             .environment(self.webKitManager)
             .environment(self.playerService)
-            .environment(self.favoritesManager)
             .environment(self.likeStatusManager)
             .environment(self.accountService)
             .environment(self.scrobblingCoordinator)

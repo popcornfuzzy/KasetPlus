@@ -78,7 +78,7 @@ struct ToastCenterTests {
         let center = ToastCenter()
         var undone = false
 
-        center.show("Removed from Favorites", undoTitle: "Undo") {
+        center.show("Removed from Queue", undoTitle: "Undo") {
             undone = true
         }
         #expect(center.current != nil)

@@ -6,7 +6,6 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct QueueView: View {
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
     @Environment(\.showCommandBar) private var showCommandBar
 
@@ -148,7 +147,6 @@ struct QueueView: View {
                             isPlaying: self.playerService.isPlaying,
                             isAutoplayIndicatorVisible: self.playerService.isYouTubeAutoplayIndicatorVisible,
                             isScrolling: self.userIsScrolling,
-                            favoritesManager: self.favoritesManager,
                             playerService: self.playerService,
                             client: self.libraryViewModel?.client,
                             libraryViewModel: self.libraryViewModel,
@@ -303,8 +301,7 @@ private struct QueueRowView: View, Equatable {
     let isScrolling: Bool
 
     /// Services the row's menu needs. Held but not read here — the menu reads them in its own body,
-    /// so a row does not subscribe the whole list to `FavoritesManager` or to the player.
-    let favoritesManager: FavoritesManager
+    /// so a row does not subscribe the whole list to the player.
     let playerService: PlayerService
     let client: (any YTMusicClientProtocol)?
     let libraryViewModel: LibraryViewModel?
@@ -404,7 +401,6 @@ private struct QueueRowView: View, Equatable {
             QueueRowMenuContent(
                 song: self.song,
                 isCurrentTrack: self.isCurrentTrack,
-                favoritesManager: self.favoritesManager,
                 playerService: self.playerService,
                 client: self.client,
                 libraryViewModel: self.libraryViewModel,
@@ -459,23 +455,18 @@ private struct QueueEntry: Identifiable {
 
 // MARK: - QueueRowMenuContent
 
-/// The queue row's context menu, as its own view so the favorites and player lookups happen when
-/// the menu is presented rather than in every row's body.
+/// The queue row's context menu, as its own view so the player lookups happen when the menu is
+/// presented rather than in every row's body.
 @available(macOS 26.0, *)
 private struct QueueRowMenuContent: View {
     let song: Song
     let isCurrentTrack: Bool
-    let favoritesManager: FavoritesManager
     let playerService: PlayerService
     let client: (any YTMusicClientProtocol)?
     let libraryViewModel: LibraryViewModel?
     let onRemove: () -> Void
 
     var body: some View {
-        FavoritesContextMenu.menuItem(for: self.song, manager: self.favoritesManager)
-
-        Divider()
-
         StartRadioContextMenu.menuItem(for: self.song, playerService: self.playerService)
 
         Divider()
@@ -507,7 +498,6 @@ private struct QueueRowMenuContent: View {
     let playerService = PlayerService()
     QueueView()
         .environment(playerService)
-        .environment(FavoritesManager.shared)
         .frame(height: 600)
 }
 
@@ -517,6 +507,5 @@ private struct QueueRowMenuContent: View {
     // Note: In real use, queue would be populated via playQueue()
     QueueView()
         .environment(playerService)
-        .environment(FavoritesManager.shared)
         .frame(height: 600)
 }

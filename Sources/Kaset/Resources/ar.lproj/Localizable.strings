@@ -16,8 +16,6 @@
 
 "Account" = "الحساب";
 
-"Add to Favorites" = "إضافة إلى المفضلة";
-
 "Add to Library" = "إضافة إلى المكتبة";
 
 "Add to Queue" = "إضافة إلى قائمة الانتظار";
@@ -206,8 +204,6 @@
 
 "Failed to switch account. Please try again." = "فشل تبديل الحساب. يرجى المحاولة مرة أخرى.";
 
-"Favorites" = "المفضلة";
-
 "Featured playlists" = "قوائم تشغيل مميزة";
 
 "Find songs, albums, artists, and playlists" = "ابحث عن أغاني وألبومات وفنانين وقوائم تشغيل";
@@ -299,10 +295,6 @@
 "Mix" = "مزيج";
 
 "Moods & Genres" = "حالات وأنواع";
-
-"Move to End" = "نقل إلى الأسفل";
-
-"Move to Top" = "نقل إلى الأعلى";
 
 "Mute" = "كتم الصوت";
 
@@ -426,8 +418,6 @@
 "Remember Shuffle & Repeat" = "تذكّر الخلط والتكرار";
 
 "Remove Dislike" = "إزالة عدم الإعجاب";
-
-"Remove from Favorites" = "إزالة من المفضلة";
 
 "Remove from Queue" = "إزالة من قائمة الانتظار";
 

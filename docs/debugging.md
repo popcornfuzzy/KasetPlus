@@ -12,7 +12,7 @@ which is a set of `os.Logger`s on **one subsystem** with one category per area:
 |----------|---------------------|----------------|
 | `App` | `.app` | App lifecycle, URL handling, window creation |
 | `Player` | `.player` | Playback, the WebView, the mini player, the player panel, surface handover |
-| `UI` | `.ui` | Views, the window shell, the sidebar's surface, favorites, canvas |
+| `UI` | `.ui` | Views, the window shell, the sidebar's surface, canvas |
 | `WebKit` | `.webKit` | WebView setup and teardown |
 | `Auth` | `.auth` | Login, cookies, session expiry |
 | `API` | `.api` | YouTube Music API calls |

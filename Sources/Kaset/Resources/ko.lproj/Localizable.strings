@@ -16,8 +16,6 @@
 
 "Account" = "계정";
 
-"Add to Favorites" = "즐겨찾기에 추가";
-
 "Add to Library" = "보관함에 추가";
 
 "Add to Queue" = "대기열에 추가";
@@ -120,7 +118,6 @@
 
 "Choose the language for the app interface" = "앱 인터페이스 언어를 선택하세요";
 
-
 "Choose which buttons appear in the Now Playing widget in Control Center" = "제어 센터의 지금 재생 중 위젯에 표시할 버튼을 선택하세요";
 "Clear" = "지우기";
 
@@ -198,7 +195,6 @@
 
 "Enable Apple Intelligence in System Settings to use AI features." = "AI 기능을 사용하려면 시스템 설정에서 Apple Intelligence를 활성화하세요.";
 
-
 "Enable Synced Lyrics" = "실시간 가사 활성화";
 "Episodes" = "에피소드";
 
@@ -216,10 +212,7 @@
 
 "Failed to switch account. Please try again." = "계정을 전환하지 못했습니다. 다시 시도해 주세요.";
 
-"Favorites" = "즐겨찾기";
-
 "Featured playlists" = "추천 재생목록";
-
 
 "Fetch and display real-time synced lyrics when available" = "사용 가능한 경우 실시간 동기화 가사를 가져와 표시합니다";
 "Find songs, albums, artists, and playlists" = "노래, 앨범, 아티스트, 재생목록 찾기";
@@ -312,10 +305,6 @@
 
 "Moods & Genres" = "분위기 및 장르";
 
-"Move to End" = "맨 끝으로 이동";
-
-"Move to Top" = "맨 위로 이동";
-
 "Mute" = "음소거";
 
 "Native Interface" = "네이티브 인터페이스";
@@ -327,7 +316,6 @@
 "Next" = "다음";
 
 "Next track" = "다음 트랙";
-
 
 "Next/Previous Track" = "다음/이전 트랙";
 "No Connection" = "연결 없음";
@@ -370,7 +358,6 @@
 
 /* Login help text about passkey alternative */
 "Note: If passkeys don't work, use \"Try another way\" to sign in with password." = "참고: 패스키가 작동하지 않으면 \"다른 방법 시도\"를 사용하여 비밀번호로 로그인하세요.";
-
 
 "Now Playing Controls" = "지금 재생 중 컨트롤";
 "OK" = "확인";
@@ -443,8 +430,6 @@
 
 "Remove Dislike" = "싫어요 취소";
 
-"Remove from Favorites" = "즐겨찾기에서 삭제";
-
 "Remove from Queue" = "대기열에서 삭제";
 
 "Repeat" = "반복";
@@ -506,7 +491,6 @@
 "Sign in with Google" = "Google로 로그인";
 
 "Signed in to YouTube Music" = "YouTube Music에 로그인됨";
-
 
 "Skip Forward/Backward" = "앞으로/뒤로 건너뛰기";
 "Software Update" = "소프트웨어 업데이트";

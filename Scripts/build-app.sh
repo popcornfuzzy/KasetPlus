@@ -62,7 +62,7 @@ if [[ "$SIGNING_MODE" != "adhoc" && "$BUNDLE_ID" != "$CANONICAL_BUNDLE_ID" ]]; t
   echo "      builds. See docs/adr/0027-stable-code-signing-identity.md."
   echo ""
 fi
-SU_FEED_URL="${KASET_SU_FEED_URL:-https://raw.githubusercontent.com/popcornfuzzy/kaset/main/appcast.xml}"
+SU_FEED_URL="${KASET_SU_FEED_URL:-https://raw.githubusercontent.com/popcornfuzzy/KasetPlus/main/appcast.xml}"
 SU_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_KEY:-o1vx9iHiGFhq2hdvof0Zv1pxf3uQSBxwSCW4WBDk2Wo=}"
 BUILD_DIR="$ROOT/.build/app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"

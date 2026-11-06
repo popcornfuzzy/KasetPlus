@@ -27,8 +27,6 @@
 
 "Account" = "Account";
 
-"Add to Favorites" = "Add to Favorites";
-
 "Add to Library" = "Add to Library";
 
 "Add to Queue" = "Add to Queue";
@@ -309,8 +307,6 @@
 
 "Failed to switch account. Please try again." = "Failed to switch account. Please try again.";
 
-"Favorites" = "Favorites";
-
 "Featured playlists" = "Featured playlists";
 
 "Find songs, albums, artists, and playlists" = "Find songs, albums, artists, and playlists";
@@ -500,10 +496,6 @@
 
 "YouTube Music kept the previous order for this playlist." = "YouTube Music kept the previous order for this playlist.";
 
-"Move to End" = "Move to End";
-
-"Move to Top" = "Move to Top";
-
 "Mute" = "Mute";
 
 "Native Interface" = "Native Interface";
@@ -647,8 +639,6 @@
 "Remember Shuffle & Repeat" = "Remember Shuffle & Repeat";
 
 "Remove Dislike" = "Remove Dislike";
-
-"Remove from Favorites" = "Remove from Favorites";
 
 "Remove from Queue" = "Remove from Queue";
 

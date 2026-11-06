@@ -89,6 +89,46 @@ struct HomeViewModelTests {
         #expect(self.mockClient.getHomeCallCount == 2)
     }
 
+    /// Home's launch state is the skeleton: the fresh feed is what the reader came for, so nothing
+    /// stored is painted first and replaced moments later.
+    @Test("Load shows the skeleton until the fresh feed arrives")
+    func loadShowsSkeletonUntilFreshFeedArrives() async {
+        self.mockClient.homeResponse = HomeResponse(sections: [TestFixtures.makeHomeSection(title: "Fresh")])
+        self.mockClient.homeResponseDelays = [.milliseconds(200)]
+
+        let load = Task { await self.viewModel.load() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while self.mockClient.getHomeCallCount == 0, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(self.viewModel.loadingState == .loading)
+        #expect(self.viewModel.sections.isEmpty)
+
+        await load.value
+        #expect(self.viewModel.loadingState == .loaded)
+        #expect(self.viewModel.sections.map(\.title) == ["Fresh"])
+    }
+
+    /// The other half of the same rule: a feed already on screen is not taken away by a refresh.
+    @Test("Refresh keeps the feed on screen until the new one arrives")
+    func refreshKeepsFeedOnScreen() async {
+        self.mockClient.homeResponse = TestFixtures.makeHomeResponse(sectionCount: 2)
+        self.mockClient.homeResponseDelays = [.zero, .milliseconds(200)]
+        await self.viewModel.load()
+
+        self.mockClient.homeResponse = TestFixtures.makeHomeResponse(sectionCount: 3)
+        let refresh = Task { await self.viewModel.refresh() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while self.mockClient.getHomeCallCount < 2, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(self.viewModel.loadingState == .loaded)
+        #expect(self.viewModel.sections.count == 2)
+
+        await refresh.value
+        #expect(self.viewModel.sections.count == 3)
+    }
+
     @Test("Refresh clears sections and reloads")
     func refreshClearsSectionsAndReloads() async {
         self.mockClient.homeResponse = TestFixtures.makeHomeResponse(sectionCount: 2)

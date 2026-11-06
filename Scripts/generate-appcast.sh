@@ -110,7 +110,7 @@ missing_tools_message() {
 TAG=""
 DMG=""
 RELEASES_DIR=""
-REPO="${GITHUB_REPOSITORY:-popcornfuzzy/kaset}"
+REPO="${GITHUB_REPOSITORY:-popcornfuzzy/KasetPlus}"
 OUTPUT="$ROOT/appcast.xml"
 KEY_FILE=""
 CHECK_ONLY=0

@@ -49,7 +49,6 @@ struct NowPlayingSidebarQueuePageTests {
         let hosting = NSHostingView(
             rootView: NowPlayingSidebarQueuePage()
                 .environment(playerService)
-                .environment(FavoritesManager(skipLoad: true))
         )
         hosting.frame = NSRect(origin: .zero, size: Self.pageSize)
 
@@ -102,7 +101,6 @@ struct NowPlayingSidebarQueuePageTests {
         let hosting = NSHostingView(
             rootView: NowPlayingSidebarQueuePage()
                 .environment(playerService)
-                .environment(FavoritesManager(skipLoad: true))
         )
         // The page first appears at a provisional height (the column is still taking its shape) …
         hosting.frame = NSRect(x: 0, y: 0, width: Self.pageSize.width, height: 40)

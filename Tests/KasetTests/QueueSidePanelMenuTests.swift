@@ -20,9 +20,6 @@ struct QueueSidePanelMenuTests {
             queue: queue,
             currentIndex: currentIndex,
             isPlaying: false,
-            // A fresh manager: the shared one loads whatever is pinned on this machine, and the menu's
-            // first item is "Add to Favorites" only for a song that is not pinned.
-            favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
             onReorder: { _, _ in nil },
             onRemove: { _ in },
@@ -41,7 +38,6 @@ struct QueueSidePanelMenuTests {
         let menu = coordinator.menu(forRow: 1)
 
         let titles = menu.map(self.menuTitles) ?? []
-        #expect(titles.contains("Add to Favorites"))
         #expect(titles.contains("Start Radio"))
         #expect(titles.contains("Share"))
         #expect(titles.contains("Remove from Queue"))

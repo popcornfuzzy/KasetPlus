@@ -71,7 +71,7 @@ struct AboutSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Link(destination: URL(string: "https://github.com/popcornfuzzy/kaset")!) {
+                Link(destination: URL(string: "https://github.com/popcornfuzzy/KasetPlus")!) {
                     HStack {
                         Text("This Fork")
                         Spacer()

@@ -6,7 +6,6 @@ struct ArtistDetailView: View {
     let artist: Artist
     @State var viewModel: ArtistDetailViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
@@ -351,10 +350,6 @@ struct ArtistDetailView: View {
 
                 Divider()
 
-                FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
-
-                Divider()
-
                 LikeDislikeContextMenu(song: song, likeStatusManager: self.likeStatusManager)
 
                 Divider()
@@ -447,7 +442,7 @@ struct ArtistDetailView: View {
     private func albumCard(_ album: Album) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             // Thumbnail
-            CachedAsyncImage(url: album.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(url: album.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 140, height: 140)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -530,7 +525,7 @@ struct ArtistDetailView: View {
     private func episodeCard(_ episode: ArtistEpisode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                CachedAsyncImage(url: episode.thumbnailURL?.highQualityThumbnailURL) { image in
+                CachedAsyncImage(url: episode.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 220, height: 124)) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -609,7 +604,7 @@ struct ArtistDetailView: View {
                     ForEach(playlists) { playlist in
                         NavigationLink(value: playlist) {
                             VStack(alignment: .leading, spacing: 8) {
-                                CachedAsyncImage(url: playlist.thumbnailURL?.highQualityThumbnailURL) { image in
+                                CachedAsyncImage(url: playlist.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 140, height: 140)) { image in
                                     image
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
@@ -662,7 +657,7 @@ struct ArtistDetailView: View {
 
     private func podcastCard(_ show: PodcastShow) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            CachedAsyncImage(url: show.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(url: show.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 140, height: 140)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -708,7 +703,7 @@ struct ArtistDetailView: View {
 
     private func relatedArtistCard(_ artist: Artist) -> some View {
         VStack(alignment: .center, spacing: 8) {
-            CachedAsyncImage(url: artist.thumbnailURL?.highQualityThumbnailURL) { image in
+            CachedAsyncImage(url: artist.thumbnailURL?.highQualityThumbnailURL, targetSize: CGSize(width: 120, height: 120)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)

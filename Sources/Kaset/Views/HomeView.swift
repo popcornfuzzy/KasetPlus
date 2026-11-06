@@ -5,9 +5,9 @@ import SwiftUI
 struct HomeView: View {
     @State var viewModel: HomeViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(AccountService.self) private var accountService: AccountService?
     @State private var navigationPath = NavigationPath()
     @State private var networkMonitor = NetworkMonitor.shared
 
@@ -47,11 +47,17 @@ struct HomeView: View {
                 PlayerBar()
             }
         }
+        // The feed is the account's, so the page tells its model which account it is showing. The model
+        // shows the skeleton until that account's fresh feed arrives.
         .onAppear {
-            if self.viewModel.loadingState == .idle {
-                Task {
-                    await self.viewModel.load()
-                }
+            let accountID = self.accountService?.currentAccount?.id
+            Task {
+                await self.viewModel.activate(accountID: accountID)
+            }
+        }
+        .onChange(of: self.accountService?.currentAccount?.id) { _, accountID in
+            Task {
+                await self.viewModel.activate(accountID: accountID)
             }
         }
         .refreshable {
@@ -62,105 +68,19 @@ struct HomeView: View {
     // MARK: - Views
 
     private var contentView: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 32) {
-                // Favorites section (hidden when empty)
-                if self.favoritesManager.isVisible {
-                    FavoritesSection(onNavigate: { destination in
-                        if let playlist = destination as? Playlist {
-                            self.navigationPath.append(playlist)
-                        } else if let artist = destination as? Artist {
-                            self.navigationPath.append(artist)
-                        } else if let podcastShow = destination as? PodcastShow {
-                            self.navigationPath.append(podcastShow)
-                        }
-                    })
-                    .staggeredAppearance(index: 0)
-                }
-
-                // API sections - use stable id without array enumeration
-                ForEach(self.viewModel.sections) { section in
-                    self.sectionView(section)
-                        .task {
-                            await self.prefetchImagesAsync(for: section)
-                        }
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-        }
-    }
-
-    private func sectionView(_ section: HomeSection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(section.title)
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 16) {
-                    // Use stable ID from items, avoid enumeration for non-chart sections
-                    if section.isChart {
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                            HomeSectionItemCard(item: item, rank: index + 1) {
-                                self.playItem(item, in: section, at: index)
-                            }
-                            .contextMenu {
-                                HomeCardMenuContent(
-                                    item: item,
-                                    client: self.viewModel.client,
-                                    favoritesManager: self.favoritesManager,
-                                    likeStatusManager: self.likeStatusManager,
-                                    playerService: self.playerService,
-                                    libraryViewModel: self.libraryViewModel
-                                )
-                            }
-                        }
-                    } else {
-                        ForEach(section.items) { item in
-                            HomeSectionItemCard(item: item) {
-                                self.playItem(item, in: section, at: 0)
-                            }
-                            .contextMenu {
-                                HomeCardMenuContent(
-                                    item: item,
-                                    client: self.viewModel.client,
-                                    favoritesManager: self.favoritesManager,
-                                    likeStatusManager: self.likeStatusManager,
-                                    playerService: self.playerService,
-                                    libraryViewModel: self.libraryViewModel
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            .scrollClipDisabled()
-            .horizontalRowEdgeFade()
-        }
-    }
-
-    // MARK: - Image Prefetching
-
-    private static let thumbnailDisplaySize = CGSize(width: 160, height: 160)
-
-    private func prefetchImagesAsync(for section: HomeSection) async {
-        // Early exit if task is cancelled
-        guard !Task.isCancelled else { return }
-
-        let urls = section.items.prefix(10).compactMap { $0.thumbnailURL?.highQualityThumbnailURL }
-        guard !urls.isEmpty else { return }
-
-        await ImageCache.shared.prefetch(
-            urls: urls,
-            targetSize: Self.thumbnailDisplaySize,
-            maxConcurrent: 4
+        HomeFeedCollectionView(
+            sections: self.viewModel.sections,
+            client: self.viewModel.client,
+            playerService: self.playerService,
+            likeStatusManager: self.likeStatusManager,
+            libraryViewModel: self.libraryViewModel,
+            onSelect: { item in self.playItem(item) }
         )
     }
 
     // MARK: - Actions
 
-    private func playItem(_ item: HomeSectionItem, in _: HomeSection, at _: Int) {
+    private func playItem(_ item: HomeSectionItem) {
         switch item {
         case let .song(song):
             // Play the song and fetch similar songs (radio queue) in the background
@@ -193,15 +113,14 @@ struct HomeView: View {
 
 /// The card's context menu, as its own view.
 ///
-/// Dedicated for the same reason as `PlaylistTrackMenuContent`: the favorites and like lookups
-/// happen inside *this* view's body, which SwiftUI evaluates when the menu opens. Evaluating them in
-/// `HomeView`'s body subscribed the whole page to `FavoritesManager`, so pinning a favorite anywhere
-/// rebuilt every visible card.
+/// Dedicated for the same reason as `PlaylistTrackMenuContent`: the like lookup happens inside *this*
+/// view's body, which SwiftUI evaluates when the menu opens. Evaluating it in `HomeView`'s body
+/// subscribed the whole page to `SongLikeStatusManager`, so rating a song anywhere rebuilt every
+/// visible card.
 @available(macOS 26.0, *)
 struct HomeCardMenuContent: View {
     let item: HomeSectionItem
     let client: any YTMusicClientProtocol
-    let favoritesManager: FavoritesManager
     let likeStatusManager: SongLikeStatusManager
     let playerService: PlayerService
     let libraryViewModel: LibraryViewModel?
@@ -214,10 +133,6 @@ struct HomeCardMenuContent: View {
             } label: {
                 Label("Play", systemImage: "play.fill")
             }
-
-            Divider()
-
-            FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
 
             Divider()
 
@@ -297,20 +212,12 @@ struct HomeCardMenuContent: View {
 
             Divider()
 
-            FavoritesContextMenu.menuItem(for: album, manager: self.favoritesManager)
-
-            Divider()
-
             ShareContextMenu.menuItem(for: album)
 
         case let .playlist(playlist):
             NavigationLink(value: playlist) {
                 Label("View Playlist", systemImage: "music.note.list")
             }
-
-            Divider()
-
-            FavoritesContextMenu.menuItem(for: playlist, manager: self.favoritesManager)
 
             Divider()
 
@@ -322,8 +229,6 @@ struct HomeCardMenuContent: View {
             }
 
             Divider()
-
-            FavoritesContextMenu.menuItem(for: artist, manager: self.favoritesManager)
 
             ShareContextMenu.menuItem(for: artist)
         }
@@ -346,5 +251,4 @@ struct HomeCardMenuContent: View {
     let client = YTMusicClient(authService: authService, webKitManager: .shared)
     HomeView(viewModel: HomeViewModel(client: client))
         .environment(PlayerService())
-        .environment(FavoritesManager.shared)
 }

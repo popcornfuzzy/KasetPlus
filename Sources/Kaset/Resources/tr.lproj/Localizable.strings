@@ -16,8 +16,6 @@
 
 "Account" = "Hesap";
 
-"Add to Favorites" = "Favorilere Ekle";
-
 "Add to Library" = "Kitaplığa Ekle";
 
 "Add to Queue" = "Sıraya Ekle";
@@ -206,8 +204,6 @@
 
 "Failed to switch account. Please try again." = "Hesap değiştirilemedi. Lütfen tekrar deneyin.";
 
-"Favorites" = "Favoriler";
-
 "Featured playlists" = "Öne Çıkan Çalma Listeleri";
 
 "Find songs, albums, artists, and playlists" = "Şarkıları, albümleri, sanatçıları ve çalma listelerini bulun";
@@ -299,10 +295,6 @@
 "Mix" = "Mix";
 
 "Moods & Genres" = "Ruh Halleri ve Türler";
-
-"Move to End" = "Sona Taşı";
-
-"Move to Top" = "En Üste Taşı";
 
 "Mute" = "Sesi Kapat";
 
@@ -426,8 +418,6 @@
 "Remember Shuffle & Repeat" = "Karıştırma ve Tekrarı Hatırla";
 
 "Remove Dislike" = "Olumsuz Oyu Kaldır";
-
-"Remove from Favorites" = "Favorilerden Kaldır";
 
 "Remove from Queue" = "Sıradan Kaldır";
 

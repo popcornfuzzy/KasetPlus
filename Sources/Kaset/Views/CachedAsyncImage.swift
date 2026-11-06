@@ -276,11 +276,13 @@ extension CachedAsyncImage where Placeholder == SizedProgressView {
         url: URL?,
         fallbackURL: URL? = nil,
         identity: String? = nil,
+        targetSize: CGSize = .init(width: 320, height: 320),
         @ViewBuilder content: @escaping (Image) -> Content
     ) {
         self.url = url
         self.fallbackURL = fallbackURL
         self.identity = identity
+        self.targetSize = targetSize
         self.content = content
         self.placeholder = { SizedProgressView() }
     }

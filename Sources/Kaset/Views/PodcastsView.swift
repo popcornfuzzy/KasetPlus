@@ -7,7 +7,6 @@ import SwiftUI
 struct PodcastsView: View {
     @State var viewModel: PodcastsViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @State private var navigationPath = NavigationPath()
     @State private var networkMonitor = NetworkMonitor.shared
 
@@ -93,7 +92,7 @@ struct PodcastsView: View {
     private func itemCard(_ item: PodcastSectionItem) -> some View {
         switch item {
         case let .show(show):
-            PodcastShowCard(show: show, favoritesManager: self.favoritesManager) {
+            PodcastShowCard(show: show) {
                 self.navigationPath.append(show)
             }
         case let .episode(episode):
@@ -133,14 +132,13 @@ struct PodcastsView: View {
 @available(macOS 26.0, *)
 private struct PodcastShowCard: View {
     let show: PodcastShow
-    let favoritesManager: FavoritesManager
     let action: () -> Void
 
     var body: some View {
         Button(action: self.action) {
             VStack(alignment: .leading, spacing: 8) {
                 // Thumbnail
-                CachedAsyncImage(url: self.show.thumbnailURL) { image in
+                CachedAsyncImage(url: self.show.thumbnailURL, targetSize: CGSize(width: 160, height: 160)) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -166,9 +164,6 @@ private struct PodcastShowCard: View {
             .frame(width: 160)
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            FavoritesContextMenu.menuItem(for: self.show, manager: self.favoritesManager)
-        }
     }
 }
 
@@ -184,7 +179,7 @@ private struct PodcastEpisodeCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 // Thumbnail with play indicator
                 ZStack(alignment: .bottomTrailing) {
-                    CachedAsyncImage(url: self.episode.thumbnailURL) { image in
+                    CachedAsyncImage(url: self.episode.thumbnailURL, targetSize: CGSize(width: 200, height: 112)) { image in
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fill)
@@ -259,7 +254,6 @@ struct PodcastShowView: View {
     let show: PodcastShow
     let client: any YTMusicClientProtocol
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
     @State private var episodes: [PodcastEpisode] = []
@@ -333,9 +327,6 @@ struct PodcastShowView: View {
             }
             .frame(width: 180, height: 180)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            .contextMenu {
-                FavoritesContextMenu.menuItem(for: self.show, manager: self.favoritesManager)
-            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text(self.show.title)

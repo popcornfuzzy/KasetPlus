@@ -34,7 +34,6 @@ struct QueueTableRefreshTests {
             currentIndex: currentIndex,
             manualQueueCount: manualQueueCount,
             isPlaying: false,
-            favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
             onReorder: onReorder,
             onRemove: { _ in },

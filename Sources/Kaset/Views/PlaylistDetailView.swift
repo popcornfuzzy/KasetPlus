@@ -14,7 +14,6 @@ struct PlaylistDetailView: View {
     /// itself and must not declare a second `navigationDestination` (see `contentView(_:)`).
     let onNavigateToArtist: (Artist) -> Void
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(AccountService.self) private var accountService
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
@@ -1117,7 +1116,6 @@ struct PlaylistDetailView: View {
                 isPlaying: isPlaying,
                 showsSeparator: index < tracks.count - 1,
                 isScrolling: self.isScrolling,
-                favoritesManager: self.favoritesManager,
                 likeStatusManager: self.likeStatusManager,
                 playerService: self.playerService,
                 client: self.viewModel.client,
@@ -1183,7 +1181,6 @@ struct PlaylistDetailView: View {
                 showsSeparator: index < recommendations.tracks.count - 1,
                 showsIndex: false,
                 isScrolling: self.isScrolling,
-                favoritesManager: self.favoritesManager,
                 likeStatusManager: self.likeStatusManager,
                 playerService: self.playerService,
                 client: self.viewModel.client,

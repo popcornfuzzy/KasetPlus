@@ -6,7 +6,6 @@ import SwiftUI
 struct HistoryView: View {
     @State var viewModel: HistoryViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @State private var navigationPath = NavigationPath()
     @State private var networkMonitor = NetworkMonitor.shared
 
@@ -204,10 +203,6 @@ struct HistoryView: View {
             } label: {
                 Label(String(localized: "Play"), systemImage: "play.fill")
             }
-
-            Divider()
-
-            FavoritesContextMenu.menuItem(for: song, manager: self.favoritesManager)
 
             Divider()
 

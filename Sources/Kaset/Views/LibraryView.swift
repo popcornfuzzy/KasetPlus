@@ -69,7 +69,6 @@ enum LibrarySortOrder: String, CaseIterable, Identifiable {
 struct LibraryView: View {
     @State var viewModel: LibraryViewModel
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
     @Environment(AccountService.self) private var accountService
     @State private var networkMonitor = NetworkMonitor.shared
 
@@ -517,9 +516,7 @@ struct LibraryView: View {
             }
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            FavoritesContextMenu.menuItem(for: show, manager: self.favoritesManager)
-        }
+
     }
 
     private func artistCard(_ artist: Artist) -> some View {
@@ -558,7 +555,6 @@ struct LibraryView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            FavoritesContextMenu.menuItem(for: artist, manager: self.favoritesManager)
             ShareContextMenu.menuItem(for: artist)
         }
     }
@@ -645,5 +641,4 @@ extension LibrarySortOrder {
     let client = YTMusicClient(authService: authService, webKitManager: .shared)
     LibraryView(viewModel: LibraryViewModel(client: client))
         .environment(PlayerService())
-        .environment(FavoritesManager.shared)
 }

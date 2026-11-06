@@ -5,7 +5,6 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct QueueSidePanelView: View {
     @Environment(PlayerService.self) private var playerService
-    @Environment(FavoritesManager.self) private var favoritesManager
 
     /// Fixed panel width, or `nil` for a panel that fills whatever width it is given.
     ///
@@ -60,7 +59,6 @@ struct QueueSidePanelView: View {
                     currentIndex: self.playerService.queueHighlightIndex ?? -1,
                     manualQueueCount: self.playerService.manualQueueCount,
                     isPlaying: self.playerService.isPlaying,
-                    favoritesManager: self.favoritesManager,
                     onSelect: { index in
                         Task {
                             await self.playerService.playFromQueue(at: index)
@@ -157,7 +155,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
     /// How many rows under `currentIndex` the reader queued by hand (see `PlayerService.manualQueueCount`).
     let manualQueueCount: Int
     let isPlaying: Bool
-    let favoritesManager: FavoritesManager
     let onSelect: (Int) -> Void
     /// Reorders the queue and returns what the table must show afterwards, or `nil` when the model
     /// refused the move.
@@ -185,7 +182,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             manualQueueCount: self.manualQueueCount
         )
         coordinator.isPlaying = self.isPlaying
-        coordinator.favoritesManager = self.favoritesManager
         coordinator.reloadIfNeeded(in: viewController.tableView)
         // Update current track highlighting and waveform animation
         if let tableView = viewController.tableView {
@@ -210,7 +206,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             currentIndex: self.currentIndex,
             manualQueueCount: self.manualQueueCount,
             isPlaying: self.isPlaying,
-            favoritesManager: self.favoritesManager,
             onSelect: self.onSelect,
             onReorder: self.onReorder,
             onRemove: self.onRemove,
@@ -358,7 +353,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         }
 
         var isPlaying: Bool
-        var favoritesManager: FavoritesManager
         let onSelect: (Int) -> Void
         let onReorder: (Int, Int) -> QueueTableState?
         let onRemove: (String) -> Void
@@ -381,7 +375,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         private let dragType = NSPasteboard.PasteboardType("com.kaset.queueitem")
 
         init(queue: [Song], currentIndex: Int, manualQueueCount: Int = 0, isPlaying: Bool,
-             favoritesManager: FavoritesManager,
              onSelect: @escaping (Int) -> Void, onReorder: @escaping (Int, Int) -> QueueTableState?, onRemove: @escaping (String) -> Void,
              onClearHandQueued: @escaping () -> Void = {}, onStartRadio: @escaping (Song) -> Void)
         {
@@ -389,7 +382,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.currentIndex = currentIndex
             self.manualQueueCount = manualQueueCount
             self.isPlaying = isPlaying
-            self.favoritesManager = favoritesManager
             self.onSelect = onSelect
             self.onReorder = onReorder
             self.onRemove = onRemove
@@ -787,20 +779,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         func menu(forRow row: Int) -> NSMenu? {
             guard let index = self.queueIndex(forTableRow: row), let song = queue[safe: index] else { return nil }
             let menu = NSMenu()
-            let manager = self.favoritesManager
-            let isPinned = MainActor.assumeIsolated { manager.isPinned(song: song) }
-
-            let favoritesItem = NSMenuItem(
-                title: isPinned ? "Remove from Favorites" : "Add to Favorites",
-                action: #selector(Coordinator.contextMenuFavorites(_:)),
-                keyEquivalent: ""
-            )
-            favoritesItem.target = self
-            favoritesItem.representedObject = song
-            favoritesItem.image = NSImage(systemSymbolName: isPinned ? "heart.slash" : "heart", accessibilityDescription: nil)
-            menu.addItem(favoritesItem)
-
-            menu.addItem(NSMenuItem.separator())
 
             let startRadioItem = NSMenuItem(title: "Start Radio", action: #selector(Coordinator.contextMenuStartRadio(_:)), keyEquivalent: "")
             startRadioItem.target = self
@@ -828,12 +806,6 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             }
 
             return menu
-        }
-
-        @objc private func contextMenuFavorites(_ sender: NSMenuItem) {
-            guard let song = sender.representedObject as? Song else { return }
-            let manager = self.favoritesManager
-            MainActor.assumeIsolated { manager.toggle(song: song) }
         }
 
         @objc private func contextMenuStartRadio(_ sender: NSMenuItem) {
@@ -1580,6 +1552,5 @@ struct QueueFooterActions: View {
     let playerService = PlayerService()
     QueueSidePanelView()
         .environment(playerService)
-        .environment(FavoritesManager.shared)
         .frame(height: 600)
 }

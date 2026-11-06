@@ -107,8 +107,10 @@ actor ImageCache {
             return cached
         }
 
-        // Check disk cache
-        if let diskImage = loadFromDisk(url: url, targetSize: targetSize) {
+        // Check disk cache. The read and the decode run off the actor (see `loadFromDisk`): this actor
+        // represents every artwork lookup in the app, and a scroll into unseen shelves issues a dozen at
+        // once, so a decode held here makes each picture wait for the ones ahead of it.
+        if let diskImage = await self.loadFromDisk(url: url, targetSize: targetSize) {
             self.memoryCache.setObject(diskImage, forKey: url as NSURL)
             return diskImage
         }
@@ -137,10 +139,10 @@ actor ImageCache {
                     }
                     return nil
                 }
-                guard let image = Self.createImage(from: data, targetSize: targetSize) else { return nil }
+                guard let image = await Self.decodeImage(data, targetSize: targetSize) else { return nil }
                 let cost = targetSize != nil ? Int(image.size.width * image.size.height * 4) : data.count
                 self.memoryCache.setObject(image, forKey: url as NSURL, cost: cost)
-                self.saveToDisk(url: url, data: data)
+                await self.saveToDisk(url: url, data: data)
                 return image
             } catch {
                 return nil
@@ -317,17 +319,31 @@ actor ImageCache {
         self.diskCacheURL.appendingPathComponent(self.cacheKey(for: url))
     }
 
-    private func loadFromDisk(url: URL, targetSize: CGSize? = nil) -> NSImage? {
+    /// Reads a cached body and decodes it, both off the actor.
+    ///
+    /// The file read and the ImageIO downsample are the slow half of a disk hit, and performing them on
+    /// the actor made every other artwork lookup in the app queue behind them: a page scrolling into
+    /// unseen rows asks for a dozen pictures at once, and they were decoded one at a time.
+    private func loadFromDisk(url: URL, targetSize: CGSize? = nil) async -> NSImage? {
         let path = self.diskCachePath(for: url)
-        guard let data = try? Data(contentsOf: path) else {
-            return nil
-        }
-        return Self.createImage(from: data, targetSize: targetSize)
+        return await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: path) else { return NSImage?.none }
+            return Self.createImage(from: data, targetSize: targetSize)
+        }.value
     }
 
-    private func saveToDisk(url: URL, data: Data) {
+    /// Decodes artwork off the actor, for the same reason as ``loadFromDisk(url:targetSize:)``.
+    private static func decodeImage(_ data: Data, targetSize: CGSize?) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) {
+            Self.createImage(from: data, targetSize: targetSize)
+        }.value
+    }
+
+    private func saveToDisk(url: URL, data: Data) async {
         let path = self.diskCachePath(for: url)
-        try? data.write(to: path, options: .atomic)
+        await Task.detached(priority: .utility) {
+            try? data.write(to: path, options: .atomic)
+        }.value
 
         // Check the limit against a running total. Evicting used to rebuild that total by walking
         // the whole cache directory, with a `stat` per file, after *every* image saved — which the

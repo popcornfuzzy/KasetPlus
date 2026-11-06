@@ -3,8 +3,13 @@ import SwiftUI
 // MARK: - HomeSectionItemCard
 
 /// Reusable card view for home section items (songs, playlists, albums, artists).
+///
+/// `Equatable` (with `==` comparing only what the card draws) so the page can apply `.equatable()`:
+/// Home's four background continuations each append sections, and every append re-rendered the whole
+/// page — re-evaluating every realized card's body to produce the same card. This is ADR-0014's rule
+/// for list rows, applied to Home's shelves.
 @available(macOS 26.0, *)
-struct HomeSectionItemCard: View {
+struct HomeSectionItemCard: View, Equatable {
     let item: HomeSectionItem
     let rank: Int?
     let action: () -> Void
@@ -13,6 +18,11 @@ struct HomeSectionItemCard: View {
     private static let cardWidth: CGFloat = 160
     private static let cardHeight: CGFloat = 160
 
+    /// Size the artwork is decoded at. `ImageCache` doubles it for Retina, so this asks for a 320 px
+    /// bitmap for a 160 pt slot; the default target would have decoded 640 px for every card, which is
+    /// the sort of per-card cost ADR-0014 removed from the playlist rows.
+    private static let artworkSize = CGSize(width: cardWidth, height: cardHeight)
+
     /// Hover state for play overlay.
     @State private var isHovering = false
 
@@ -20,6 +30,12 @@ struct HomeSectionItemCard: View {
         self.item = item
         self.rank = rank
         self.action = action
+    }
+
+    /// Compares what the card draws. The action closure is a new value on every page render but never
+    /// changes the card, so comparing it would defeat the point of the conformance.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.item == rhs.item && lhs.rank == rhs.rank
     }
 
     /// Fill for the play overlay shown on hover.
@@ -76,7 +92,7 @@ struct HomeSectionItemCard: View {
     private var thumbnail: some View {
         ZStack {
             if let url = self.item.thumbnailURL?.highQualityThumbnailURL {
-                CachedAsyncImage(url: url) { image in
+                CachedAsyncImage(url: url, targetSize: Self.artworkSize) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)

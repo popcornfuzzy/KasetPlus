@@ -50,7 +50,6 @@ struct PlaylistTrackRow: View, Equatable {
     let isScrolling: Bool
 
     /// Services needed by the row's menu and add-to-playlist popover.
-    let favoritesManager: FavoritesManager
     let likeStatusManager: SongLikeStatusManager
     let playerService: PlayerService
     let client: any YTMusicClientProtocol
@@ -253,7 +252,6 @@ struct PlaylistTrackRow: View, Equatable {
         PlaylistTrackMenuContent(
             song: self.song,
             isAlbum: self.isAlbum,
-            favoritesManager: self.favoritesManager,
             likeStatusManager: self.likeStatusManager,
             playerService: self.playerService,
             onPlay: self.onPlay,
@@ -267,15 +265,13 @@ struct PlaylistTrackRow: View, Equatable {
 
 /// Menu items shared by a playlist track row's context menu and its trailing ellipsis menu.
 ///
-/// This is a dedicated view so the favorites/like lookups happen inside *this* view's body
-/// rather than the playlist list's body. Otherwise every visible row would subscribe the
-/// list to `FavoritesManager`, and pinning a favorite anywhere in the app would rebuild all
-/// of them.
+/// This is a dedicated view so the like lookups happen inside *this* view's body rather than the
+/// playlist list's body. Otherwise every visible row would subscribe the list to
+/// `SongLikeStatusManager`, and rating a song anywhere in the app would rebuild all of them.
 @available(macOS 26.0, *)
 struct PlaylistTrackMenuContent: View {
     let song: Song
     let isAlbum: Bool
-    let favoritesManager: FavoritesManager
     let likeStatusManager: SongLikeStatusManager
     let playerService: PlayerService
     let onPlay: () -> Void
@@ -288,10 +284,6 @@ struct PlaylistTrackMenuContent: View {
         } label: {
             Label("Play", systemImage: "play.fill")
         }
-
-        Divider()
-
-        FavoritesContextMenu.menuItem(for: self.song, manager: self.favoritesManager)
 
         Divider()
 

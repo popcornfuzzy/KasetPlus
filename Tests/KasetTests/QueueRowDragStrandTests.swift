@@ -20,7 +20,6 @@ struct QueueRowDragStrandTests {
             queue: queue,
             currentIndex: currentIndex,
             isPlaying: false,
-            favoritesManager: FavoritesManager(skipLoad: true),
             onSelect: { _ in },
             onReorder: { _, _ in nil },
             onRemove: { _ in },

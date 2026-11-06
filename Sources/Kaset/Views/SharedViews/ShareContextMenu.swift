@@ -139,20 +139,4 @@ enum ShareContextMenu {
         }
     }
 
-    /// Creates a share menu item for a FavoriteItem.
-    @ViewBuilder
-    static func menuItem(for item: FavoriteItem) -> some View {
-        switch item.itemType {
-        case let .song(song):
-            Self.menuItem(for: song)
-        case let .album(album):
-            Self.menuItem(for: album)
-        case let .playlist(playlist):
-            Self.menuItem(for: playlist)
-        case let .artist(artist):
-            Self.menuItem(for: artist)
-        case let .podcastShow(show):
-            Self.menuItem(for: show)
-        }
-    }
 }

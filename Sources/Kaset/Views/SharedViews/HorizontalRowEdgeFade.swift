@@ -64,22 +64,7 @@ struct HorizontalRowEdgeFade: ViewModifier {
             .padding(.vertical, Self.hoverBleed)
             // Also a leading edge, which lands in the page's padding once the outer padding is removed.
             .padding(.leading, Self.hoverBleed)
-            .mask {
-                HStack(spacing: 0) {
-                    if self.fades.leading > 0.5 {
-                        // Longer by the bleed, so the fade still ends the same distance into the card
-                        // even though its clear end now starts in the page's padding.
-                        Self.leadingRamp
-                            .frame(width: self.fades.leading + Self.hoverBleed)
-                    }
-                    Rectangle()
-                        .fill(.black)
-                    if self.fades.trailing > 0.5 {
-                        Self.trailingRamp
-                            .frame(width: self.fades.trailing)
-                    }
-                }
-            }
+            .modifier(RowEdgeMask(leading: self.fades.leading, trailing: self.fades.trailing, bleed: Self.hoverBleed))
             // Taken back outside the mask: the row still reports the size the page gave it, and only its
             // drawing — the hover bleed included — extends past its slot. The leading bleed is offset
             // back out of the row entirely, so the cards stay where the page put them and only the
@@ -107,7 +92,7 @@ struct HorizontalRowEdgeFade: ViewModifier {
 
     /// The fade itself: mostly opaque, so a card stays readable right up to the last few points and
     /// only its very edge dissolves. A straight `black`→`clear` ramp over this width read as a wash.
-    private static let trailingRamp = LinearGradient(
+    static let trailingRamp = LinearGradient(
         stops: [
             .init(color: .black, location: 0),
             .init(color: .black.opacity(0.97), location: 0.25),
@@ -121,7 +106,7 @@ struct HorizontalRowEdgeFade: ViewModifier {
     )
 
     /// The same ramp, mirrored for the leading edge.
-    private static let leadingRamp = LinearGradient(
+    static let leadingRamp = LinearGradient(
         stops: [
             .init(color: .clear, location: 0),
             .init(color: .black.opacity(0.32), location: 0.1),
@@ -133,6 +118,44 @@ struct HorizontalRowEdgeFade: ViewModifier {
         startPoint: .leading,
         endPoint: .trailing
     )
+}
+
+// MARK: - RowEdgeMask
+
+/// The fade mask itself, applied only while an edge is actually hiding content.
+///
+/// A mask draws the row — its cards, their hover scales, their shadows — through an offscreen pass, and
+/// the pass covers the whole row even when both fade widths are zero. Home stacks a dozen shelves, most
+/// of them narrower than the page, and those rows used to pay that pass to draw an opaque rectangle over
+/// themselves. A row is masked only when the mask would fade something.
+@available(macOS 26.0, *)
+private struct RowEdgeMask: ViewModifier {
+    let leading: CGFloat
+    let trailing: CGFloat
+    let bleed: CGFloat
+
+    func body(content: Content) -> some View {
+        if self.leading > 0.5 || self.trailing > 0.5 {
+            content.mask {
+                HStack(spacing: 0) {
+                    if self.leading > 0.5 {
+                        // Longer by the bleed, so the fade still ends the same distance into the card
+                        // even though its clear end now starts in the page's padding.
+                        HorizontalRowEdgeFade.leadingRamp
+                            .frame(width: self.leading + self.bleed)
+                    }
+                    Rectangle()
+                        .fill(.black)
+                    if self.trailing > 0.5 {
+                        HorizontalRowEdgeFade.trailingRamp
+                            .frame(width: self.trailing)
+                    }
+                }
+            }
+        } else {
+            content
+        }
+    }
 }
 
 @available(macOS 26.0, *)
