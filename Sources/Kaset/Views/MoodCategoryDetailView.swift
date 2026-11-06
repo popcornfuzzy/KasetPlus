@@ -80,6 +80,7 @@ struct MoodCategoryDetailView: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 

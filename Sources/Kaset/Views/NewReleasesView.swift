@@ -90,6 +90,7 @@ struct NewReleasesView: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 

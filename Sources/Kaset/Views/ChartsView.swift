@@ -90,6 +90,7 @@ struct ChartsView: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 

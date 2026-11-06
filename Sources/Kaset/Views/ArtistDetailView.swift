@@ -429,6 +429,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 
@@ -522,6 +523,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 
@@ -592,6 +594,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 
@@ -633,6 +636,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 
@@ -652,6 +656,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 
@@ -697,6 +702,7 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 

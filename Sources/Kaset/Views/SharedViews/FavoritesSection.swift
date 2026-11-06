@@ -44,6 +44,7 @@ struct FavoritesSection: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "Favorites"))

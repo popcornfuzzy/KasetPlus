@@ -136,6 +136,7 @@ struct HomeView: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 

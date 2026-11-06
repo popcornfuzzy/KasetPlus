@@ -85,6 +85,7 @@ struct PodcastsView: View {
                     }
                 }
             }
+            .horizontalRowEdgeFade()
         }
     }
 

@@ -80,3 +80,4 @@ What becomes easier or more difficult because of this change?
 | [0042](0042-like-status-authority.md) | One Authority per Question: Where the Transport's Like Status Comes From | Accepted |
 | [0043](0043-playlist-page-cache.md) | A Stored Page per Playlist, Shown Before the Network Answers | Accepted |
 | [0044](0044-unison-voting.md) | Voting on Unison Lyrics | Accepted |
+| [0045](0045-horizontal-row-edge-fade.md) | Softened Horizontal Row Edges (Masked Edge Fade) | Accepted |

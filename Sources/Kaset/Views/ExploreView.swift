@@ -90,6 +90,7 @@ struct ExploreView: View {
                 }
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 

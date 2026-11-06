@@ -392,6 +392,7 @@ struct SearchView: View {
                 .padding(.vertical, 4)
             }
             .scrollClipDisabled()
+            .horizontalRowEdgeFade()
         }
     }
 
