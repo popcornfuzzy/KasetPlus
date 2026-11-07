@@ -61,6 +61,9 @@ enum AccessibilityID {
         static let artwork = "nowPlayingSidebar.artwork"
         static let video = "nowPlayingSidebar.video"
         static let videoToggle = "nowPlayingSidebar.videoToggle"
+        /// The invisible switch over the artwork: a click flips between the still cover and the
+        /// animated canvas.
+        static let canvasToggle = "nowPlayingSidebar.canvasToggle"
         static let trackTitle = "nowPlayingSidebar.trackTitle"
         /// A credited artist under the artwork: one button per artist, each opening its own page.
         static func trackArtist(_ artistId: String) -> String {
@@ -212,6 +215,13 @@ enum AccessibilityID {
         static let transcriptToggle = "fullscreenPodcast.transcriptToggle"
         static let transcript = "fullscreenPodcast.transcript"
         static let chapterHeader = "fullscreenPodcast.chapterHeader"
+    }
+
+    /// The in-window fullscreen now playing player.
+    enum FullscreenNowPlaying {
+        /// The invisible switch over the artwork card: a click flips between the still cover and the
+        /// animated canvas.
+        static let canvasToggle = "fullscreenNowPlaying.canvasToggle"
     }
 
     enum MainWindow {

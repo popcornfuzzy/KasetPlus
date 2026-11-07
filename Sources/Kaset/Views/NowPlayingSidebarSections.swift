@@ -235,19 +235,48 @@ struct NowPlayingSidebarCard<Content: View>: View {
 @available(macOS 26.0, *)
 struct NowPlayingSidebarArtwork: View {
     let track: Song?
-    /// Canvas resolved for the current track, or `nil` when there is nothing to show.
+    /// Canvas resolved for the current track, or `nil` when there is nothing to look up.
     let canvasURL: URL?
+    /// Whether the animated canvas is drawn over the still artwork, or the reader switched it off by
+    /// clicking the cover (the fullscreen player shares that choice).
+    var showsCanvas: Bool = true
     let height: CGFloat
     let reduceMotion: Bool
+    /// Height of the window's toolbar band the artwork runs behind, so the invisible switch over the
+    /// cover does not sit in that band and swallow the toolbar's own clicks.
+    var topInset: CGFloat = 0
+    /// Flips between the canvas and the still artwork. `nil` leaves the cover inert.
+    var onToggleCanvas: (() -> Void)?
 
     @State private var canvasReady = false
     @State private var canvasFailed = false
 
     var body: some View {
+        ZStack(alignment: .top) {
+            self.media
+            self.canvasSwitch
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: self.height)
+        .clipped()
+        .onChange(of: self.canvasURL) { _, _ in
+            // A new track's canvas reports readiness again; a canvas that failed is retried.
+            self.canvasReady = false
+            self.canvasFailed = false
+        }
+        .onChange(of: self.showsCanvas) { _, _ in
+            // The player was torn down while the still artwork was on screen, so the canvas that
+            // comes back has to prove it is drawing again before it crossfades in.
+            self.canvasReady = false
+        }
+    }
+
+    /// The cover, with the canvas over it once the first frame really renders.
+    private var media: some View {
         ZStack {
             self.artwork
 
-            if let canvasURL = self.canvasURL, !self.canvasFailed {
+            if let canvasURL = self.canvasURL, self.showsCanvas, !self.canvasFailed {
                 CanvasVideoView(
                     url: canvasURL,
                     onReadyToPlay: { self.canvasReady = true },
@@ -286,11 +315,38 @@ struct NowPlayingSidebarArtwork: View {
         // whatever is beneath it. The column reaches to the window's top edge, so without this the
         // artwork's frame is another invisible hit target over the toolbar.
         .allowsHitTesting(false)
-        .onChange(of: self.canvasURL) { _, _ in
-            // A new track's canvas reports readiness again; a canvas that failed is retried.
-            self.canvasReady = false
-            self.canvasFailed = false
+    }
+
+    /// The invisible switch over the cover: a click flips between the still artwork and the animated
+    /// canvas. Nothing is drawn, and it exists only when there is a canvas to switch to and the
+    /// player did not fail to load one, so the cover never carries a click that does nothing.
+    ///
+    /// Its top edge starts below the toolbar band (`topInset`): the cover runs behind the toolbar, and
+    /// a target over that band would take the toolbar's own clicks.
+    @ViewBuilder
+    private var canvasSwitch: some View {
+        if let onToggleCanvas, self.canvasURL != nil, !self.canvasFailed {
+            Button(action: onToggleCanvas) {
+                Color.clear.contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, self.topInset)
+            .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.canvasToggle)
+            .accessibilityLabel(self.canvasSwitchLabel)
+            .help(self.canvasSwitchHelp)
         }
+    }
+
+    private var canvasSwitchLabel: String {
+        self.showsCanvas
+            ? String(localized: "Show Still Artwork")
+            : String(localized: "Show Animated Canvas")
+    }
+
+    private var canvasSwitchHelp: String {
+        self.showsCanvas
+            ? String(localized: "Show the still artwork")
+            : String(localized: "Play the animated canvas")
     }
 
     private var artwork: some View {

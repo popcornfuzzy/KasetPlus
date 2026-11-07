@@ -27,6 +27,20 @@ final class CanvasService {
     /// Provider that supplied the current canvas.
     private(set) var activeProvider: String?
 
+    /// Whether the reader wants the animated canvas or the still artwork.
+    ///
+    /// Session state, deliberately not persisted: a click on the artwork flips it (see
+    /// `NowPlayingSidebarArtwork` and `FullscreenNowPlayingView`), while the persisted
+    /// "Enable Animated Canvas" setting decides whether a canvas is looked up at all. It is sticky
+    /// across tracks, like the sidebar's video choice, and shared by the sidebar and the fullscreen
+    /// player so a choice made in one holds in the other.
+    private(set) var isCanvasVisible = true
+
+    /// Flips between the animated canvas and the still album artwork.
+    func toggleCanvasVisibility() {
+        self.isCanvasVisible.toggle()
+    }
+
     private let providers: [any CanvasProvider]
     private let lookupCache: CanvasCache
     private let videoFileCache: CanvasVideoFileCache

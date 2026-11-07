@@ -157,6 +157,11 @@ struct FullscreenNowPlayingView: View {
             self.canvasReady = false
             self.canvasFailed = false
         }
+        .onChange(of: self.canvasService.isCanvasVisible) { _, _ in
+            // The player was torn down while the still artwork was on screen, so the canvas that
+            // comes back has to prove it is drawing again before it crossfades in.
+            self.canvasReady = false
+        }
         .task(id: self.canvasTaskID) {
             await self.loadCanvasWhenReady()
         }
@@ -289,10 +294,44 @@ struct FullscreenNowPlayingView: View {
             }
         }
         .aspectRatio(1, contentMode: .fit)
+        // Invisible switch: a click anywhere on the artwork flips between the still cover and the
+        // animated canvas.
+        .overlay { self.canvasSwitch }
         .clipShape(RoundedRectangle(cornerRadius: Layout.artworkCornerRadius, style: .continuous))
         .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
         .scaleEffect(self.artworkScale)
         .animation(self.reduceMotion ? nil : AppAnimation.spring, value: self.artworkScale)
+    }
+
+    /// The invisible switch over the artwork card: a click flips between the still cover and the
+    /// animated canvas, the same choice the sidebar's artwork makes. Nothing is drawn, and it exists
+    /// only when there is a canvas to switch to, so a click on the art never does nothing.
+    @ViewBuilder
+    private var canvasSwitch: some View {
+        if self.canToggleCanvas {
+            Button {
+                HapticService.toggle()
+                self.canvasService.toggleCanvasVisibility()
+            } label: {
+                Color.clear.contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(AccessibilityID.FullscreenNowPlaying.canvasToggle)
+            .accessibilityLabel(self.canvasSwitchLabel)
+            .help(self.canvasSwitchHelp)
+        }
+    }
+
+    private var canvasSwitchLabel: String {
+        self.canvasService.isCanvasVisible
+            ? String(localized: "Show Still Artwork")
+            : String(localized: "Show Animated Canvas")
+    }
+
+    private var canvasSwitchHelp: String {
+        self.canvasService.isCanvasVisible
+            ? String(localized: "Show the still artwork")
+            : String(localized: "Play the animated canvas")
     }
 
     /// The YouTube Music still album art: always the base layer, always filling the square card.
@@ -740,15 +779,25 @@ struct FullscreenNowPlayingView: View {
     private func removeKeyMonitor() { guard let monitor = self.keyMonitor else { return }; NSEvent.removeMonitor(monitor); self.keyMonitor = nil }
 
     /// Canvas is shown only for the current non-podcast track when the feature
-    /// is enabled and the video did not fail to load.
+    /// is enabled, the reader has not switched it off by clicking the artwork, and the video did not
+    /// fail to load.
     private var shouldShowCanvas: Bool {
         guard self.playerService.showFullscreenNowPlaying,
-              SettingsManager.shared.animatedCanvasEnabled,
+              self.canvasService.isCanvasVisible
+        else { return false }
+        return self.canToggleCanvas
+    }
+
+    /// Whether the artwork has something to switch between: the feature is on, a canvas resolved for
+    /// this track, and its player did not fail to load.
+    private var canToggleCanvas: Bool {
+        guard SettingsManager.shared.animatedCanvasEnabled,
               !self.canvasFailed,
-              let track = self.playerService.currentTrack,
-              !self.playerService.isCurrentTrackPodcast
+              !self.playerService.isCurrentTrackPodcast,
+              let track = self.playerService.currentTrack
         else { return false }
         return self.canvasService.currentCanvasVideoId == track.videoId
+            && self.canvasService.currentCanvasURL != nil
     }
 
     private var shouldAnimateCanvas: Bool {

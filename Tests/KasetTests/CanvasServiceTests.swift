@@ -200,6 +200,28 @@ struct CanvasServiceTests {
         #expect(service.currentCanvasVideoId == nil)
     }
 
+    // MARK: - Still artwork switch
+
+    @Test("the artwork switch hides the canvas without discarding the resolved one")
+    func togglingCanvasVisibilityKeepsTheResolvedCanvas() async {
+        let artwork = Self.makeArtwork(source: "Tidal", name: "tidal-canvas")
+        let provider = MockCanvasProvider(name: "Tidal", result: artwork)
+        let service = Self.makeService(providers: [provider])
+
+        await service.loadCanvas(for: Self.makeInfo(videoId: "video-toggle"))
+        #expect(service.isCanvasVisible)
+
+        service.toggleCanvasVisibility()
+        #expect(service.isCanvasVisible == false)
+        // Switching back is instant: hiding the canvas is a view choice, not a reason to search again.
+        #expect(service.currentCanvas == artwork)
+        #expect(service.currentCanvasURL == artwork.videoURL)
+
+        service.toggleCanvasVisibility()
+        #expect(service.isCanvasVisible)
+        #expect(await provider.callCount() == 1)
+    }
+
     // MARK: - Helpers
 
     /// - Parameter isEnabled: Stated rather than read from the app's settings: those persist across a

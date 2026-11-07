@@ -424,8 +424,10 @@ struct NowPlayingSidebarView: View {
     /// The media at the top of the column: the video when the reader asked for it and one is
     /// available, the artwork otherwise.
     ///
-    /// The toggle only exists while a video is available — a track without one is artwork, full
-    /// stop — so there is no dead control. It floats over the media's bottom-trailing corner:
+    /// The artwork is itself a switch: a click on it flips between the still cover and the track's
+    /// animated canvas (`NowPlayingSidebarArtwork`), with nothing drawn to say so. The video toggle
+    /// only exists while a video is available — a track without one is artwork, full stop — so there
+    /// is no dead control. It floats over the media's bottom-trailing corner:
     /// the top-trailing corner sits in the toolbar band the media runs behind, where the
     /// window's own trailing toolbar items can overlap it out of sight.
     private var mediaSection: some View {
@@ -452,8 +454,11 @@ struct NowPlayingSidebarView: View {
                 NowPlayingSidebarArtwork(
                     track: self.playerService.currentTrack,
                     canvasURL: self.canvasURL,
+                    showsCanvas: self.canvasService.isCanvasVisible,
                     height: self.artworkHeight,
-                    reduceMotion: self.reduceMotion
+                    reduceMotion: self.reduceMotion,
+                    topInset: self.topInset,
+                    onToggleCanvas: self.toggleCanvas
                 )
             }
 
@@ -1026,6 +1031,13 @@ struct NowPlayingSidebarView: View {
     }
 
     // MARK: - Actions
+
+    /// Flips the artwork between the still cover and its animated canvas, the choice the fullscreen
+    /// player shares.
+    private func toggleCanvas() {
+        HapticService.toggle()
+        self.canvasService.toggleCanvasVisibility()
+    }
 
     private func expand(to page: NowPlayingSidebarPage) {
         // A card is one click target whose own content also handles clicks, so one press can arrive
