@@ -44,19 +44,31 @@ so a watch page left to itself starts playing the moment it is up. A page loaded
 must not: it would be audio the user did not ask for, on a track the app is deliberately not tracking
 yet. Such a page carries a `kaset_preload=1` query flag, and a document-start gate
 (`SingletonPlayerWebView.preloadGateScript`) reads it and swallows the page's own `play()` calls. The
-hold is lifted by every control Kaset drives (`releasePreloadHold()`), by the first click or keystroke
-the user makes in the page (the mini player *is* the page's controls), and by revealing the mini
-player.
+hold is lifted by Kaset's own controls (`releasePreloadHold()`) and by revealing the mini player, whose
+page *is* its own controls — never by a click or keystroke landing in a page the user cannot see.
 
 Lifting the hold also realigns the page: YouTube's player was told playback started and would
 otherwise take the next play/pause click as a *pause*.
 
-The hold can also be lifted from inside the page — by the first click or keystroke the user makes in
-it — and that is a lift Swift has to hear about. The gate posts `PRELOAD_HOLD_RELEASED` and the
-WebView takes the page as playback, exactly as revealing the mini player does. Without it Swift kept
-the page marked silent while the page played: its playback observations were dropped, so the player
-bar read paused over audible music, its position never moved, and the song that was playing was one
-the app never learned about.
+Only Kaset lifts the hold. The gate has no listener that lifts it on the page's behalf: a click or a
+keystroke delivered to a hidden page is not the user asking *that* page for sound, and a gate that
+stood down for them left Swift believing a silent page could not be playing while it was — audible
+music under a bar saying paused, on a song the app never learned about. A page the user can see is a
+different case, and it is decided before its controls are reachable: `handOverToUser` releases the
+hold and takes the page as playback when the mini player or the video surface is revealed.
+
+YouTube Music's own autoplay does not get a vote either. The gate takes the page's `play()` calls and
+pauses it on `play` and `playing`, and the app does the rest: a page Kaset has not released that
+reports itself playing is stopped (`SingletonPlayerWebView.silenceHeldPage`). That is what keeps a
+warm page — and a restored session waiting to be resumed — from starting music nobody asked for.
+
+The hold is not the only thing the page can take. It is a view in the app's main window, and AppKit makes
+it the first responder when the window appears; `Space` is one of YouTube Music's own shortcuts, so the
+page answered the app's play/pause before any control of Kaset's did — which is why a press at launch
+could start music while the bar still said paused. The app installs a local key monitor
+(`AppDelegate.installPlaybackKeyMonitor`) that runs ahead of the responder chain and gives an unmodified,
+non-repeating `Space` to `PlayerService.playPause()`. The rule it applies is `PlaybackKeyRouting`: text
+fields keep their space, sheets keep their keyboard, and a modified `Space` stays the menu's.
 
 The same rule is why the shell is never driven. A play or a skip aimed at a page with no track is
 refused (`PlayerWebViewPage.acceptsPlaybackCommands`): the shell is warm, not playing, and what

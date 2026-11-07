@@ -14,6 +14,10 @@ Kaset provides keyboard control for playback and navigation while preserving sta
 | `⌘S`     | Toggle shuffle                      |
 | `⌘R`     | Cycle repeat mode (Off → All → One) |
 
+`Space` always belongs to the app, even while the player page has keyboard focus: the window installs a
+key monitor that answers it before anything inside the player can, so the shortcut never depends on where
+the last click landed. Text fields keep their own space.
+
 Mute is still available from the Playback menu and AppleScript, but Kaset intentionally does not assign a default mute shortcut so the native macOS minimize shortcut (`⌘M`) continues to work.
 
 All of these work in the fullscreen now-playing player as well as in the main window. The player

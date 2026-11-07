@@ -296,14 +296,16 @@ struct PlayerBarLoadingTests {
         #expect(PlayerWebViewPage.empty.acceptsPlaybackCommands == false)
     }
 
-    @Test("A page that lifts its own preload hold tells the app")
-    func gateReportsItsOwnStandDown() {
-        // The gate can be lifted from inside the page (a click or a keystroke there), and only the
-        // page knows. The report is what lets the WebView stop treating a playing page as silent.
+    @Test("Only Kaset lifts the preload hold")
+    func gateHasNoPageSideRelease() {
+        // A click or a keystroke delivered to a hidden page is not the user asking that page for sound.
+        // The gate used to lift its own hold for them, which let a page Kaset believed silent play —
+        // YouTube Music's own autoplay included. Kaset's controls lift it, and so does `handOverToUser`
+        // once the page is one the user can see.
         let script = SingletonPlayerWebView.preloadGateScript
-        #expect(script.contains("messageHandlers.singletonPlayer"))
-        #expect(script.contains(SingletonPlayerWebView.preloadHoldReleasedMessageType))
         #expect(script.contains("__kasetPreloadStandDown"))
+        #expect(!script.contains("addEventListener('pointerdown'"))
+        #expect(!script.contains("addEventListener('keydown'"))
     }
 
     @Test("A shell reports nothing, a preload reports only the track it holds, a playing page reports all")

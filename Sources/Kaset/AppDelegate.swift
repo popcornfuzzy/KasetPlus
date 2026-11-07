@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Using strong reference to prevent deallocation when window is hidden.
     private var mainWindow: NSWindow?
 
+    /// The monitor that gives the play/pause key to Kaset rather than to the player page (see
+    /// `PlaybackKeyRouting`).
+    private var playbackKeyMonitor: Any?
+
 
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -36,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The main window is the app's, so it is created here rather than by a SwiftUI scene.
         self.installMainWindow()
+        self.installPlaybackKeyMonitor()
 
         // In UI test mode, activate the app to bring window to foreground
         if UITestConfig.isUITestMode {
@@ -63,6 +68,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The saved session is restored as the service graph is built (`KasetApp.init`), before the root
         // view that reads it exists: this callback runs after the window has already been created from
         // the restored track. Quitting writes the session back (`applicationWillTerminate`).
+    }
+
+    // MARK: - Playback key
+
+    /// Gives `Space` to Kaset's transport, ahead of the page in the player WebView.
+    ///
+    /// The shared player WebView is a view in this window, and AppKit makes it the first responder when
+    /// the window appears. `Space` is one of YouTube Music's own shortcuts, so the page answered the key
+    /// first: its own player started or stopped music while the app — which never heard the press — kept
+    /// saying paused, over a song the bar could not name. A local monitor runs ahead of the responder
+    /// chain, so the key reaches the transport that owns the state, whichever page or control holds focus.
+    /// Text fields keep their space; see `PlaybackKeyRouting`.
+    private func installPlaybackKeyMonitor() {
+        guard self.playbackKeyMonitor == nil else { return }
+
+        self.playbackKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            // The event itself stays out of the isolated block: AppKit's event is not `Sendable`, so the
+            // monitor decides here and the app's own work happens on the main actor.
+            var isPlayPause = false
+            MainActor.assumeIsolated {
+                guard let self,
+                      event.window === self.mainWindow,
+                      event.window?.sheetParent == nil,
+                      PlaybackKeyRouting.answersPlaybackKey(
+                          keyCode: event.keyCode,
+                          modifierFlags: event.modifierFlags,
+                          isRepeat: event.isARepeat,
+                          firstResponder: event.window?.firstResponder
+                      )
+                else { return }
+
+                guard let playerService = self.playerService else { return }
+                isPlayPause = true
+                DiagnosticsLogger.player.debug("Space reached the app's transport")
+                Task { @MainActor in
+                    await playerService.playPause()
+                }
+            }
+            return isPlayPause ? nil : event
+        }
     }
 
     // MARK: - Focus & click tracing

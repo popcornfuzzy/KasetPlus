@@ -8,6 +8,11 @@ struct ArtistDetailView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(\.colorScheme) private var colorScheme
+    /// The artist's wordmark from Apple Music, decoded and ready to draw. The name stays until it arrives.
+    @State private var artistLogoImage: NSImage?
+    /// Whether the wordmark is a single-colour drawing, which the header tints to stay visible.
+    @State private var artistLogoIsMonochrome = false
 
     var body: some View {
         Group {
@@ -53,6 +58,11 @@ struct ArtistDetailView: View {
                 // Header
                 self.headerView(detail)
 
+                // Newest album or single, while it is still a new release
+                if let release = detail.latestRelease() {
+                    self.latestReleaseCard(release)
+                }
+
                 Divider()
 
                 // Songs section
@@ -92,6 +102,39 @@ struct ArtistDetailView: View {
             }
             .padding(24)
         }
+        // The page's "drop": the artist's picture, blown up and softened, fading into the page. It is the
+        // scroll view's own background rather than the content's, and it ignores the top safe area, so the
+        // window bar above samples the same colour the page opens with — a drop only under the header left
+        // the bar reading as a separate, differently tinted strip.
+        .background(alignment: .top) {
+            self.headerBackdrop(detail)
+                .ignoresSafeArea(edges: .top)
+        }
+    }
+
+    private func headerBackdrop(_ detail: ArtistDetail) -> some View {
+        CachedAsyncImage(
+            url: detail.thumbnailURL?.squareArtistAvatarURL ?? detail.thumbnailURL?.highQualityThumbnailURL,
+            targetSize: CGSize(width: 640, height: 640)
+        ) { image in
+            image
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } placeholder: {
+            Color.clear
+        }
+        .frame(height: 380)
+        .clipped()
+        .blur(radius: 70)
+        .opacity(self.colorScheme == .dark ? 0.35 : 0.22)
+        .mask {
+            LinearGradient(
+                colors: [.black, .black.opacity(0.4), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .allowsHitTesting(false)
     }
 
     private func headerView(_ detail: ArtistDetail) -> some View {
@@ -120,14 +163,33 @@ struct ArtistDetailView: View {
 
             // Info
             VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "Artist"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                // The artist's own wordmark, in the artist's own colours, when Apple Music has one. The
+                // name and the logo share one fixed slot: the header crossfades between them instead of
+                // reflowing the column when the lookup lands.
+                ZStack(alignment: .leading) {
+                    Text(detail.name)
+                        .font(.title)
+                        .fontWeight(.bold)
+                        .opacity(self.artistLogoImage == nil ? 1 : 0)
 
-                Text(detail.name)
-                    .font(.title)
-                    .fontWeight(.bold)
+                    if let image = self.artistLogoImage {
+                        Image(nsImage: image)
+                            .resizable()
+                            // A coloured signature keeps its colours; a single-colour one is tinted with the
+                            // label colour, so white ink is not lost on a light page.
+                            .renderingMode(self.artistLogoIsMonochrome ? .template : .original)
+                            .interpolation(.high)
+                            .foregroundStyle(.primary)
+                            .aspectRatio(contentMode: .fit)
+                            // A box rather than a size: a wide wordmark takes the width, a square one the
+                            // height, and the artwork's own shape decides which.
+                            .frame(maxWidth: 320, maxHeight: 64, alignment: .leading)
+                            .accessibilityLabel(detail.name)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(height: 64, alignment: .leading)
+                .animation(.easeInOut(duration: 0.35), value: self.artistLogoImage == nil)
 
                 // Subscriber count
                 if let subscriberCount = detail.subscriberCount {
@@ -179,6 +241,126 @@ struct ArtistDetailView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task(id: detail.id) {
+            await self.loadArtistLogo(detail)
+        }
+    }
+
+    /// Looks the artist's wordmark up in the background. The header draws the name meanwhile, so a slow
+    /// or missing lookup never delays the page.
+    private func loadArtistLogo(_ detail: ArtistDetail) async {
+        self.artistLogoImage = nil
+        guard SettingsManager.shared.artistLogosEnabled else { return }
+
+        let titles = detail.albums.map(\.title) + detail.singles.map(\.title) + detail.songs.map(\.title)
+        guard let logo = await AppleArtistLogoService.shared.logo(
+            forArtistNamed: detail.name,
+            identifiedBy: detail.id,
+            catalogueTitles: titles
+        ) else { return }
+
+        // Decoded here rather than by a view that fades in on its own: the crossfade needs the picture in
+        // hand before the name goes away, or the header dips through an empty frame.
+        let image = await ImageCache.shared.image(for: logo.url, targetSize: CGSize(width: 720, height: 112))
+        guard !Task.isCancelled, let image else { return }
+        // Apple pads its wordmarks differently from artist to artist: the ink is trimmed out of the
+        // transparent margins first, so every logo fills the same box instead of some arriving small.
+        let wordmark = ArtistLogoRendering.trimmed(image)
+        // Written plainly, never wrapped in `withAnimation`: this runs in a `.task`, where there is no
+        // update to attach a transaction to, and the animated commit it leaves behind is what crashed
+        // the window inside `NSHostingView.layout` (see docs/common-bug-patterns.md). The crossfade is
+        // declared on the slot below, against the value it animates.
+        self.artistLogoIsMonochrome = ArtistLogoRendering.isMonochrome(wordmark)
+        self.artistLogoImage = wordmark
+    }
+
+    // MARK: - Latest Release
+
+    /// Promotes the artist's newest release: cover, year, title and kind inside a glass card whose
+    /// whole surface opens the album or single, with a play control of its own on the trailing edge.
+    private func latestReleaseCard(_ release: ArtistLatestRelease) -> some View {
+        ZStack(alignment: .trailing) {
+            NavigationLink(value: self.playlistFromAlbum(release.album)) {
+                HStack(spacing: 14) {
+                    CachedAsyncImage(
+                        url: release.album.thumbnailURL?.highQualityThumbnailURL,
+                        targetSize: CGSize(width: 72, height: 72)
+                    ) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .overlay {
+                                Image(systemName: "square.stack")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
+                    .frame(width: 72, height: 72)
+                    .clipShape(.rect(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        if let year = release.album.year {
+                            Text(year)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Text(release.album.title)
+                            .font(.system(size: 20, weight: .bold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+
+                        Text(self.releaseKindLabel(release.kind))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(14)
+                // Keeps the title clear of the play control that sits on top of this label.
+                .padding(.trailing, 38)
+                .contentShape(.rect(cornerRadius: 20))
+            }
+            .buttonStyle(.plain)
+
+            self.latestReleasePlayButton(release)
+                .padding(.trailing, 14)
+        }
+        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+    }
+
+    /// Plays the promoted release without leaving the page. Drawn on top of the card's navigation
+    /// link so a click here plays rather than opening the release.
+    private func latestReleasePlayButton(_ release: ArtistLatestRelease) -> some View {
+        Button {
+            SongActionsHelper.playAlbum(
+                release.album,
+                client: self.viewModel.client,
+                playerService: self.playerService
+            )
+        } label: {
+            Image(systemName: "play.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 36, height: 36)
+                .background(Circle().fill(.primary.opacity(0.08)))
+                .overlay(Circle().strokeBorder(.primary.opacity(0.08), lineWidth: 1))
+                .contentShape(.circle)
+        }
+        .buttonStyle(.pressable(hapticFeedback: .playbackAction))
+        .help("Play \(release.album.title)")
+        .accessibilityLabel("Play \(release.album.title)")
+    }
+
+    private func releaseKindLabel(_ kind: ArtistLatestRelease.Kind) -> String {
+        switch kind {
+        case .album:
+            String(localized: "New Album")
+        case .single:
+            String(localized: "New Single")
         }
     }
 

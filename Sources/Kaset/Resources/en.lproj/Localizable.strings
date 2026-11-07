@@ -172,6 +172,10 @@
 
 "Apple Intelligence is currently unavailable." = "Apple Intelligence is currently unavailable.";
 
+"Artist Artwork" = "Artist Artwork";
+
+"Artist Logos" = "Artist Logos";
+
 "Apple Intelligence is downloading. This may take a few minutes." = "Apple Intelligence is downloading. This may take a few minutes.";
 
 "Apple Intelligence is not available" = "Apple Intelligence is not available";
@@ -502,7 +506,11 @@
 
 "Never checked" = "Never checked";
 
+"New Album" = "New Album";
+
 "New Releases" = "New Releases";
+
+"New Single" = "New Single";
 
 "Next" = "Next";
 

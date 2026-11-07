@@ -29,6 +29,7 @@ final class SettingsManager {
         static let lyricsDisabledProviders = "settings.lyricsDisabledProviders"
         static let safeAdBlockingEnabled = "settings.safeAdBlockingEnabled"
         static let animatedCanvasEnabled = "settings.animatedCanvasEnabled"
+        static let artistLogosEnabled = "settings.artistLogosEnabled"
         static let nowPlayingSidebarEnabled = "settings.nowPlayingSidebarEnabled"
         static let nowPlayingSidebarWidth = "settings.nowPlayingSidebarWidth"
         static let preferAudioVersionsEnabled = "settings.preferAudioVersionsEnabled"
@@ -381,6 +382,13 @@ final class SettingsManager {
         }
     }
 
+    /// Whether artist pages draw the artist's wordmark logo from Apple Music when it has one.
+    var artistLogosEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(self.artistLogosEnabled, forKey: Keys.artistLogosEnabled)
+        }
+    }
+
     /// Whether the right sidebar uses the artwork-first "Now Playing" design (canvas artwork, a
     /// three-line lyric preview and the next song, each expanding to the full experience) instead of
     /// the classic Lyrics and Queue panels.
@@ -450,6 +458,7 @@ final class SettingsManager {
         }
         self.safeAdBlockingEnabled = UserDefaults.standard.object(forKey: Keys.safeAdBlockingEnabled) as? Bool ?? true
         self.animatedCanvasEnabled = UserDefaults.standard.object(forKey: Keys.animatedCanvasEnabled) as? Bool ?? true
+        self.artistLogosEnabled = UserDefaults.standard.object(forKey: Keys.artistLogosEnabled) as? Bool ?? true
         // Default on: the sidebar is the app's right-sidebar design out of the box. A reader who
         // prefers the classic lyrics/queue panels opts out and gets a stored `false` back.
         self.nowPlayingSidebarEnabled = UserDefaults.standard.object(forKey: Keys.nowPlayingSidebarEnabled) as? Bool ?? true

@@ -245,14 +245,6 @@ final class SingletonPlayerWebView {
     /// Value of the query flag that marks a page loaded only to be ready.
     static let preloadQueryFlagValue = "1"
 
-    /// The message the page posts when it lifts its own preload hold.
-    ///
-    /// The gate lifts the hold on the first click or keystroke the user makes *inside* the page, and
-    /// only the page knows that happened. Without the report Swift kept the page marked silent while
-    /// it played: every observation of it was dropped, so the bar read paused over audible music and
-    /// the song playing never reached the app.
-    static let preloadHoldReleasedMessageType = "PRELOAD_HOLD_RELEASED"
-
     /// The query item that marks a page as loaded only to be ready.
     private static var preloadHoldQueryItem: URLQueryItem {
         URLQueryItem(name: Self.preloadQueryFlagName, value: Self.preloadQueryFlagValue)
@@ -532,16 +524,28 @@ final class SingletonPlayerWebView {
         !(self.webView?.isLoading ?? true)
     }
 
-    /// Takes the page as the app's player because the page lifted its own preload hold.
+    /// Puts a page Kaset has not released back to silence.
     ///
-    /// The page can lift the hold on its own (a click or a keystroke in it), and it does so inside the
-    /// document: Swift is not the one asking, and nothing else tells it. A page the user reached into is
-    /// playback from then on, exactly as a revealed mini player is — what it plays from here is audio
-    /// the app has to track rather than a placeholder it may ignore.
-    func notePageLiftedItsPreloadHold() {
+    /// The gate takes the page's `play()` calls and pauses it as it tries to start, but it is still
+    /// YouTube Music's player in there: its own autoplay can have the page sounding a song Kaset never
+    /// asked for and cannot name. This is the part the gate cannot do for itself — the app hears that
+    /// the page is playing and stops it — so no state of Kaset's has to explain audio it did not start.
+    func silenceHeldPage() {
         guard self.page.isSilent else { return }
-        self.logger.info("The page lifted its own preload hold; taking it as playback")
-        self.page = .playback
+        self.logger.info("A held page was playing; putting it back to silence")
+        self.webView?.evaluateJavaScript(
+            """
+            (function() {
+                const player = document.querySelector('ytmusic-player');
+                if (player && player.playerApi && typeof player.playerApi.pauseVideo === 'function') {
+                    try { player.playerApi.pauseVideo(); } catch (error) {}
+                }
+                const video = document.querySelector('video');
+                if (video) { try { video.pause(); } catch (error) {} }
+            })();
+            """,
+            completionHandler: nil
+        )
     }
 
     /// Whether a page for `videoId` is up and usable for playback.
@@ -1334,25 +1338,20 @@ final class SingletonPlayerWebView {
                   let type = body["type"] as? String
             else { return }
 
-            // The page lifted its own preload hold: the user clicked or typed in the page, and from
-            // here it is the app's player. Only the page's own stand-down arrives this way — a hold
-            // Kaset released is already handed over (`releasePreloadHold`) before the page reports it,
-            // so the silent-page guard below leaves that echo alone.
-            if type == SingletonPlayerWebView.preloadHoldReleasedMessageType {
-                Task { @MainActor in
-                    guard SingletonPlayerWebView.shared.page.isSilent else { return }
-                    SingletonPlayerWebView.shared.notePageLiftedItsPreloadHold()
-                    // A session that was waiting to be resumed is not waiting any more: the page is
-                    // playing, from the position its own URL gave it.
-                    self.playerService.clearRestoredPlaybackSessionState()
-                }
-                return
-            }
-
             // A page that is not being played from must not report: the shell has no track, and a
             // preloaded page is a player that was told it started when its autoplay was swallowed.
             // Believing either would put a track that is not playing into the app's state.
             let observation = SingletonPlayerWebView.shared.page.observation
+
+            // A page Kaset has not released must not play, however it started. YouTube Music's own
+            // autoplay can outlast the gate — the gate takes the page's `play()` calls, and the player
+            // finds its own way back — which leaves a warm page or a waiting restored session sounding
+            // a song nothing in the app asked for. Stopping it is what keeps that off the speakers.
+            if observation != .playback, body["isPlaying"] as? Bool == true {
+                SingletonPlayerWebView.shared.silenceHeldPage()
+                return
+            }
+
             guard observation != .none else { return }
 
             // A page Kaset is not playing from gets to report one thing only: which track it is
@@ -1636,14 +1635,16 @@ final class SingletonPlayerWebView {
     /// A warm page sitting in the background must not: it would be audio the user did not ask for, on a
     /// track the app is deliberately not tracking yet. So a page carrying the preload flag swallows its
     /// own `play()` calls until the hold is lifted — by Kaset driving a control, or by the user
-    /// clicking or typing in the page (the mini player's own play button is the user asking the page).
+    /// Kaset driving a control. The page cannot lift it for itself: a click or a keystroke delivered to
+    /// a hidden page is not the user asking *that* page for sound. A page the user can see is a
+    /// different case and is handled before its controls are reachable (`handOverToUser`).
     ///
     /// Lifting the hold also realigns the page: YouTube's player was told playback started and would
     /// otherwise take the next play/pause click as a *pause*.
     ///
-    /// The page's own stand-down is reported to the app (`preloadHoldReleasedMessageType`), because a
-    /// page that is playing must stop being treated as silent — see `notePageLiftedItsPreloadHold`.
-    /// Exposed for tests, which pin that report.
+    /// The hold is also re-asserted on every attempt to play, because YouTube Music's own autoplay does
+    /// not ask first. A page that starts anyway is stopped by the app (see `silenceHeldPage`). Exposed
+    /// for tests, which pin that the page has no way to release it.
     static var preloadGateScript: String {
         """
         (function() {
@@ -1674,9 +1675,8 @@ final class SingletonPlayerWebView {
             function standDown() {
                 const wasHolding = window.__kasetPreloadHold;
                 window.__kasetPreloadHold = false;
-                document.removeEventListener('pointerdown', standDown, true);
-                document.removeEventListener('keydown', standDown, true);
                 document.removeEventListener('play', holdPlaying, true);
+                document.removeEventListener('playing', holdPlaying, true);
 
                 if (!wasHolding) { return; }
 
@@ -1688,20 +1688,13 @@ final class SingletonPlayerWebView {
                 }
                 const video = document.querySelector('video');
                 if (video) { try { video.pause(); } catch (error) {} }
-
-                // The hold was lifted from inside the page rather than by Kaset, so the app has not
-                // heard of it: report it, or a page that is playing keeps being treated as silent
-                // and everything it says is thrown away.
-                try {
-                    const bridge = window.webkit.messageHandlers.singletonPlayer;
-                    if (bridge) { bridge.postMessage({ type: '\(Self.preloadHoldReleasedMessageType)' }); }
-                } catch (error) {}
             }
 
+            // Nothing here lifts the hold on the page's behalf: the only lifters are Kaset's own controls
+            // and `handOverToUser` for a page the user can see.
             window.__kasetPreloadStandDown = standDown;
-            document.addEventListener('pointerdown', standDown, true);
-            document.addEventListener('keydown', standDown, true);
             document.addEventListener('play', holdPlaying, true);
+            document.addEventListener('playing', holdPlaying, true);
         })();
         """
     }

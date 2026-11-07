@@ -108,6 +108,15 @@ struct GeneralSettingsView: View {
                 Text("Animated Canvas")
             }
 
+            // MARK: - Artist Artwork Section
+
+            Section {
+                Toggle("Artist Logos", isOn: self.$settings.artistLogosEnabled)
+                    .help("Show an artist's wordmark logo on their page when Apple Music has one. Lookups use Apple's public iTunes API and the artist's Apple Music page.")
+            } header: {
+                Text("Artist Artwork")
+            }
+
             // MARK: - Now Playing Sidebar Section
 
             Section {

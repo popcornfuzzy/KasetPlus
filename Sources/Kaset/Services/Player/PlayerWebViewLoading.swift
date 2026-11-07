@@ -174,8 +174,9 @@ enum PlayerWebViewPage: Equatable {
 ///   and it carries nothing that could play.
 ///
 /// Neither page may make a sound before the user asks: Kaset permits autoplay, so a watch page left
-/// to itself plays. The gate (`SingletonPlayerWebView.preloadGateScript`) holds the page, and every
-/// control Kaset drives — or the user's own first click in the page — lifts it.
+/// to itself plays, and YouTube Music will start it itself if it can. The gate
+/// (`SingletonPlayerWebView.preloadGateScript`) holds the page, only Kaset's own controls lift it, and a
+/// held page that reports itself playing anyway is stopped (`SingletonPlayerWebView.silenceHeldPage`).
 enum PlayerWebViewPreload {
     /// The page to load.
     enum Target: Equatable {
