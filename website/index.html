@@ -18,6 +18,7 @@
   <style>
 /* Palette sampled from the Kaset + gradient: pale blush, warm coral, hot magenta. */
 :root {
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --blush: #fbe3df;
   --coral: #ff6c64;
   --pink: #fb4a63;
@@ -37,6 +38,7 @@ body {
 body {
   margin: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 6vmin;
   background-color: var(--pink);
@@ -79,12 +81,12 @@ body {
 /* The still paints first and steps aside the moment the animation starts, so the
    finished lockup is never visible underneath the drawing mark. */
 .logo--poster {
-  transition: opacity 0.15s ease;
+  transition: opacity 0.18s var(--ease);
 }
 
 .logo--video {
   opacity: 0;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.45s var(--ease);
 }
 
 .logo-stage.is-playing .logo--poster {
@@ -113,8 +115,8 @@ body {
     0 10px 30px rgba(150, 0, 60, 0.28),
     0 1px 0 rgba(255, 255, 255, 0.6) inset;
   transition:
-    opacity 0.28s ease,
-    transform 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+    opacity 0.28s var(--ease),
+    transform 0.4s var(--ease);
 }
 
 /* Held back until the logo has drawn itself in; the .js guard leaves the button
@@ -151,8 +153,8 @@ body {
   height: 20px;
   overflow: hidden;
   transition:
-    width 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
-    margin 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
+    width 0.32s var(--ease),
+    margin 0.32s var(--ease);
 }
 
 .download__glyph--apple {
@@ -167,16 +169,16 @@ body {
 
 .download__glyph--apple .download__icon {
   transition:
-    transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
-    opacity 0.16s ease;
+    transform 0.32s var(--ease),
+    opacity 0.16s var(--ease);
 }
 
 .download__glyph--arrow .download__icon {
   opacity: 0;
   transform: translateX(10px);
   transition:
-    transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
-    opacity 0.2s ease 0.1s;
+    transform 0.32s var(--ease),
+    opacity 0.2s var(--ease) 0.1s;
 }
 
 .download:hover .download__glyph--apple,
@@ -221,6 +223,161 @@ body {
   stroke: none;
 }
 
+/* macOS blocks the first launch of an unnotarised build, so the fix appears
+   directly under the button instead of in a readme nobody opens. */
+.first-run {
+  width: 100%;
+  max-width: 460px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #fff;
+}
+
+/* Without scripting the note simply sits there; the click only reveals it. */
+.js .first-run {
+  display: none;
+}
+
+/* The card fades while its parts rise one after another, the same choreography
+   the button uses when the glyph switches. */
+.js .first-run.is-open {
+  display: block;
+  animation: first-run-card 0.32s var(--ease) both;
+}
+
+.js .first-run.is-open > * {
+  animation: first-run-rise 0.4s var(--ease) both;
+}
+
+.js .first-run.is-open > :nth-child(1) {
+  animation-delay: 0.04s;
+}
+
+.js .first-run.is-open > :nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.js .first-run.is-open > :nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.js .first-run.is-open > :nth-child(4) {
+  animation-delay: 0.28s;
+}
+
+@keyframes first-run-card {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes first-run-rise {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.first-run__lead {
+  margin: 0;
+}
+
+.first-run__steps {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.first-run__steps li + li {
+  margin-top: 4px;
+}
+
+.first-run__steps + .first-run__lead {
+  margin-top: 12px;
+}
+
+.first-run strong {
+  font-weight: 600;
+}
+
+.first-run__command {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.first-run__command code {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow-x: auto;
+  user-select: all;
+  scrollbar-width: thin;
+}
+
+.first-run__copy {
+  flex: none;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s var(--ease);
+}
+
+.first-run__copy:hover {
+  background: #fff;
+}
+
+.first-run__copy:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 2px;
+}
+
+/* On a phone-width window the command needs the full line: the button drops
+   below it rather than squeezing the text into a scroll box. */
+@media (max-width: 420px) {
+  .first-run__command {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .first-run__command code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .first-run__copy {
+    align-self: flex-end;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .logo--video {
     display: none;
@@ -230,6 +387,11 @@ body {
   .download__glyph,
   .download__glyph .download__icon {
     transition: none;
+  }
+
+  .js .first-run.is-open,
+  .js .first-run.is-open > * {
+    animation: none;
   }
 }  </style>
 </head>
@@ -243,7 +405,7 @@ body {
     </div>
 
     <a class="download" href="https://github.com/popcornfuzzy/KasetPlus/releases/latest" data-latest-download
-      aria-label="Download for macOS">
+      target="_blank" rel="noopener" aria-label="Download for macOS">
       <span class="download__glyph download__glyph--apple" aria-hidden="true">
         <svg class="download__icon download__icon--apple" viewBox="0 0 24 24">
           <path fill="currentColor" stroke="none"
@@ -257,6 +419,24 @@ body {
         </svg>
       </span>
     </a>
+
+    <!-- Revealed on the first download click: macOS refuses the first launch of an
+         unnotarised build, and this is the only place people look for the fix. -->
+    <section class="first-run" id="first-run" aria-live="polite">
+      <p class="first-run__lead">
+        macOS blocks the first launch because Kaset isn’t notarised yet. Allow it once:
+      </p>
+      <ol class="first-run__steps">
+        <li>Open <strong>Kaset</strong> and click <strong>Done</strong> on the warning.</li>
+        <li>Go to <strong>System Settings → Privacy &amp; Security</strong> and click
+          <strong>Open Anyway</strong>.</li>
+      </ol>
+      <p class="first-run__lead">Or clear the quarantine flag in Terminal:</p>
+      <div class="first-run__command">
+        <code>xattr -cr /Applications/Kaset.app</code>
+        <button class="first-run__copy" type="button">Copy</button>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -331,6 +511,34 @@ body {
       // from the HTML regardless, and waiting for window.load only delays the logo.
       loadVideo();
     }
+
+    // The download starts, and the first-launch fix appears under the button.
+    const firstRun = document.getElementById('first-run');
+    button.addEventListener('click', () => {
+      firstRun.classList.add('is-open');
+
+      // The fallback points at the release page and opens in its own tab; once the
+      // build rewrites it to the .dmg, it has to download in place instead.
+      if (/\.dmg(\?|$)/.test(button.getAttribute('href') || '')) button.removeAttribute('target');
+    });
+
+    const copy = firstRun.querySelector('.first-run__copy');
+    const command = copy.previousElementSibling;
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(command.textContent);
+      } catch {
+        // Clipboard refused: hand the command back selected instead.
+        const range = document.createRange();
+        range.selectNodeContents(command);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
+      copy.textContent = 'Copied';
+      setTimeout(() => (copy.textContent = 'Copy'), 1600);
+    });
   </script>
 </body>
 
