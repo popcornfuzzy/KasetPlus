@@ -1,0 +1,92 @@
+name: Website
+
+# Publishes the static landing page in website/ to GitHub Pages.
+# One-time setup in the repository: Settings -> Pages -> Source: GitHub Actions.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "website/**"
+      - ".github/workflows/pages.yml"
+  # A new release moves the download button onto the new DMG, so publish again
+  # the moment one is released rather than waiting for the next website change.
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy website
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # The button downloads the installer directly instead of sending people to
+      # the release page. The link is resolved here, at publish time, so the page
+      # needs no API call in the browser.
+      - name: Point the download button at the newest DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # /releases/latest skips drafts and prereleases, so a prerelease leaves
+          # the site on the last stable build.
+          URL=$(gh api "repos/$REPO/releases/latest" \
+            --jq '[.assets[] | select(.name | endswith(".dmg"))][0].browser_download_url' \
+            2>/dev/null || true)
+
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::warning::The latest release has no .dmg asset; the button keeps the releases page link."
+            exit 0
+          fi
+
+          echo "Download button will point at $URL"
+
+          python3 - "$URL" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          url = sys.argv[1]
+          page = pathlib.Path("website/index.html")
+          html = page.read_text()
+          anchor = re.compile(r"<a\b[^>]*\bdata-latest-download\b[^>]*>", re.S)
+
+          def rewrite(match):
+              return re.sub(r'href="[^"]*"', f'href="{url}"', match.group(0), count=1)
+
+          updated, count = anchor.subn(rewrite, html, count=1)
+          if count != 1:
+              sys.exit("Could not find the download button to rewrite.")
+          page.write_text(updated)
+          PY
+
+          grep -o 'href="[^"]*\.dmg"' website/index.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

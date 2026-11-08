@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kaset +</title>
+  <meta name="description" content="Kaset + is a native macOS YouTube Music client. Download the latest release." />
+  <meta name="theme-color" content="#ff5f66" />
+  <link rel="icon" href="favicon-64.png" sizes="64x64" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta property="og:title" content="Kaset +" />
+  <meta property="og:description" content="A native macOS YouTube Music client." />
+  <meta property="og:image" content="favicon.png" />
+  <script>
+    document.documentElement.classList.add('js');
+  </script>
+  <style>
+/* Palette sampled from the Kaset + gradient: pale blush, warm coral, hot magenta. */
+:root {
+  --blush: #fbe3df;
+  --coral: #ff6c64;
+  --pink: #fb4a63;
+  --hot: #f3006e;
+  --ink: #17100f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  display: grid;
+  place-items: center;
+  padding: 6vmin;
+  background-color: var(--pink);
+  background-image:
+    radial-gradient(115% 100% at 16% 90%, var(--hot) 0%, rgba(243, 0, 110, 0.9) 16%, rgba(243, 0, 110, 0) 56%),
+    radial-gradient(95% 85% at 42% 60%, rgba(246, 0, 112, 0.6) 0%, rgba(246, 0, 112, 0) 62%),
+    radial-gradient(110% 110% at 98% 8%, var(--coral) 0%, rgba(255, 108, 100, 0) 60%),
+    radial-gradient(120% 120% at 96% 96%, #ff5f5c 0%, rgba(255, 95, 92, 0) 55%),
+    radial-gradient(85% 85% at 0% 0%, var(--blush) 0%, rgba(251, 227, 223, 0) 52%),
+    linear-gradient(112deg, #fbd9d4 0%, #ff948a 20%, #ff6a6a 44%, var(--pink) 66%, #ff5c5e 100%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+  color: #fff;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(20px, 4.5vmin, 44px);
+  width: 100%;
+  max-width: 900px;
+}
+
+.logo-stage {
+  display: grid;
+  width: min(86vw, 720px);
+}
+
+.logo-stage > .logo {
+  grid-area: 1 / 1;
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 8px 34px rgba(150, 0, 62, 0.22));
+}
+
+/* The still paints first and steps aside the moment the animation starts, so the
+   finished lockup is never visible underneath the drawing mark. */
+.logo--poster {
+  transition: opacity 0.15s ease;
+}
+
+.logo--video {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.logo-stage.is-playing .logo--poster {
+  opacity: 0;
+}
+
+.logo-stage.is-playing .logo--video {
+  opacity: 1;
+}
+
+.download {
+  --lift: 0px;
+  --press: 1;
+  display: inline-flex;
+  align-items: center;
+  transform: translateY(var(--lift)) scale(var(--press));
+  padding: 15px 18px;
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  box-shadow:
+    0 10px 30px rgba(150, 0, 60, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  transition:
+    opacity 0.28s ease,
+    transform 0.4s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Held back until the logo has drawn itself in; the .js guard leaves the button
+   in place when scripting is unavailable. */
+.js .download {
+  --lift: 14px;
+  opacity: 0;
+}
+
+.js .download.download--in {
+  --lift: 0px;
+  opacity: 1;
+}
+
+.download:active {
+  --press: 0.99;
+}
+
+.download:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 4px;
+}
+
+.download__label {
+  white-space: nowrap;
+}
+
+/* Apple at rest, arrow on hover. The slots reserve the same 30px, so only the
+   label moves: it slides across while the glyphs swap at either end. */
+.download__glyph {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  overflow: hidden;
+  transition:
+    width 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
+    margin 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.download__glyph--apple {
+  width: 18px;
+  margin-right: 12px;
+}
+
+.download__glyph--arrow {
+  width: 0;
+  margin-left: 0;
+}
+
+.download__glyph--apple .download__icon {
+  transition:
+    transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.16s ease;
+}
+
+.download__glyph--arrow .download__icon {
+  opacity: 0;
+  transform: translateX(10px);
+  transition:
+    transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.2s ease 0.1s;
+}
+
+.download:hover .download__glyph--apple,
+.download:focus-visible .download__glyph--apple {
+  width: 0;
+  margin-right: 0;
+}
+
+.download:hover .download__glyph--apple .download__icon,
+.download:focus-visible .download__glyph--apple .download__icon {
+  opacity: 0;
+  transform: translateX(-10px);
+}
+
+.download:hover .download__glyph--arrow,
+.download:focus-visible .download__glyph--arrow {
+  width: 20px;
+  margin-left: 10px;
+}
+
+.download:hover .download__glyph--arrow .download__icon,
+.download:focus-visible .download__glyph--arrow .download__icon {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.download__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.download__icon--apple {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo--video {
+    display: none;
+  }
+
+  .download,
+  .download__glyph,
+  .download__glyph .download__icon {
+    transition: none;
+  }
+}  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <!-- The still logo paints immediately; the animation fades in over it once it can play. -->
+    <div class="logo-stage">
+      <img class="logo logo--poster" src="assets/kaset-logo-poster.png" alt="Kaset +" />
+      <video class="logo logo--video" muted playsinline autoplay preload="auto" aria-label="Kaset +"></video>
+    </div>
+
+    <a class="download" href="https://github.com/popcornfuzzy/KasetPlus/releases/latest" data-latest-download
+      aria-label="Download for macOS">
+      <span class="download__glyph download__glyph--apple" aria-hidden="true">
+        <svg class="download__icon download__icon--apple" viewBox="0 0 24 24">
+          <path fill="currentColor" stroke="none"
+            d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" />
+        </svg>
+      </span>
+      <span class="download__label" aria-hidden="true">Download for macOS</span>
+      <span class="download__glyph download__glyph--arrow" aria-hidden="true">
+        <svg class="download__icon" viewBox="0 0 24 24">
+          <path d="M3.5 12h16m0 0-6-6m6 6-6 6" />
+        </svg>
+      </span>
+    </a>
+  </main>
+
+  <script>
+    // The still logo paints immediately. The animation is a separate, heavier
+    // file, so metered and 2G links keep the still instead.
+    const video = document.querySelector('.logo--video');
+    const button = document.querySelector('.download');
+    const ua = navigator.userAgent;
+    const isSafari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(ua);
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const connection = navigator.connection || {};
+    const slowLink =
+      connection.saveData === true || ['slow-2g', '2g'].includes(connection.effectiveType);
+
+    const revealButton = () => button.classList.add('download--in');
+
+    if (reduceMotion || slowLink) {
+      setTimeout(revealButton, reduceMotion ? 0 : 600);
+    } else {
+      // 40% of the way through the animation, so the button lands while the
+      // mark is still taking shape.
+      const revealPoint = () =>
+        Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 0.4 : 2.1;
+      const revealWhenDrawnIn = () => {
+        if (video.currentTime >= revealPoint() || video.ended) {
+          video.removeEventListener('timeupdate', revealWhenDrawnIn);
+          revealButton();
+        }
+      };
+
+      video.addEventListener('timeupdate', revealWhenDrawnIn);
+      // A blocked, stalled or failed video must never cost the page its button.
+      video.addEventListener('error', revealButton, { once: true });
+      setTimeout(revealButton, 5000);
+
+      // Swap the still for the animation once it is actually playing, so the
+      // finished lockup never sits underneath the drawing mark.
+      video.addEventListener(
+        'playing',
+        () => document.querySelector('.logo-stage').classList.add('is-playing'),
+        { once: true }
+      );
+
+      // Autoplay can be refused or paused while the tab is hidden; resume on either.
+      const start = () =>
+        video.play().catch(() =>
+          document.addEventListener('pointerdown', () => video.play().catch(() => { }), { once: true })
+        );
+
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && !video.ended) video.play().catch(() => { });
+      });
+
+      const loadVideo = () => {
+        video.src = isSafari ? 'assets/kaset-logo.mov' : 'assets/kaset-logo.webm';
+
+        // Wait until the browser can get through the whole clip before starting:
+        // playing on the first decoded frame makes a throttled link freeze
+        // halfway. The still holds the page until then, and the cap below keeps
+        // a stubborn connection from hiding the animation for good.
+        if (video.readyState >= 4) {
+          start();
+          return;
+        }
+        video.addEventListener('canplaythrough', start, { once: true });
+        setTimeout(() => {
+          if (video.readyState >= 3) start();
+        }, 6000);
+      };
+
+      // Load the animation straight away: the still is a 62 KB image that paints
+      // from the HTML regardless, and waiting for window.load only delays the logo.
+      loadVideo();
+    }
+  </script>
+</body>
+
+</html>
