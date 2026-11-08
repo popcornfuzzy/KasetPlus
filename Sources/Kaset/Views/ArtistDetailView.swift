@@ -61,6 +61,7 @@ struct ArtistDetailView: View {
                 // Newest album or single, while it is still a new release
                 if let release = detail.latestRelease() {
                     self.latestReleaseCard(release)
+                        .padding(.top, 8)
                 }
 
                 Divider()
@@ -277,15 +278,15 @@ struct ArtistDetailView: View {
 
     // MARK: - Latest Release
 
-    /// Promotes the artist's newest release: cover, year, title and kind inside a glass card whose
-    /// whole surface opens the album or single, with a play control of its own on the trailing edge.
+    /// Promotes the artist's newest release: cover, year, title and kind on a quiet tile whose whole
+    /// surface opens the album or single, with a play control of its own on the trailing edge.
     private func latestReleaseCard(_ release: ArtistLatestRelease) -> some View {
         ZStack(alignment: .trailing) {
             NavigationLink(value: self.playlistFromAlbum(release.album)) {
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     CachedAsyncImage(
                         url: release.album.thumbnailURL?.highQualityThumbnailURL,
-                        targetSize: CGSize(width: 72, height: 72)
+                        targetSize: CGSize(width: 60, height: 60)
                     ) { image in
                         image
                             .resizable()
@@ -299,38 +300,44 @@ struct ArtistDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
                     }
-                    .frame(width: 72, height: 72)
-                    .clipShape(.rect(cornerRadius: 10))
+                    .frame(width: 60, height: 60)
+                    .clipShape(.rect(cornerRadius: 8))
 
                     VStack(alignment: .leading, spacing: 1) {
                         if let year = release.album.year {
                             Text(year)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
 
                         Text(release.album.title)
-                            .font(.system(size: 20, weight: .bold))
+                            .font(.system(size: 17, weight: .bold))
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
 
                         Text(self.releaseKindLabel(release.kind))
-                            .font(.system(size: 12))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(14)
+                .padding(11)
                 // Keeps the title clear of the play control that sits on top of this label.
-                .padding(.trailing, 38)
-                .contentShape(.rect(cornerRadius: 20))
+                .padding(.trailing, 32)
+                .contentShape(.rect(cornerRadius: 16))
             }
             .buttonStyle(.plain)
 
             self.latestReleasePlayButton(release)
-                .padding(.trailing, 14)
+                .padding(.trailing, 11)
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+        // A flat tile, not glass: the material read as a floating control on a page whose backdrop is
+        // itself a picture, where the card only has to hold its own content together.
+        .background(.primary.opacity(0.05), in: .rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(.primary.opacity(0.06), lineWidth: 1)
+        }
     }
 
     /// Plays the promoted release without leaving the page. Drawn on top of the card's navigation
@@ -344,8 +351,8 @@ struct ArtistDetailView: View {
             )
         } label: {
             Image(systemName: "play.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 36, height: 36)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 30, height: 30)
                 .background(Circle().fill(.primary.opacity(0.08)))
                 .overlay(Circle().strokeBorder(.primary.opacity(0.08), lineWidth: 1))
                 .contentShape(.circle)
