@@ -194,6 +194,14 @@ struct UnisonProviderTests {
         #expect(envelope.data?.lyrics == "<tt/>")
     }
 
+    // MARK: - Song page
+
+    @Test("a song's public page is keyed on its video id")
+    func songURLPointsAtTheSongPage() {
+        let url = UnisonProvider.songURL(videoId: "abc123def45")
+        #expect(url.absoluteString == "https://unison.boidu.dev/song/abc123def45")
+    }
+
     // MARK: - Attribution
 
     @Test("credits the submitter with a public profile link")

@@ -65,7 +65,9 @@ struct UnisonSubmitter: Decodable, Sendable, Equatable {
 /// Unison rate limits reads to 120 requests per minute per IP, so a search
 /// makes at most two requests (plus one variant list when Unison wins).
 final class UnisonProvider: LyricsProvider {
-    let name = "Unison"
+    static let displayName = "Unison"
+
+    let name = UnisonProvider.displayName
     let capability: LyricsCapability = .word
 
     static let baseURL = URL(string: "https://unison.boidu.dev")!
@@ -258,6 +260,14 @@ final class UnisonProvider: LyricsProvider {
     }
 
     // MARK: - Constants
+
+    /// The song's public page: its community versions, their submitters and
+    /// their votes. Unison keys the pages on the YouTube video id.
+    static func songURL(videoId: String) -> URL {
+        Self.baseURL
+            .appendingPathComponent("song")
+            .appendingPathComponent(videoId)
+    }
 
     private static func lyricsURL(queryItems: [URLQueryItem]) -> URL? {
         var components = URLComponents(

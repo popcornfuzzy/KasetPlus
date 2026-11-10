@@ -37,7 +37,10 @@ Add `UnisonProvider` as a selectable lyrics provider:
   the lyric sheet* — in both the sidebar panel and the fullscreen player — so it
   stays out of the reading area until the reader reaches the bottom; the link is
   styled as a caption, not with the system accent. The sticky footer under the
-  panel keeps the plain `Source: Unison` line and the variant picker.
+  panel names `Source: Unison` beside the variant picker, and that name opens
+  the song's own page on Unison (`/song/<videoId>`) — the page for the track on
+  screen, not for the record — underlining on hover while keeping the caption's
+  colour, so the line reads the same until the pointer is over it.
 - Unison's site falls back to a client-generated identicon (an inline SVG seeded
   by `keyId`) when a submitter has uploaded no avatar. That identicon is not
   served by the API, so Kaset shows the uploaded avatar when there is one and a

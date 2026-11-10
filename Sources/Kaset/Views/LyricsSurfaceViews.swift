@@ -130,6 +130,11 @@ struct LyricsSearchingCaption: View {
 @available(macOS 26.0, *)
 struct LyricsSourceFooter: View {
     @Environment(SyncedLyricsService.self) private var syncedLyricsService
+    @Environment(\.openURL) private var openURL
+
+    /// Whether the pointer is over the source line, which underlines the provider's name when it
+    /// has a page to open. The line keeps its caption colour: the underline is the only change.
+    @State private var isHoveringSource = false
 
     let source: String?
     /// Horizontal inset of the row. The classic panel sits inside a 280pt card; the sidebar is wider.
@@ -147,10 +152,24 @@ struct LyricsSourceFooter: View {
 
             HStack(spacing: 8) {
                 if let source {
-                    Text(source.hasPrefix("Source:") ? source : "Source: \(source)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                    Group {
+                        if let url = self.songPageURL(for: source) {
+                            Button {
+                                self.openURL(url)
+                            } label: {
+                                Self.sourceLabel(source, underliningName: self.isHoveringSource)
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { self.isHoveringSource = $0 }
+                            .help(String(localized: "Open this song on Unison"))
+                            .accessibilityLabel(String(localized: "Source: Unison, opens on Unison"))
+                        } else {
+                            Self.sourceLabel(source, underliningName: false)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                 }
 
                 Spacer(minLength: 8)
@@ -174,6 +193,34 @@ struct LyricsSourceFooter: View {
             .padding(.horizontal, self.horizontalPadding)
             .padding(.vertical, 10)
         }
+    }
+
+    // MARK: - Source line
+
+    /// The source line as one run of text, `Source:` and the provider's name, so it draws exactly
+    /// as it did before the name could be a link. Only the name can be underlined.
+    private static func sourceLabel(_ source: String, underliningName: Bool) -> Text {
+        Text(verbatim: "Source: ") + Text(verbatim: self.sourceName(source))
+            .underline(underliningName)
+    }
+
+    /// The provider's name on its own. Providers hand the footer their name, but the plain-text
+    /// path spells the label into the string.
+    private static func sourceName(_ source: String) -> String {
+        let label = "Source:"
+        guard source.hasPrefix(label) else { return source }
+        return String(source.dropFirst(label.count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The page for the song on screen, when the provider that supplied the lyrics publishes one.
+    /// Unison keys its song pages on the video id, which the service already holds for the sheet
+    /// on display — including one served from the cache.
+    private func songPageURL(for source: String) -> URL? {
+        guard Self.sourceName(source) == UnisonProvider.displayName,
+              let videoId = self.syncedLyricsService.currentLyricsVideoId,
+              !videoId.isEmpty
+        else { return nil }
+        return UnisonProvider.songURL(videoId: videoId)
     }
 
     /// Menu for switching between the community versions the current provider offers, each with the
