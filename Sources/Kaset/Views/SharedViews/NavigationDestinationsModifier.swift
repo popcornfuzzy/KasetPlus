@@ -88,8 +88,22 @@ struct NavigationDestinationsModifier: ViewModifier {
                 ))
             }
             .navigationDestination(for: PodcastShow.self) { [libraryViewModel] show in
-                PodcastShowView(show: show, client: self.client)
-                    .environment(libraryViewModel)
+                PodcastShowView(
+                    show: show,
+                    client: self.client,
+                    onShowAllEpisodes: { destination in self.artistPath.wrappedValue.append(destination) }
+                )
+                .environment(libraryViewModel)
+            }
+            // Registered by the stack, not by the show page: the page is a destination already and a
+            // second destination on the same stack freezes the app (ADR-0023).
+            .navigationDestination(for: AllEpisodesDestination.self) { destination in
+                AllEpisodesView(
+                    show: destination.show,
+                    initialEpisodes: destination.episodes,
+                    continuationToken: destination.continuationToken,
+                    client: self.client
+                )
             }
             .navigationDestination(for: ArtistSeeAllDestination.self) { destination in
                 switch destination.endpoint.pageType {

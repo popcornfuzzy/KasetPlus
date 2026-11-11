@@ -243,11 +243,22 @@ enum ParsingHelpers {
         return nil
     }
 
-    /// Extracts the music video type from flex-column runs' watch endpoints.
+    /// Extracts the music video type from a navigation endpoint's watch configs.
     ///
-    /// Search results embed it per run: `watchEndpoint.watchEndpointMusicSupportedConfigs
-    /// .watchEndpointMusicConfig.musicVideoType`. Used to tell an audio song from a
-    /// music video when matching variants.
+    /// Search results embed it on the run that links the row or card:
+    /// `watchEndpoint.watchEndpointMusicSupportedConfigs.watchEndpointMusicConfig.musicVideoType`.
+    /// Used to tell an audio song from a music video when matching variants.
+    static func extractMusicVideoType(from navigationEndpoint: [String: Any]?) -> MusicVideoType? {
+        guard let watchEndpoint = navigationEndpoint?["watchEndpoint"] as? [String: Any],
+              let configs = watchEndpoint["watchEndpointMusicSupportedConfigs"] as? [String: Any],
+              let musicConfig = configs["watchEndpointMusicConfig"] as? [String: Any],
+              let typeString = musicConfig["musicVideoType"] as? String
+        else { return nil }
+
+        return MusicVideoType(rawValue: typeString)
+    }
+
+    /// Extracts the music video type from flex-column runs' watch endpoints.
     static func extractMusicVideoTypeFromFlexColumns(_ data: [String: Any]) -> MusicVideoType? {
         guard let flexColumns = data["flexColumns"] as? [[String: Any]] else { return nil }
 
@@ -258,14 +269,9 @@ enum ParsingHelpers {
             else { continue }
 
             for run in runs {
-                guard let endpoint = run["navigationEndpoint"] as? [String: Any],
-                      let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
-                      let configs = watchEndpoint["watchEndpointMusicSupportedConfigs"] as? [String: Any],
-                      let musicConfig = configs["watchEndpointMusicConfig"] as? [String: Any],
-                      let typeString = musicConfig["musicVideoType"] as? String
-                else { continue }
-
-                return MusicVideoType(rawValue: typeString)
+                if let type = Self.extractMusicVideoType(from: run["navigationEndpoint"] as? [String: Any]) {
+                    return type
+                }
             }
         }
 
@@ -585,6 +591,44 @@ enum ParsingHelpers {
         }
 
         return []
+    }
+
+    /// Recovers the artist line from the row's play-button label ("Play {title} - {artist}").
+    ///
+    /// A song row's byline sometimes carries only its kind and duration, leaving the artist to this
+    /// label; without it the row shows a track with nobody's name on it.
+    static func extractArtistsFromPlayButtonLabel(_ data: [String: Any], title: String) -> [Artist] {
+        guard let overlay = data["overlay"] as? [String: Any],
+              let itemOverlay = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
+              let content = itemOverlay["content"] as? [String: Any],
+              let playButton = content["musicPlayButtonRenderer"] as? [String: Any],
+              let playData = playButton["accessibilityPlayData"] as? [String: Any],
+              let accessibility = playData["accessibilityData"] as? [String: Any],
+              let label = accessibility["label"] as? String,
+              label.hasPrefix("Play "),
+              let titleRange = label.range(of: title)
+        else { return [] }
+
+        var remainder = String(label[titleRange.upperBound...])
+            .trimmingCharacters(in: .whitespaces)
+        for separator in ["- ", "by "] where remainder.hasPrefix(separator) {
+            remainder = String(remainder.dropFirst(separator.count))
+                .trimmingCharacters(in: .whitespaces)
+        }
+
+        // "…by Michael Jackson, 4 minutes, 55 seconds" ends in the length, not a name.
+        if let duration = remainder.range(
+            of: #", \d+ (?:minutes?|seconds?).*$"#,
+            options: .regularExpression
+        ) {
+            remainder.removeSubrange(duration)
+        }
+
+        return remainder
+            .components(separatedBy: " • ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !Self.isMetadataText($0) && !Self.isArtistSeparator($0) }
+            .map { Artist(id: Self.stableId(title: "artist", components: $0), name: $0) }
     }
 
     /// Extracts album from flex columns.

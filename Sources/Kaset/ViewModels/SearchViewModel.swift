@@ -101,9 +101,9 @@ final class SearchViewModel {
     var filteredItems: [SearchResultItem] {
         switch self.selectedFilter {
         case .all:
-            self.results.allItems
+            SearchResultRanker.ranked(self.results)
         case .songs:
-            self.results.songs.map { .song($0) }
+            SearchResultRanker.audioPreferred(self.results.songs).map { .song($0) }
         case .albums:
             self.results.albums.map { .album($0) }
         case .artists:
@@ -297,7 +297,8 @@ final class SearchViewModel {
                 artists: self.results.artists + continuation.artists,
                 playlists: self.results.playlists + continuation.playlists,
                 podcastShows: self.results.podcastShows + continuation.podcastShows,
-                continuationToken: continuation.continuationToken
+                continuationToken: continuation.continuationToken,
+                orderedItems: self.results.allItems + continuation.allItems
             )
 
             self.results = mergedResults

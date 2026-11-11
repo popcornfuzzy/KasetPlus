@@ -35,9 +35,9 @@ struct PodcastsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .pageTitle(id: "podcasts", title: String(localized: "Podcasts"))
-            .navigationDestination(for: PodcastShow.self) { show in
-                PodcastShowView(show: show, client: self.viewModel.client)
-            }
+            // The show page is one of the shared destinations below; registering it here as well put a
+            // second `PodcastShow` destination on this stack, and opening a show then re-entered layout
+            // and froze the app (ADR-0023).
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
             // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
             // a second bar under the destination's own (`PodcastShowView`, `AllEpisodesView`).
@@ -253,6 +253,15 @@ private struct PodcastEpisodeCard: View {
 struct PodcastShowView: View {
     let show: PodcastShow
     let client: any YTMusicClientProtocol
+
+    /// Pushes the show's full episode list onto the enclosing stack's path.
+    ///
+    /// This page is a destination of that stack already, and such a page declares no destination of its
+    /// own: a second one on the same stack re-enters layout and freezes the app (ADR-0023). The stack
+    /// registers `AllEpisodesDestination` and hands the path down here, the way it hands
+    /// `PlaylistDetailView` its `onNavigateToArtist`.
+    let onShowAllEpisodes: (AllEpisodesDestination) -> Void
+
     @Environment(PlayerService.self) private var playerService
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
@@ -261,7 +270,6 @@ struct PodcastShowView: View {
     @State private var loadingState: LoadingState = .idle
     @State private var isSubscribed: Bool = false
     @State private var isSubscribing: Bool = false
-    @State private var showAllEpisodes = false
     @State private var subscriptionError: String?
 
     /// Number of episodes to show in the preview
@@ -282,22 +290,6 @@ struct PodcastShowView: View {
         }
         .accentBackground(from: self.show.thumbnailURL)
         .pageTitle(id: "podcast-\(self.show.id)", title: self.show.title)
-        .navigationDestination(for: AllEpisodesDestination.self) { destination in
-            AllEpisodesView(
-                show: destination.show,
-                initialEpisodes: destination.episodes,
-                continuationToken: destination.continuationToken,
-                client: self.client
-            )
-        }
-        .navigationDestination(isPresented: self.$showAllEpisodes) {
-            AllEpisodesView(
-                show: self.show,
-                initialEpisodes: self.episodes,
-                continuationToken: self.continuationToken,
-                client: self.client
-            )
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()
         }
@@ -397,7 +389,13 @@ struct PodcastShowView: View {
 
                 if self.episodes.count > self.previewEpisodeCount || self.continuationToken != nil {
                     Button {
-                        self.showAllEpisodes = true
+                        self.onShowAllEpisodes(
+                            AllEpisodesDestination(
+                                show: self.show,
+                                episodes: self.episodes,
+                                continuationToken: self.continuationToken
+                            )
+                        )
                     } label: {
                         Text("Show All")
                             .font(.subheadline)

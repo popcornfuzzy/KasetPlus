@@ -245,4 +245,20 @@ struct SearchResponseTests {
 
         #expect(response.allItems.count == 3)
     }
+
+    @Test("SearchResponse allItems follows the API's order")
+    func searchResponseAllItemsFollowsAPIOrder() {
+        let song = Song(id: "s1", title: "Song", artists: [], album: nil, duration: nil, thumbnailURL: nil, videoId: "s1")
+        let artist = Artist(id: "ar1", name: "Artist")
+
+        let response = SearchResponse(
+            songs: [song],
+            albums: [],
+            artists: [artist],
+            playlists: [],
+            orderedItems: [.artist(artist), .song(song)]
+        )
+
+        #expect(response.allItems.map(\.id) == ["artist-ar1", "song-s1"])
+    }
 }

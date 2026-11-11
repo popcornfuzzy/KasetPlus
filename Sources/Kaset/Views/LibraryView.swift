@@ -129,7 +129,21 @@ struct LibraryView: View {
                 )
             }
             .navigationDestination(for: PodcastShow.self) { show in
-                PodcastShowView(show: show, client: self.viewModel.client)
+                PodcastShowView(
+                    show: show,
+                    client: self.viewModel.client,
+                    onShowAllEpisodes: { destination in self.navigationPath.append(destination) }
+                )
+            }
+            // The show page's "Show All" pushes onto this stack's path, so the destination belongs here:
+            // a page that is itself a destination registers none of its own (ADR-0023).
+            .navigationDestination(for: AllEpisodesDestination.self) { destination in
+                AllEpisodesView(
+                    show: destination.show,
+                    initialEpisodes: destination.episodes,
+                    continuationToken: destination.continuationToken,
+                    client: self.viewModel.client
+                )
             }
             // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
             // a second bar under the destination's own. See `PlayerBar`.

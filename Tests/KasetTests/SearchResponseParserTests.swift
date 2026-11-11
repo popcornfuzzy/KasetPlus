@@ -231,6 +231,223 @@ struct SearchResponseParserTests {
         #expect(response.songs.first?.videoId == "P8UqZ5IF-QE")
     }
 
+    @Test("Parse card shelf song's music video type")
+    func parseCardShelfMusicVideoType() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCardShelfRenderer": [
+                                            "title": [
+                                                "runs": [[
+                                                    "text": "Wonderwall",
+                                                    "navigationEndpoint": [
+                                                        "watchEndpoint": [
+                                                            "videoId": "6hzrDeceEKc",
+                                                            "watchEndpointMusicSupportedConfigs": [
+                                                                "watchEndpointMusicConfig": [
+                                                                    "musicVideoType": "MUSIC_VIDEO_TYPE_OMV",
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ]],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = SearchResponseParser.parse(data)
+
+        #expect(response.songs.first?.videoId == "6hzrDeceEKc")
+        #expect(response.songs.first?.musicVideoType == .omv)
+    }
+
+    @Test("Parse card keeps its subtitle and related rows")
+    func parseCardSubtitleAndRelatedRows() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCardShelfRenderer": [
+                                            "title": [
+                                                "runs": [[
+                                                    "text": "Oasis",
+                                                    "navigationEndpoint": [
+                                                        "browseEndpoint": ["browseId": "UC-oasis"],
+                                                    ],
+                                                ]],
+                                            ],
+                                            "subtitle": [
+                                                "runs": [
+                                                    ["text": "Artist"],
+                                                    ["text": " • "],
+                                                    ["text": "32M monthly audience"],
+                                                ],
+                                            ],
+                                            "contents": self.makeSongItems(count: 1),
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = SearchResponseParser.parse(data)
+
+        #expect(response.topResult?.item.id == "artist-UC-oasis")
+        #expect(response.topResult?.subtitle == "Artist • 32M monthly audience")
+        #expect(response.topResult?.relatedItems.map(\.id) == ["song-video0"])
+        #expect(response.allItems.first?.id == "artist-UC-oasis")
+    }
+
+    @Test("Parse keeps YouTube Music's section order")
+    func parseKeepsSectionOrder() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [
+                                        ["musicShelfRenderer": ["contents": self.makeSongItems(count: 1)]],
+                                        ["musicShelfRenderer": ["contents": self.makeArtistItems(count: 1)]],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let response = SearchResponseParser.parse(data)
+
+        #expect(response.allItems.map(\.id) == ["song-video0", "artist-UC0"])
+    }
+
+    @Test("Song row without an artist byline takes the artist from its play label")
+    func parseSongArtistFromPlayLabel() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicShelfRenderer": [
+                                            "contents": [[
+                                                "musicResponsiveListItemRenderer": [
+                                                    "playlistItemData": ["videoId": "Xk_vH2uOb2c"],
+                                                    "flexColumns": [
+                                                        ["musicResponsiveListItemFlexColumnRenderer": [
+                                                            "text": ["runs": [["text": "hey boyyy"]]],
+                                                        ]],
+                                                        ["musicResponsiveListItemFlexColumnRenderer": [
+                                                            "text": ["runs": [
+                                                                ["text": "Song"],
+                                                                ["text": " • "],
+                                                                ["text": "4:39"],
+                                                            ]],
+                                                        ]],
+                                                    ],
+                                                    "overlay": [
+                                                        "musicItemThumbnailOverlayRenderer": [
+                                                            "content": [
+                                                                "musicPlayButtonRenderer": [
+                                                                    "accessibilityPlayData": [
+                                                                        "accessibilityData": [
+                                                                            "label": "Play hey boyyy - Slayyyter",
+                                                                        ],
+                                                                    ],
+                                                                ],
+                                                            ],
+                                                        ],
+                                                    ],
+                                                ],
+                                            ]],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let song = SearchResponseParser.parse(data).songs.first
+
+        #expect(song?.artists.map(\.name) == ["Slayyyter"])
+    }
+
+    @Test("Card song item names its artist from the card's byline")
+    func parseCardSongArtist() {
+        let data: [String: Any] = [
+            "contents": [
+                "tabbedSearchResultsRenderer": [
+                    "tabs": [[
+                        "tabRenderer": [
+                            "content": [
+                                "sectionListRenderer": [
+                                    "contents": [[
+                                        "musicCardShelfRenderer": [
+                                            "title": [
+                                                "runs": [[
+                                                    "text": "Wonderwall",
+                                                    "navigationEndpoint": [
+                                                        "watchEndpoint": ["videoId": "6hzrDeceEKc"],
+                                                    ],
+                                                ]],
+                                            ],
+                                            "subtitle": [
+                                                "runs": [
+                                                    ["text": "Song"],
+                                                    ["text": " • "],
+                                                    [
+                                                        "text": "Oasis",
+                                                        "navigationEndpoint": [
+                                                            "browseEndpoint": ["browseId": "UC-oasis"],
+                                                        ],
+                                                    ],
+                                                    ["text": " • "],
+                                                    ["text": "1.7B plays"],
+                                                ],
+                                            ],
+                                        ],
+                                    ]],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ],
+            ],
+        ]
+
+        let card = SearchResponseParser.parse(data).topResult
+
+        #expect(card?.item.subtitle == "Oasis")
+    }
+
     // MARK: - Helpers
 
     private func makeSearchResponseData(songs: Int, albums: Int, artists: Int, playlists: Int) -> [String: Any] {

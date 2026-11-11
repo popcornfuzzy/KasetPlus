@@ -463,6 +463,23 @@ struct SearchView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    // YouTube Music's own page opens with a top-result card; the rows below it start
+                    // after the card, so the result the card shows is not drawn twice.
+                    if self.viewModel.selectedFilter == .all,
+                       let topResult = SearchResultRanker.topResult(self.viewModel.results)
+                    {
+                        SearchTopResultCard(
+                            topResult: topResult,
+                            onSelect: { self.handleItemTap($0) },
+                            onQuickAction: { item, action in
+                                self.handleQuickAction(action, on: item)
+                            }
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.top, 10)
+                        .padding(.bottom, 14)
+                    }
+
                     ForEach(self.viewModel.filteredItems) { item in
                         self.resultRow(item, isSelected: item.id == self.selectedResultID)
                             .id(item.id)
@@ -532,7 +549,7 @@ struct SearchView: View {
                     Rectangle()
                         .fill(.quaternary)
                         .overlay {
-                            Image(systemName: self.iconForItem(item))
+                            Image(systemName: item.systemImage)
                                 .foregroundStyle(.secondary)
                         }
                 }
@@ -806,18 +823,47 @@ struct SearchView: View {
         self.selectedResultID = items[min(next, items.count - 1)].id
     }
 
-    private func iconForItem(_ item: SearchResultItem) -> String {
+    /// Plays the card's item without opening it: a song plays itself, an album or playlist loads its
+    /// tracks first, the way its own page's Play and Shuffle buttons do.
+    private func handleQuickAction(_ action: SearchTopResultCard.QuickAction, on item: SearchResultItem) {
         switch item {
-        case .song:
-            "music.note"
-        case .album:
-            "square.stack"
-        case .artist:
-            "person"
-        case .playlist:
-            "music.note.list"
+        case let .song(song):
+            Task {
+                await self.playerService.playWithRadio(song: song)
+            }
+        case let .album(album):
+            SongActionsHelper.playAlbum(
+                album,
+                client: self.viewModel.client,
+                playerService: self.playerService,
+                shuffled: action == .shuffle
+            )
+        case let .playlist(playlist):
+            SongActionsHelper.playPlaylist(
+                playlist,
+                client: self.viewModel.client,
+                playerService: self.playerService,
+                shuffled: action == .shuffle
+            )
+        case let .artist(artist):
+            switch action {
+            case .shuffle:
+                SongActionsHelper.shuffleArtist(
+                    artist,
+                    client: self.viewModel.client,
+                    playerService: self.playerService
+                )
+            case .mix:
+                SongActionsHelper.playArtistMix(
+                    artist,
+                    client: self.viewModel.client,
+                    playerService: self.playerService
+                )
+            case .play:
+                break
+            }
         case .podcastShow:
-            "mic.fill"
+            break
         }
     }
 

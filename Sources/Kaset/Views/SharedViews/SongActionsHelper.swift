@@ -753,7 +753,8 @@ enum SongActionsHelper {
     static func playAlbum(
         _ album: Album,
         client: any YTMusicClientProtocol,
-        playerService: PlayerService
+        playerService: PlayerService,
+        shuffled: Bool = false
     ) {
         Task {
             do {
@@ -824,10 +825,86 @@ enum SongActionsHelper {
                 }
 
                 // Stop current playback and play the album
-                await playerService.playQueue(songs, startingAt: 0)
-                DiagnosticsLogger.ui.info("Playing album '\(album.title)' (\(songs.count) songs)")
+                let queue = shuffled ? songs.shuffled() : songs
+                await playerService.playQueue(queue, startingAt: 0)
+                DiagnosticsLogger.ui.info(
+                    "Playing album '\(album.title)' (\(queue.count) songs)\(shuffled ? ", shuffled" : "")"
+                )
             } catch {
                 DiagnosticsLogger.ui.error("Failed to play album: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Shuffles an artist's songs, fetching the artist page for them first.
+    ///
+    /// The search row carries no tracks, so the page is what has the songs to shuffle — the same fetch
+    /// the artist page's own Shuffle button makes.
+    static func shuffleArtist(
+        _ artist: Artist,
+        client: any YTMusicClientProtocol,
+        playerService: PlayerService
+    ) {
+        Task {
+            do {
+                let detail = try await client.getArtist(id: artist.id)
+                guard !detail.songs.isEmpty else { return }
+
+                await playerService.playQueue(detail.songs.shuffled(), startingAt: 0)
+                DiagnosticsLogger.ui.info("Shuffled artist '\(artist.name)' (\(detail.songs.count) songs)")
+            } catch {
+                DiagnosticsLogger.ui.error("Failed to shuffle artist: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Plays an artist's mix, the personalized radio the artist page offers beside Shuffle.
+    ///
+    /// The mix's playlist ID is a property of the artist page, so it is fetched here; an artist whose
+    /// page names no mix has nothing to play, which the log records.
+    static func playArtistMix(
+        _ artist: Artist,
+        client: any YTMusicClientProtocol,
+        playerService: PlayerService
+    ) {
+        Task {
+            do {
+                let detail = try await client.getArtist(id: artist.id)
+                guard let mixPlaylistId = detail.mixPlaylistId else {
+                    DiagnosticsLogger.ui.info("Artist '\(artist.name)' has no mix to play")
+                    return
+                }
+
+                await playerService.playWithMix(playlistId: mixPlaylistId, startVideoId: nil)
+                DiagnosticsLogger.ui.info("Playing the mix for artist '\(artist.name)'")
+            } catch {
+                DiagnosticsLogger.ui.error("Failed to play artist mix: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Plays a playlist immediately, replacing the current queue.
+    ///
+    /// The playlist's tracks are fetched first, as its own page does: a search row carries only the
+    /// header, so there is nothing to queue until the tracks arrive.
+    static func playPlaylist(
+        _ playlist: Playlist,
+        client: any YTMusicClientProtocol,
+        playerService: PlayerService,
+        shuffled: Bool = false
+    ) {
+        Task {
+            do {
+                let tracks = try await client.getPlaylistAllTracks(playlistId: playlist.id)
+                guard !tracks.isEmpty else { return }
+
+                let queue = shuffled ? tracks.shuffled() : tracks
+                await playerService.playQueue(queue, startingAt: 0)
+                DiagnosticsLogger.ui.info(
+                    "Playing playlist '\(playlist.title)' (\(queue.count) songs)\(shuffled ? ", shuffled" : "")"
+                )
+            } catch {
+                DiagnosticsLogger.ui.error("Failed to play playlist: \(error.localizedDescription)")
             }
         }
     }

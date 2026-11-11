@@ -15,6 +15,9 @@ enum SearchResponseParser {
         var albums: [Album] = []
         var artists: [Artist] = []
         var playlists: [Playlist] = []
+        // YouTube Music's own order: the top-result card, then each shelf in turn.
+        var items: [SearchResultItem] = []
+        var topResult: SearchTopResult?
 
         // Navigate to contents
         guard let contents = data["contents"] as? [String: Any],
@@ -32,10 +35,11 @@ enum SearchResponseParser {
 
         for sectionData in sectionContents {
             // Parse musicCardShelfRenderer (Top Result section)
-            if let cardShelfRenderer = sectionData["musicCardShelfRenderer"] as? [String: Any] {
-                if let item = parseCardShelfRenderer(cardShelfRenderer) {
-                    Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
-                }
+            if let cardShelfRenderer = sectionData["musicCardShelfRenderer"] as? [String: Any],
+               let card = parseCardShelfRenderer(cardShelfRenderer)
+            {
+                topResult = topResult ?? card
+                Self.appendItem(card.item, items: &items, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
             }
 
             // Parse musicShelfRenderer (regular results)
@@ -44,7 +48,7 @@ enum SearchResponseParser {
             {
                 for itemData in shelfContents {
                     if let item = parseSearchResultItem(itemData) {
-                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                        Self.appendItem(item, items: &items, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
                     }
                 }
             }
@@ -55,27 +59,40 @@ enum SearchResponseParser {
             {
                 for itemData in itemContents {
                     if let cardShelfRenderer = itemData["musicCardShelfRenderer"] as? [String: Any],
-                       let item = parseCardShelfRenderer(cardShelfRenderer)
+                       let card = parseCardShelfRenderer(cardShelfRenderer)
                     {
-                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                        topResult = topResult ?? card
+                        Self.appendItem(card.item, items: &items, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
                     } else if let item = parseSearchResultItem(itemData) {
-                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                        Self.appendItem(item, items: &items, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
                     }
                 }
             }
         }
 
-        return SearchResponse(songs: songs, albums: albums, artists: artists, playlists: playlists)
+        return SearchResponse(
+            songs: songs,
+            albums: albums,
+            artists: artists,
+            playlists: playlists,
+            podcastShows: [],
+            continuationToken: nil,
+            orderedItems: items,
+            topResult: topResult
+        )
     }
 
-    /// Helper to append a search result item to the appropriate array.
+    /// Helper to append a search result item to the appropriate array, keeping the API's order.
     private static func appendItem(
         _ item: SearchResultItem,
+        items: inout [SearchResultItem],
         songs: inout [Song],
         albums: inout [Album],
         artists: inout [Artist],
         playlists: inout [Playlist]
     ) {
+        items.append(item)
+
         switch item {
         case let .song(song):
             songs.append(song)
@@ -137,9 +154,27 @@ enum SearchResponseParser {
 
     // MARK: - Item Parsing
 
-    /// Parses a musicCardShelfRenderer (Top Result section).
-    /// This renderer contains a single prominent result with title, subtitle, and browse endpoint.
-    private static func parseCardShelfRenderer(_ data: [String: Any]) -> SearchResultItem? {
+    /// Parses a musicCardShelfRenderer (Top Result section): the card's item, its subtitle line and
+    /// the rows YouTube Music lists beside it.
+    private static func parseCardShelfRenderer(_ data: [String: Any]) -> SearchTopResult? {
+        guard let item = self.parseCardItem(data) else { return nil }
+
+        var subtitle: String?
+        if let subtitleData = data["subtitle"] as? [String: Any],
+           let subtitleRuns = subtitleData["runs"] as? [[String: Any]]
+        {
+            let line = subtitleRuns.compactMap { $0["text"] as? String }.joined()
+            subtitle = line.isEmpty ? nil : line
+        }
+
+        let relatedItems = (data["contents"] as? [[String: Any]] ?? [])
+            .compactMap { self.parseSearchResultItem($0) }
+
+        return SearchTopResult(item: item, subtitle: subtitle, relatedItems: relatedItems)
+    }
+
+    /// The card's own item, taken from the navigation endpoint of its title run.
+    private static func parseCardItem(_ data: [String: Any]) -> SearchResultItem? {
         // Extract title and navigation from the title runs
         guard let titleData = data["title"] as? [String: Any],
               let runs = titleData["runs"] as? [[String: Any]],
@@ -153,7 +188,7 @@ enum SearchResponseParser {
         let thumbnails = ParsingHelpers.extractThumbnails(from: data)
         let thumbnailURL = thumbnails.last.flatMap { URL(string: $0) }
 
-        // Extract subtitle
+        // The card's own subtitle: its kind and numbers ("Artist • 32M monthly audience").
         var subtitle: String?
         if let subtitleData = data["subtitle"] as? [String: Any],
            let subtitleRuns = subtitleData["runs"] as? [[String: Any]]
@@ -178,14 +213,18 @@ enum SearchResponseParser {
             if let watchEndpoint = navigationEndpoint["watchEndpoint"] as? [String: Any],
                let videoId = watchEndpoint["videoId"] as? String
             {
+                // The card is often a track's official music video, and its type is what tells
+                // the all-results ranking to put the album version in its place. Its byline is the only
+                // place the card names the artist ("Song • Oasis • 1.7B plays").
                 let song = Song(
                     id: videoId,
                     title: title,
-                    artists: [],
+                    artists: ParsingHelpers.extractArtists(from: data),
                     album: nil,
                     duration: nil,
                     thumbnailURL: thumbnailURL,
-                    videoId: videoId
+                    videoId: videoId,
+                    musicVideoType: ParsingHelpers.extractMusicVideoType(from: navigationEndpoint)
                 )
                 return .song(song)
             }
@@ -194,19 +233,19 @@ enum SearchResponseParser {
         if let thumbnailOverlay = data["thumbnailOverlay"] as? [String: Any],
            let overlayRenderer = thumbnailOverlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
            let content = overlayRenderer["content"] as? [String: Any],
-           let playButton = content["musicPlayButtonRenderer"] as? [String: Any],
-           let endpoint = playButton["playNavigationEndpoint"] as? [String: Any],
+           let playButton = content["musicPlayButtonRenderer"] as? [String: Any],            let endpoint = playButton["playNavigationEndpoint"] as? [String: Any],
            let watchEndpoint = endpoint["watchEndpoint"] as? [String: Any],
            let videoId = watchEndpoint["videoId"] as? String
         {
             let song = Song(
                 id: videoId,
                 title: title,
-                artists: [],
+                artists: ParsingHelpers.extractArtists(from: data),
                 album: nil,
                 duration: nil,
                 thumbnailURL: thumbnailURL,
-                videoId: videoId
+                videoId: videoId,
+                musicVideoType: ParsingHelpers.extractMusicVideoType(from: endpoint)
             )
             return .song(song)
         }
@@ -295,7 +334,12 @@ enum SearchResponseParser {
         let thumbnails = ParsingHelpers.extractThumbnails(from: data)
         let thumbnailURL = thumbnails.last.flatMap { URL(string: $0) }
         let title = ParsingHelpers.extractTitleFromFlexColumns(data) ?? "Unknown"
-        let artists = ParsingHelpers.extractArtistsFromFlexColumns(data)
+        let bylineArtists = ParsingHelpers.extractArtistsFromFlexColumns(data)
+        // Some rows leave the artist out of the byline ("Song • 4:39") and keep it only in the play
+        // button's label; the row would otherwise show a track with no artist.
+        let artists = bylineArtists.isEmpty
+            ? ParsingHelpers.extractArtistsFromPlayButtonLabel(data, title: title)
+            : bylineArtists
         let album = ParsingHelpers.extractAlbumFromFlexColumns(data)
 
         let song = Song(
@@ -584,6 +628,7 @@ enum SearchResponseParser {
         var artists: [Artist] = []
         var playlists: [Playlist] = []
         var podcastShows: [PodcastShow] = []
+        var items: [SearchResultItem] = []
         var continuationToken: String?
 
         // Continuation responses have a different structure
@@ -596,8 +641,9 @@ enum SearchResponseParser {
                     // Try to parse as podcast show first (for podcast search continuation)
                     if let show = Self.parsePodcastShowFromSearchResult(itemData) {
                         podcastShows.append(show)
+                        items.append(.podcastShow(show))
                     } else if let item = parseSearchResultItem(itemData) {
-                        Self.appendItem(item, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
+                        Self.appendItem(item, items: &items, songs: &songs, albums: &albums, artists: &artists, playlists: &playlists)
                     }
                 }
             }
@@ -618,7 +664,8 @@ enum SearchResponseParser {
             artists: artists,
             playlists: playlists,
             podcastShows: podcastShows,
-            continuationToken: continuationToken
+            continuationToken: continuationToken,
+            orderedItems: items
         )
     }
 }
