@@ -84,3 +84,4 @@ What becomes easier or more difficult because of this change?
 | [0046](0046-home-native-shelf-feed.md) | Native Shelf Feed (NSCollectionView) | Accepted |
 | [0047](0047-apple-artist-logos.md) | Artist Wordmark Logos from Apple Music | Accepted |
 | [0048](0048-search-result-ranking.md) | Search Results Follow YouTube Music's Order | Accepted |
+| [0049](0049-window-content-sizing.md) | The Window and Its Panes Never Size Themselves from Content | Accepted |

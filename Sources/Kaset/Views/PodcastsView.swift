@@ -209,8 +209,8 @@ private struct PodcastEpisodeCard: View {
                             .fontWeight(.medium)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                            .glassEffect(.regular, in: .rect(cornerRadius: 6))
+                            .clipShape(.rect(cornerRadius: 6))
                             .padding(.horizontal, 6)
                             .padding(.bottom, self.episode.playbackProgress > 0 ? 10 : 6)
                     }
@@ -246,9 +246,30 @@ private struct PodcastEpisodeCard: View {
     }
 }
 
+// MARK: - Podcast Playback
+
+/// The song an episode is played as. Podcast episodes have no album or artist page, so the show's name
+/// is carried as the artist — the same shape the episode rows and the fullscreen player already use.
+private func podcastSong(for episode: PodcastEpisode) -> Song {
+    Song(
+        id: episode.id,
+        title: episode.title,
+        artists: episode.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
+        album: nil,
+        duration: episode.durationSeconds.map { TimeInterval($0) },
+        thumbnailURL: episode.thumbnailURL,
+        videoId: episode.id
+    )
+}
+
 // MARK: - PodcastShowView
 
 /// Detail view for a podcast show with its episodes.
+///
+/// The page follows the same shape as the playlist and artist pages: the header is the list's first row
+/// (ADR-0023), the episodes are AppKit-backed `List` rows (ADR-0014), and the header's controls are the
+/// app's glass controls. Loading and failure use the shared `LoadingView` / `ErrorView`, so opening a
+/// show works the same way as opening any other detail page.
 @available(macOS 26.0, *)
 struct PodcastShowView: View {
     let show: PodcastShow
@@ -271,30 +292,39 @@ struct PodcastShowView: View {
     @State private var isSubscribed: Bool = false
     @State private var isSubscribing: Bool = false
     @State private var subscriptionError: String?
+    @State private var isScrolling = false
 
-    /// Number of episodes to show in the preview
-    private let previewEpisodeCount = 5
+    /// Number of episodes the page previews before "Show All".
+    private static let previewEpisodeCount = 5
+
+    /// Edge length of the header artwork, shared with the playlist and artist headers.
+    private static let artworkSize: CGFloat = 180
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // Header
-                self.headerView
-
-                Divider()
-
-                // Episodes list
-                self.episodesList
+        Group {
+            switch self.loadingState {
+            case .idle, .loading:
+                LoadingView(String(localized: "Loading podcast..."))
+            case .loaded, .loadingMore:
+                self.contentView
+            case let .error(error):
+                ErrorView(error: error) {
+                    Task { await self.loadShow(force: true) }
+                }
             }
-            .padding(24)
         }
         .accentBackground(from: self.show.thumbnailURL)
         .pageTitle(id: "podcast-\(self.show.id)", title: self.show.title)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            if case .error = self.loadingState {} else {
+                PlayerBar()
+            }
         }
         .task {
             await self.loadShow()
+        }
+        .refreshable {
+            await self.loadShow(force: true)
         }
         .alert(
             String(localized: "Subscription Error"),
@@ -309,160 +339,249 @@ struct PodcastShowView: View {
         }
     }
 
+    // MARK: - Views
+
+    /// The header is the list's first row, so the table lays it out and it scrolls away with the
+    /// episodes; see ADR-0023 for why it is not a section header.
+    private var contentView: some View {
+        List {
+            self.headerView
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 20, trailing: 24))
+                .listRowBackground(Color.clear)
+
+            Divider()
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                .listRowBackground(Color.clear)
+
+            self.episodesHeader
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 20, leading: 24, bottom: 8, trailing: 24))
+                .listRowBackground(Color.clear)
+
+            if self.previewEpisodes.isEmpty {
+                self.emptyEpisodesView
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 32, trailing: 24))
+                    .listRowBackground(Color.clear)
+            } else {
+                self.episodeRows
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        // Rows must not swap their hover highlight while the list scrolls under a stationary pointer.
+        .onScrollPhaseChange { _, newPhase, _ in
+            let scrolling = newPhase != .idle
+            if scrolling != self.isScrolling {
+                self.isScrolling = scrolling
+            }
+        }
+    }
+
     private var headerView: some View {
         HStack(alignment: .top, spacing: 20) {
-            // Artwork
-            CachedAsyncImage(url: self.show.thumbnailURL) { image in
+            CachedAsyncImage(
+                url: self.show.thumbnailURL,
+                identity: self.show.id
+            ) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                    }
             }
-            .frame(width: 180, height: 180)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(width: Self.artworkSize, height: Self.artworkSize)
+            .clipShape(.rect(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+            .fadeIn(duration: 0.3)
 
             VStack(alignment: .leading, spacing: 8) {
+                Text("Podcast")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+
                 Text(self.show.title)
                     .font(.title)
                     .fontWeight(.bold)
+                    .foregroundStyle(.primary)
 
-                if let author = show.author {
+                if let author = self.show.author, !author.isEmpty {
                     Text(author)
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
 
-                if let description = show.description {
+                if let description = self.show.description, !description.isEmpty {
                     Text(description)
-                        .font(.body)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(4)
                 }
 
-                Spacer()
-
-                // Action buttons
-                HStack(spacing: 12) {
-                    // Play button - plays from the first episode and queues the rest
-                    if !self.episodes.isEmpty {
-                        Button {
-                            self.playEpisodeInQueue(at: 0)
-                        } label: {
-                            Label("Play Latest", systemImage: "play.fill")
-                                .font(.headline)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    // Add to Library button
-                    Button {
-                        Task {
-                            await self.toggleSubscription()
-                        }
-                    } label: {
-                        if self.isSubscribing {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label(
-                                self.isSubscribed ? String(localized: "In Library") : String(localized: "Add to Library"),
-                                systemImage: self.isSubscribed ? "checkmark" : "plus"
-                            )
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(self.isSubscribing)
+                if let count = self.episodeCount {
+                    Text(count == 1 ? "1 episode" : "\(count) episodes")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
+
+                Spacer(minLength: 8)
+
+                self.actionRow
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var episodesList: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Header with "Show All" button
-            HStack {
-                Text("Episodes")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+    private var actionRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                self.playEpisodeInQueue(at: 0)
+            } label: {
+                Label("Play Latest", systemImage: "play.fill")
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(self.episodes.isEmpty)
 
-                Spacer()
-
-                if self.episodes.count > self.previewEpisodeCount || self.continuationToken != nil {
-                    Button {
-                        self.onShowAllEpisodes(
-                            AllEpisodesDestination(
-                                show: self.show,
-                                episodes: self.episodes,
-                                continuationToken: self.continuationToken
-                            )
-                        )
-                    } label: {
-                        Text("Show All")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
+            Button {
+                Task { await self.toggleSubscription() }
+            } label: {
+                if self.isSubscribing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label(
+                        self.isSubscribed ? String(localized: "In Library") : String(localized: "Add to Library"),
+                        systemImage: self.isSubscribed ? "checkmark" : "plus"
+                    )
                 }
             }
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .disabled(self.isSubscribing)
+        }
+    }
 
-            if self.loadingState == .loading {
-                ProgressView()
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding()
-            } else {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(self.previewEpisodes.enumerated()), id: \.element.id) { index, episode in
-                        PodcastEpisodeRow(episode: episode) {
-                            self.playEpisodeInQueue(at: index)
-                        }
-                        Divider()
+    private var episodesHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("Episodes")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Spacer()
+
+            if self.episodes.count > Self.previewEpisodeCount || self.continuationToken != nil {
+                Button {
+                    self.showAllEpisodes()
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("Show All")
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
                     }
                 }
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.accentColor)
             }
         }
     }
 
-    /// Episodes to show in the preview (limited to previewEpisodeCount)
-    private var previewEpisodes: [PodcastEpisode] {
-        Array(self.episodes.prefix(self.previewEpisodeCount))
+    @ViewBuilder
+    private var episodeRows: some View {
+        let currentVideoId = self.playerService.currentTrack?.videoId
+        let isPlaying = self.playerService.isPlaying
+
+        ForEach(Array(self.previewEpisodes.enumerated()), id: \.element.id) { index, episode in
+            PodcastEpisodeRow(
+                episode: episode,
+                isCurrent: episode.id == currentVideoId,
+                isPlaying: isPlaying && episode.id == currentVideoId,
+                showsSeparator: index < self.previewEpisodes.count - 1,
+                isScrolling: self.isScrolling
+            ) {
+                self.playEpisodeInQueue(at: index)
+            }
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+        }
     }
 
-    private func loadShow() async {
-        guard self.loadingState == .idle else { return }
-        self.loadingState = .loading
+    private var emptyEpisodesView: some View {
+        ContentUnavailableView {
+            Label("No Episodes", systemImage: "waveform")
+        } description: {
+            Text("This show has no episodes yet.")
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Episodes to show in the preview (limited to previewEpisodeCount).
+    private var previewEpisodes: [PodcastEpisode] {
+        Array(self.episodes.prefix(Self.previewEpisodeCount))
+    }
+
+    /// The show's episode count when it can be stated: the API's total when it reported one, otherwise
+    /// the page's first page. `nil` before the page has loaded, so the header never says "0 episodes" at
+    /// a show it has not asked about yet.
+    private var episodeCount: Int? {
+        if let count = self.show.episodeCount, count > 0 {
+            return count
+        }
+        return self.episodes.isEmpty ? nil : self.episodes.count
+    }
+
+    // MARK: - Actions
+
+    private func showAllEpisodes() {
+        self.onShowAllEpisodes(
+            AllEpisodesDestination(
+                show: self.show,
+                episodes: self.episodes,
+                continuationToken: self.continuationToken
+            )
+        )
+    }
+
+    private func loadShow(force: Bool = false) async {
+        if !force, self.loadingState != .idle {
+            return
+        }
+        // A refresh keeps the page on screen: only a page with nothing to show flips to the spinner.
+        if self.episodes.isEmpty {
+            self.loadingState = .loading
+        }
 
         do {
-            let showDetail = try await client.getPodcastShow(browseId: self.show.id)
+            let showDetail = try await self.client.getPodcastShow(browseId: self.show.id)
             self.episodes = showDetail.episodes
             self.continuationToken = showDetail.continuationToken
             self.isSubscribed = showDetail.isSubscribed
             self.loadingState = .loaded
         } catch {
             DiagnosticsLogger.api.error("Failed to load podcast show: \(error.localizedDescription)")
-            self.loadingState = .error(LoadingError(from: error))
+            if self.episodes.isEmpty {
+                self.loadingState = .error(LoadingError(from: error))
+            }
         }
     }
 
     /// Plays an episode and queues the remaining episodes from the show.
     private func playEpisodeInQueue(at index: Int) {
-        let songs = self.episodes.map { self.episodeToSong($0) }
+        let songs = self.episodes.map { podcastSong(for: $0) }
         Task {
             await self.playerService.playQueue(songs, startingAt: index)
         }
-    }
-
-    /// Converts a podcast episode to a Song for playback.
-    private func episodeToSong(_ episode: PodcastEpisode) -> Song {
-        Song(
-            id: episode.id,
-            title: episode.title,
-            artists: episode.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
-            album: nil,
-            duration: episode.durationSeconds.map { TimeInterval($0) },
-            thumbnailURL: episode.thumbnailURL,
-            videoId: episode.id
-        )
     }
 
     private func toggleSubscription() async {
@@ -501,75 +620,162 @@ struct PodcastShowView: View {
 
 // MARK: - PodcastEpisodeRow
 
+/// One episode of a show, drawn as an AppKit-backed `List` row.
+///
+/// The row fills the list's width and paints its own hover highlight, like `PlaylistTrackRow`: the
+/// highlight spans the row rather than only the label inside it, and the divider starts at the title
+/// column rather than at the edge of the page.
 @available(macOS 26.0, *)
 struct PodcastEpisodeRow: View {
     let episode: PodcastEpisode
+    var isCurrent: Bool = false
+    var isPlaying: Bool = false
+    var showsSeparator: Bool = true
+    var isScrolling: Bool = false
     let action: () -> Void
+
+    /// Display size of the episode artwork. `ImageCache` doubles it for Retina, so passing the display
+    /// size keeps the cache from decoding a bitmap far larger than the slot.
+    private static let artworkSize: CGFloat = 64
+    /// Horizontal inset of the row's content, matching the page's list rows.
+    private static let contentInset: CGFloat = 24
+    private static let columnSpacing: CGFloat = 12
+
+    @State private var isPointerInside = false
+
+    private var showsHighlight: Bool {
+        self.isPointerInside && !self.isScrolling
+    }
+
+    /// Where the title column starts, which is where the row's divider starts too.
+    private var titleLeadingInset: CGFloat {
+        Self.contentInset + Self.artworkSize + Self.columnSpacing
+    }
 
     var body: some View {
         Button(action: self.action) {
-            HStack(alignment: .top, spacing: 12) {
-                // Thumbnail
-                CachedAsyncImage(url: self.episode.thumbnailURL) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                }
-                .frame(width: 80, height: 80)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    // Title
-                    HStack {
-                        Text(self.episode.title)
-                            .font(.headline)
-                            .lineLimit(2)
-                        Spacer()
-                        if let duration = episode.formattedDuration {
-                            Text(duration)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    // Description
-                    if let description = episode.description {
-                        Text(description)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    // Date and progress
-                    HStack {
-                        if let date = episode.publishedDate {
-                            Text(date)
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        if self.episode.isPlayed {
-                            Label("Played", systemImage: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    // Progress bar
-                    if self.episode.playbackProgress > 0 {
-                        PodcastPlaybackProgressBar(
-                            progress: self.episode.playbackProgress,
-                            isPlayed: self.episode.isPlayed,
-                            trackColor: .primary.opacity(0.08),
-                            fillColor: self.episode.isPlayed ? .secondary.opacity(0.5) : .accentColor.opacity(0.7),
-                            height: 2
-                        )
-                    }
-                }
+            HStack(alignment: .top, spacing: Self.columnSpacing) {
+                self.artwork
+                self.info
             }
+            .padding(.horizontal, Self.contentInset)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(Rectangle().fill(self.showsHighlight ? Color.primary.opacity(0.06) : .clear))
+        .animation(AppAnimation.quick, value: self.showsHighlight)
+        .onHover { hovering in
+            self.isPointerInside = hovering
+        }
+        .overlay(alignment: .bottom) {
+            if self.showsSeparator {
+                Divider()
+                    .padding(.leading, self.titleLeadingInset)
+            }
+        }
+        .help("Play episode")
+    }
+
+    private var artwork: some View {
+        CachedAsyncImage(
+            url: self.episode.thumbnailURL,
+            identity: self.episode.id,
+            targetSize: CGSize(width: Self.artworkSize, height: Self.artworkSize)
+        ) { image in
+            image
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } placeholder: {
+            Rectangle()
+                .fill(.quaternary)
+                .overlay {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+        }
+        .frame(width: Self.artworkSize, height: Self.artworkSize)
+        .clipShape(.rect(cornerRadius: 8))
+        .overlay {
+            if self.isCurrent {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+            } else if self.showsHighlight {
+                Circle()
+                    .fill(.black.opacity(0.45))
+                    .frame(width: 28, height: 28)
+                    .overlay {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if self.isCurrent, self.isPlaying {
+                Image(systemName: "waveform")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(4)
+                    .background(Circle().fill(Color.accentColor))
+                    .offset(x: -3, y: 3)
+            }
+        }
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(self.episode.title)
+                    .font(.headline)
+                    .lineLimit(2)
+
+                Spacer(minLength: 8)
+
+                if let duration = self.episode.formattedDuration {
+                    Text(duration)
+                        .font(.subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let description = self.episode.description, !description.isEmpty {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if self.episode.publishedDate != nil || self.episode.isPlayed {
+                HStack(spacing: 6) {
+                    if let date = self.episode.publishedDate {
+                        Text(date)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if self.episode.isPlayed {
+                        Label("Played", systemImage: "checkmark.circle.fill")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            if self.episode.playbackProgress > 0 {
+                PodcastPlaybackProgressBar(
+                    progress: self.episode.playbackProgress,
+                    isPlayed: self.episode.isPlayed,
+                    trackColor: .primary.opacity(0.08),
+                    fillColor: self.episode.isPlayed ? .secondary.opacity(0.5) : .accentColor.opacity(0.7),
+                    height: 3
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -620,53 +826,187 @@ struct AllEpisodesDestination: Hashable {
 
 // MARK: - AllEpisodesView
 
-/// View displaying all episodes of a podcast show with infinite scroll pagination.
+/// The full episode list of a show, with the same list and row treatment as the show page.
 @available(macOS 26.0, *)
 struct AllEpisodesView: View {
     let show: PodcastShow
-    let initialEpisodes: [PodcastEpisode]
-    let continuationToken: String?
     let client: any YTMusicClientProtocol
 
     @Environment(PlayerService.self) private var playerService
-    @State private var episodes: [PodcastEpisode] = []
+    @State private var episodes: [PodcastEpisode]
     @State private var currentContinuationToken: String?
     @State private var isLoadingMore = false
+    @State private var loadMoreError: String?
+    @State private var isScrolling = false
+
+    init(
+        show: PodcastShow,
+        initialEpisodes: [PodcastEpisode],
+        continuationToken: String?,
+        client: any YTMusicClientProtocol
+    ) {
+        self.show = show
+        self.client = client
+        // The parent has already loaded the first page; seeding the state means the page opens with its
+        // rows rather than an empty frame that fills in a turn later.
+        _episodes = State(initialValue: initialEpisodes)
+        _currentContinuationToken = State(initialValue: continuationToken)
+    }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(self.episodes.enumerated()), id: \.element.id) { index, episode in
-                    PodcastEpisodeRow(episode: episode) {
-                        self.playEpisodeInQueue(at: index)
-                    }
-                    Divider()
+        List {
+            self.headerView
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 8, leading: 24, bottom: 16, trailing: 24))
+                .listRowBackground(Color.clear)
 
-                    // Infinite scroll trigger - load more when near the end
-                    if episode.id == self.episodes.last?.id, self.currentContinuationToken != nil {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding()
-                            .onAppear {
-                                Task {
-                                    await self.loadMoreEpisodes()
-                                }
-                            }
-                    }
-                }
+            Divider()
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                .listRowBackground(Color.clear)
+
+            if self.episodes.isEmpty {
+                self.emptyEpisodesView
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 32, trailing: 24))
+                    .listRowBackground(Color.clear)
+            } else {
+                self.episodeRows
             }
-            .padding(24)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .accentBackground(from: self.show.thumbnailURL)
         .pageTitle(id: "all-episodes-\(self.show.id)", title: String(localized: "All Episodes"))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             PlayerBar()
         }
-        .onAppear {
-            // Initialize with episodes passed from parent
-            if self.episodes.isEmpty {
-                self.episodes = self.initialEpisodes
-                self.currentContinuationToken = self.continuationToken
+        .onScrollPhaseChange { _, newPhase, _ in
+            let scrolling = newPhase != .idle
+            if scrolling != self.isScrolling {
+                self.isScrolling = scrolling
+            }
+        }
+    }
+
+    private var headerView: some View {
+        HStack(spacing: 16) {
+            CachedAsyncImage(
+                url: self.show.thumbnailURL,
+                identity: self.show.id,
+                targetSize: CGSize(width: 64, height: 64)
+            ) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(.rect(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(self.show.title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+
+                if let author = self.show.author, !author.isEmpty {
+                    Text(author)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                self.playEpisodeInQueue(at: 0)
+            } label: {
+                Label("Play All", systemImage: "play.fill")
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(self.episodes.isEmpty)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var episodeRows: some View {
+        let currentVideoId = self.playerService.currentTrack?.videoId
+        let isPlaying = self.playerService.isPlaying
+
+        ForEach(Array(self.episodes.enumerated()), id: \.element.id) { index, episode in
+            PodcastEpisodeRow(
+                episode: episode,
+                isCurrent: episode.id == currentVideoId,
+                isPlaying: isPlaying && episode.id == currentVideoId,
+                showsSeparator: index < self.episodes.count - 1,
+                isScrolling: self.isScrolling
+            ) {
+                self.playEpisodeInQueue(at: index)
+            }
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+
+            // The sentinel belongs to the last row, so the list realizes it only when the reader has
+            // reached the bottom — and the next page's last row realizes a new one.
+            if index == self.episodes.count - 1 {
+                self.paginationRow
+            }
+        }
+    }
+
+    private var emptyEpisodesView: some View {
+        ContentUnavailableView {
+            Label("No Episodes", systemImage: "waveform")
+        } description: {
+            Text("This show has no episodes yet.")
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var paginationRow: some View {
+        if let error = self.loadMoreError {
+            VStack(spacing: 10) {
+                Text("Couldn't load more episodes.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Button(String(localized: "Try Again")) {
+                    Task { await self.loadMoreEpisodes() }
+                }
+                .buttonStyle(.bordered)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .help(error)
+        } else if self.currentContinuationToken != nil {
+            HStack(spacing: 8) {
+                FixedProgressView(controlSize: .small)
+
+                Text("Loading more episodes…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .task {
+                await self.loadMoreEpisodes()
             }
         }
     }
@@ -674,6 +1014,7 @@ struct AllEpisodesView: View {
     private func loadMoreEpisodes() async {
         guard !self.isLoadingMore, let token = self.currentContinuationToken else { return }
         self.isLoadingMore = true
+        self.loadMoreError = nil
         defer { self.isLoadingMore = false }
 
         do {
@@ -682,31 +1023,20 @@ struct AllEpisodesView: View {
             self.currentContinuationToken = continuation.continuationToken
             DiagnosticsLogger.api.info("Loaded \(continuation.episodes.count) more episodes")
         } catch {
+            self.loadMoreError = error.localizedDescription
             DiagnosticsLogger.api.error("Failed to load more episodes: \(error.localizedDescription)")
         }
     }
 
     /// Plays an episode and queues the remaining episodes.
     private func playEpisodeInQueue(at index: Int) {
-        let songs = self.episodes.map { self.episodeToSong($0) }
+        let songs = self.episodes.map { podcastSong(for: $0) }
         Task {
             await self.playerService.playQueue(songs, startingAt: index)
         }
     }
-
-    /// Converts a podcast episode to a Song for playback.
-    private func episodeToSong(_ episode: PodcastEpisode) -> Song {
-        Song(
-            id: episode.id,
-            title: episode.title,
-            artists: episode.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
-            album: nil,
-            duration: episode.durationSeconds.map { TimeInterval($0) },
-            thumbnailURL: episode.thumbnailURL,
-            videoId: episode.id
-        )
-    }
 }
+
 
 #Preview {
     let authService = AuthService()

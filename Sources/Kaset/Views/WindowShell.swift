@@ -240,9 +240,20 @@ struct ShellPane<Content: View>: View {
 @available(macOS 26.0, *)
 @MainActor
 final class WindowShellController: NSSplitViewController {
-    let sidebarController = NSHostingController(rootView: AnyView(EmptyView()))
-    let contentController = NSHostingController(rootView: AnyView(EmptyView()))
-    let inspectorController = NSHostingController(rootView: AnyView(EmptyView()))
+    let sidebarController = WindowShellController.makePaneController()
+    let contentController = WindowShellController.makePaneController()
+    let inspectorController = WindowShellController.makePaneController()
+
+    /// A pane's width is the split view item's (`minimumThickness`/`maximumThickness`, the autosaved
+    /// divider), never its content's. Left to itself a pane's hosting controller derives a minimum and an
+    /// intrinsic size by measuring the whole SwiftUI tree it hosts — a page's episode list included — on
+    /// every constraint pass, which is the same walk the window's own hosting controller opts out of (see
+    /// `AppDelegate.installMainWindow`).
+    private static func makePaneController() -> NSHostingController<AnyView> {
+        let controller = NSHostingController(rootView: AnyView(EmptyView()))
+        controller.sizingOptions = []
+        return controller
+    }
 
     var onInspectorCollapsedChange: ((Bool) -> Void)?
 

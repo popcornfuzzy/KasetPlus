@@ -226,7 +226,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // window is released on close by default, which would leave the shell's controller without a view.
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentViewController = NSHostingController(rootView: rootView)
+        // The window's minimum is the app's, not the content's: `window.contentMinSize` is stated here and
+        // kept in step with the panes by `WindowShellController.applyWindowMinimumSize()`. Left to itself,
+        // the hosting view derives a minimum (and a maximum) by measuring the whole page on every
+        // constraint pass; on the reported podcast page that walked the page and the sidebar and left the
+        // main thread in `NSHostingView.minSize` for the length of a 17.9 s hang (2026-11-11). A
+        // hosting view with no sizing options still fills the window, and nothing asks it for a size the
+        // app has already decided.
+        let hostingController = NSHostingController(rootView: rootView)
+        hostingController.sizingOptions = []
+        window.contentViewController = hostingController
         window.setContentSize(NSSize(width: 1280, height: 820))
         // Restores the reader's frame and position when there is one to restore; otherwise the window
         // opens centred.
