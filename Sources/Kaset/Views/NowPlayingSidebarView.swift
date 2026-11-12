@@ -847,6 +847,11 @@ struct NowPlayingSidebarView: View {
                             isPlaying: isPlaying,
                             // Covered while the fullscreen player is up: no frames at all.
                             isCovered: isFullscreenPresented,
+                            // The page below already insets this sheet, at a tighter margin than the
+                            // panel's own: the sheet adds no second inset, so the lines run to the
+                            // page's edges and wrap later.
+                            lineFontSize: NowPlayingSidebarLayout.lyricsPageLineFontSize,
+                            horizontalPadding: 0,
                             onSeek: { timeMs in
                                 Task { await self.playerService.seek(to: Double(timeMs) / 1000.0) }
                             }
@@ -905,7 +910,7 @@ struct NowPlayingSidebarView: View {
                 }
             }
         }
-        .padding(.horizontal, NowPlayingSidebarLayout.padding)
+        .padding(.horizontal, NowPlayingSidebarLayout.lyricsPagePadding)
     }
 
     @ViewBuilder

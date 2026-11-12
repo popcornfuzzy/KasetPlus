@@ -29,7 +29,21 @@ struct SyncedLyricsDisplayView: View {
     /// sheet is still driven programmatically (it keeps centering the current line), it just cannot
     /// be dragged by the reader.
     var allowsScrolling: Bool = true
+    /// The size the sheet's lines are drawn at.
+    ///
+    /// The panel and the fullscreen player use the sheet's own size. The Now Playing sidebar's lyric
+    /// page draws them a little larger: the column is the only thing on screen while it is open, and
+    /// its lines have the width for it.
+    var lineFontSize: CGFloat = SyncedLyricsDisplayView.defaultLineFontSize
+    /// The inset inside the sheet, around its rows.
+    ///
+    /// A caller that already insets the sheet itself — the sidebar's lyric page does, with
+    /// `NowPlayingSidebarLayout.lyricsPagePadding` — hands this `0` rather than padding the text twice.
+    var horizontalPadding: CGFloat = 16
     let onSeek: (Int) -> Void
+
+    /// A lyric line at the size the panel and the fullscreen player draw it.
+    static let defaultLineFontSize: CGFloat = 16
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The word animation the reader chose, read here so a change of style reaches every row.
@@ -115,6 +129,8 @@ struct SyncedLyricsDisplayView: View {
         isCovered: Bool = false,
         allowsScrolling: Bool = true,
         animationStyle: LyricsAnimationStyle? = nil,
+        lineFontSize: CGFloat = SyncedLyricsDisplayView.defaultLineFontSize,
+        horizontalPadding: CGFloat = 16,
         onSeek: @escaping (Int) -> Void
     ) {
         self.lyrics = lyrics
@@ -124,6 +140,8 @@ struct SyncedLyricsDisplayView: View {
         self.animationStyle = animationStyle
         self.isCovered = isCovered
         self.allowsScrolling = allowsScrolling
+        self.lineFontSize = lineFontSize
+        self.horizontalPadding = horizontalPadding
         self.onSeek = onSeek
 
         let changes = KaraokeFillModel.lineChanges(in: lyrics)
@@ -181,6 +199,7 @@ struct SyncedLyricsDisplayView: View {
                                 emphasis: self.karaokeEmphasis,
                                 style: self.animationStyle ?? self.settings.lyricsAnimationStyle,
                                 richTiming: self.richTiming,
+                                fontSize: self.lineFontSize,
                                 onTap: { self.onSeek(line.timeInMs) }
                             )
                             .id(line.id)
@@ -197,7 +216,7 @@ struct SyncedLyricsDisplayView: View {
 
                     Spacer().frame(height: 120)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, self.horizontalPadding)
             }
             .scrollIndicators(.hidden)
             .scrollDisabled(!self.allowsScrolling)
@@ -686,17 +705,18 @@ struct SyncedLineView: View {
     let style: LyricsAnimationStyle
     /// The Better Lyrics timing to draw with, when that is the style.
     var richTiming: RichLyricsTiming = .standard
+    /// The size this row draws at; the sheet passes the size its caller asked for. The layout cache is
+    /// keyed by it, so a row measured at one size is never drawn at another.
+    var fontSize: CGFloat = SyncedLyricsDisplayView.defaultLineFontSize
     let onTap: () -> Void
-
-    private static let fontSize: CGFloat = 16
 
     var body: some View {
         // Measured once per line, not once per frame or per sheet re-render: a frame of
         // the wipe of this line is then arithmetic and drawing only. The backing vocal is
         // measured at its own smaller size and cached under its own key, so the two
         // layouts of one row never evict each other.
-        let layout = self.layoutCache.layout(for: self.line, fontSize: Self.fontSize)
-        let backgroundLayout = self.layoutCache.backgroundLayout(for: self.line, fontSize: Self.fontSize - 2)
+        let layout = self.layoutCache.layout(for: self.line, fontSize: self.fontSize)
+        let backgroundLayout = self.layoutCache.backgroundLayout(for: self.line, fontSize: self.fontSize - 2)
 
         return KaraokeTimeSource(
             line: self.line,
@@ -737,7 +757,7 @@ struct SyncedLineView: View {
         if !hasLead, backgroundLayout == nil {
             // A short instrumental gap that is not long enough for the pause dots.
             Text("♪")
-                .font(.system(size: Self.fontSize, weight: .bold))
+                .font(.system(size: self.fontSize, weight: .bold))
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
