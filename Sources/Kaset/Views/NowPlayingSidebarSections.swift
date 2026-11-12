@@ -8,6 +8,18 @@ enum NowPlayingSidebarLayout {
     /// Horizontal inset of everything except the artwork, which is edge to edge.
     static let padding: CGFloat = 14
 
+    /// Horizontal inset of the column's lyric page, a little tighter than `padding`.
+    ///
+    /// The page *is* the lyric sheet, so every point taken off its sides is a point of line before it
+    /// wraps — and while the page is open the column is the only thing on screen. Tighter than the
+    /// overview, roomier than the sheet's own 16 on both sides of a 14pt page (which is what it used to
+    /// be, at 30pt a side).
+    static let lyricsPagePadding: CGFloat = 18
+
+    /// Size of a lyric line on the column's lyric page: the sheet's own 16, a step up for a page the
+    /// reader has opened on purpose.
+    static let lyricsPageLineFontSize: CGFloat = 18
+
     /// How tall the artwork may be. It is a square until a short window makes it shrink.
     static let artworkMinHeight: CGFloat = 150
     static let artworkMaxHeight: CGFloat = 520
