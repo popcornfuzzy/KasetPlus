@@ -25,7 +25,7 @@ struct PlayerBar: View {
     @Namespace private var playerNamespace
 
     /// How long the expanded seek bar takes to arrive and to fold away again.
-    private static let revealAnimation = Animation.easeInOut(duration: 0.15)
+    private static let revealAnimation = Animation.easeOut(duration: 0.12)
     /// How wide the scrubber would like to be, and how much bar is left for the ends it does not cover.
     ///
     /// A scrubber is only worth summoning if it is long enough to aim at — 460pt is roughly a third of a
@@ -68,12 +68,6 @@ struct PlayerBar: View {
     /// Local volume value for smooth slider dragging.
     @State private var volumeValue: Double = 1.0
     @State private var isAdjustingVolume = false
-
-    /// Cached formatted progress string to avoid repeated formatting.
-    @State private var formattedProgress: String = "0:00"
-    @State private var formattedRemaining: String = "-0:00"
-    /// Last integer second of progress to reduce string formatting frequency.
-    @State private var lastProgressSecond: Int = -1
 
     var body: some View {
         self.barBody
@@ -314,7 +308,9 @@ struct PlayerBar: View {
                 // Anchored to the title rather than to the bar: it is the track's scrubber, and the title
                 // is only the bar's middle when the controls either side of it are the same width.
                 .offset(x: self.titleOffsetFromBarCentre)
-                .transition(.scale(scale: 0.55).combined(with: .opacity))
+                // A plain fade. It arrives cross-fading with the controls dissolving under it, which
+                // reads as the bar becoming a scrubber; a scale on top of that reads as a pop.
+                .transition(.opacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -351,18 +347,21 @@ struct PlayerBar: View {
     /// the span's core is fully gone, so a button the scrubber only half reaches is half there, which is
     /// what the pointer sees as it arrives.
     private var controlsMask: some View {
-        let ramp = self.showsExpandedSeekBar ? Self.dissolveRamp : 0
-        let core = self.showsExpandedSeekBar ? self.scrubberWidth - ramp * 2 : 0
-        // Where the span starts, in the row's own coordinates. It is placed by its leading edge rather than
-        // by its width, so it grows out from the title on both sides as the width animates.
+        // The span is laid out where it will *open to*, always, and only the alpha of its core changes.
+        // Animating the span's widths instead stretched its gradients as it grew, and — with the leading
+        // edge fixed at the span's start — could only unfold it towards the right. A dissolve in place
+        // has no width to animate and no edge to unfold from: the controls simply go, under the scrubber
+        // that arrives where they were.
+        let hidden = self.showsExpandedSeekBar ? 0.0 : 1.0
         let leading = self.titleFrame.midX - self.scrubberWidth / 2 - self.controlsFrame.minX
+        let core = max(0, self.scrubberWidth - Self.dissolveRamp * 2)
         return HStack(spacing: 0) {
             Color.black.frame(width: max(0, leading))
-            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                .frame(width: ramp)
-            Color.clear.frame(width: max(0, core))
-            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
-                .frame(width: ramp)
+            LinearGradient(colors: [.black, .black.opacity(hidden)], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.dissolveRamp)
+            Color.black.opacity(hidden).frame(width: core)
+            LinearGradient(colors: [.black.opacity(hidden), .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.dissolveRamp)
             Color.black
         }
     }
@@ -466,50 +465,38 @@ struct PlayerBar: View {
 
     // MARK: - Seek Bar View (the expanded seek bar's row)
 
-    /// Elapsed time, the slider, remaining time — laid out inside the scrubber once it has grown into the
-    /// space the bar lent it, rather than in whatever the buttons either side of the middle left over.
+    /// Elapsed and remaining times beside the bar, laid out inside the scrubber once it has grown into
+    /// the space the bar lent it, rather than in whatever the buttons either side of the middle left
+    /// over.
     ///
-    /// The row is inset by exactly the dissolve's ramp, so the times and the ends of the slider sit on the
+    /// It is the same scrubber the fullscreen player draws (``PlaybackScrubber``), so the two cannot
+    /// drift apart; only the placement of its times differs, which the row shape here has always had.
+    /// The row is inset by exactly the dissolve's ramp, so the times and the ends of the bar sit on the
     /// part of the span the mask clears completely, rather than over a control that is still half there.
     private var seekBarView: some View {
-        HStack(spacing: 12) {
-            // Elapsed time - use cached formatted string when not seeking
-            Text(self.isSeeking ? self.formatTime(self.seekValue * self.playerService.duration) : self.formattedProgress)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 45, alignment: .trailing)
-                .monospacedDigit()
-
-            // Seek slider
-            Slider(value: self.$seekValue, in: 0 ... 1) { editing in
+        PlaybackScrubber(
+            value: self.$seekValue,
+            duration: self.playerService.duration,
+            tint: .primary,
+            labelColor: .secondary,
+            timePlacement: .beside,
+            formatTime: self.formatTime,
+            accessibilityLabel: String(localized: "Playback Position"),
+            accessibilityIdentifier: AccessibilityID.PlayerBar.seekSlider,
+            onEditingChanged: { editing in
                 if editing {
-                    // User started dragging
+                    // The drag owns the position until it is let go.
                     self.isSeeking = true
                 } else {
-                    // User finished dragging - perform seek
                     self.performSeek()
                 }
             }
-            // Full size, unlike the volume slider: this is the bar's scrubber, and it now has the room
-            // for a track and a knob the pointer can land on.
-            .controlSize(.regular)
-            .tint(Self.brandAccent)
-            .accessibilityIdentifier(AccessibilityID.PlayerBar.seekSlider)
-            .accessibilityLabel(String(localized: "Playback Position"))
-
-            // Remaining time - use cached formatted string when not seeking
-            Text(self.isSeeking ? "-\(self.formatTime(self.playerService.duration - self.seekValue * self.playerService.duration))" : self.formattedRemaining)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 45, alignment: .leading)
-                .monospacedDigit()
-        }
+        )
         .padding(.horizontal, Self.dissolveRamp)
     }
 
-    /// Performs the actual seek operation after slider interaction ends.
+    /// Performs the actual seek operation after a scrub ends.
     private func performSeek() {
-        guard self.isSeeking else { return }
         let seekTime = self.seekValue * self.playerService.duration
         Task {
             await self.playerService.seek(to: seekTime)
@@ -517,21 +504,16 @@ struct PlayerBar: View {
         }
     }
 
-    /// Takes the service's position into the bar's own display state.
+    /// Takes the service's position into the bar's own seek value, unless a drag owns it.
+    ///
+    /// The scrubber draws the fraction it is given and formats its own times, so there is nothing else
+    /// to keep in step here.
     private func syncProgressDisplay(to progress: TimeInterval) {
+        guard !self.isSeeking else { return }
         let duration = self.playerService.duration
-        // Sync local seek value when not actively seeking
-        if !self.isSeeking, duration > 0 {
+        if duration > 0 {
             self.seekValue = progress / duration
         }
-        // Only update the formatted position when the second changes to reduce Text view updates;
-        // the remaining time is cheap and also follows a length that arrives on its own.
-        let currentSecond = Int(progress)
-        if currentSecond != self.lastProgressSecond {
-            self.lastProgressSecond = currentSecond
-            self.formattedProgress = self.formatTime(progress)
-        }
-        self.formattedRemaining = "-\(self.formatTime(duration - progress))"
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

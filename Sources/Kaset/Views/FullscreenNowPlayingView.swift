@@ -23,6 +23,10 @@ struct FullscreenNowPlayingView: View {
     /// How far a new track's artwork travels in from the side it was skipped from, in points.
     private static let trackArrivalDistance: CGFloat = 26
 
+    /// Widest the lyrics column is allowed to get. A 36pt line needs a measure, not the whole of a
+    /// wide window; past this the sheet would put a handful of words on a very long line.
+    private static let maxLyricsWidth: CGFloat = 720
+
     @State private var lastLoadedVideoId: String?
     @State private var lastLoadedSignature: String?
     @State private var loadTask: Task<Void, Never>?
@@ -62,6 +66,10 @@ struct FullscreenNowPlayingView: View {
     /// Queue row the last track change animated from, so a change can tell which way it went.
     /// `nil` while the queue has no highlight (YouTube autoplay, standalone episodes).
     @State private var lastTrackQueueIndex: Int?
+    /// Whether the pointer is inside the left column, so the transport buttons fade in.
+    @State private var isLeftColumnHovered = false
+    /// Which seek is the latest, so one that lands late cannot unlock a drag that began after it.
+    @State private var seekGeneration = 0
 
     private var hasLyricsForCurrentTrack: Bool {
         guard let videoId = self.playerService.currentTrack?.videoId else { return false }
@@ -72,23 +80,26 @@ struct FullscreenNowPlayingView: View {
         GeometryReader { proxy in
             let stageWidth = proxy.size.width
             let stageHeight = min(max(300, proxy.size.height - 96), 900)
-            let panelSpacing = max(8, min(30, stageWidth * 0.022))
-            let totalColumnWidth = max(1, stageWidth - panelSpacing)
-            let artworkColumnWidth = totalColumnWidth * 0.40
-            let lyricsColumnWidth = totalColumnWidth * 0.60
+            // The artwork is sized first and the lyrics column begins where it ends, with the pair
+            // centred. Splitting the stage into fractions instead gave the lyrics a share of the
+            // *window* while the art sat centred in a share of its own: the dead room in between was
+            // whatever the two shares left over, and the lyrics were pushed to the right edge.
+            let artworkWidth = FullscreenArtworkGeometry(columnWidth: .infinity, stageHeight: stageHeight).side
+            let columnGap = max(24, min(56, stageWidth * 0.028))
+            let lyricsWidth = min(Self.maxLyricsWidth, max(1, stageWidth - artworkWidth - columnGap))
 
             ZStack {
                 self.backgroundLayer
 
                 VStack(spacing: 0) {
-                    HStack(alignment: .center, spacing: panelSpacing) {
-                        self.leftColumn(width: artworkColumnWidth, availableHeight: stageHeight)
-                            .frame(width: artworkColumnWidth, height: stageHeight, alignment: .center)
+                    HStack(alignment: .center, spacing: columnGap) {
+                        self.leftColumn(width: artworkWidth, availableHeight: stageHeight)
+                            .frame(width: artworkWidth, height: stageHeight, alignment: .center)
 
                         self.lyricsPanel
-                            .frame(width: lyricsColumnWidth, height: stageHeight, alignment: .leading)
+                            .frame(width: lyricsWidth, height: stageHeight, alignment: .leading)
                     }
-                    .frame(width: stageWidth, height: stageHeight, alignment: .leading)
+                    .frame(width: stageWidth, height: stageHeight, alignment: .center)
                     .padding(.top, 56)
 
                     Spacer(minLength: 0)
@@ -187,34 +198,53 @@ struct FullscreenNowPlayingView: View {
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: { Rectangle().fill(.black) }
                 .blur(radius: 68).scaleEffect(1.18)
+                .saturation(1.25)
                 .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
             } else {
                 LinearGradient(colors: [.black, .gray.opacity(0.6), .black], startPoint: .topLeading, endPoint: .bottomTrailing)
             }
-            Rectangle().fill(.black.opacity(0.48))
-            Rectangle().fill(LinearGradient(colors: [.black.opacity(0.35), .clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom))
+            // Apple Music lets the cover's colour carry the backdrop: only enough darkening here to
+            // keep white text readable where the art is pale.
+            Rectangle().fill(.black.opacity(0.14))
+            Rectangle().fill(LinearGradient(colors: [.black.opacity(0.10), .clear, .black.opacity(0.14)], startPoint: .top, endPoint: .bottom))
         }
     }
 
     private func leftColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
-        let columnSpacing = max(10, min(16, availableHeight * 0.018))
-        // The art takes the height the column has *left*, not a share of the stage. A share cannot know
-        // what the meta and the transport need, and they need the same in a short window as in a tall one —
-        // see `FullscreenArtworkGeometry`, which is where that arithmetic lives now.
+        let columnSpacing = max(8, min(14, availableHeight * 0.016))
+        // The art takes the height the column has *left*, not a share of the stage. Transport buttons
+        // are overlaid on hover and do not reserve space — see `FullscreenArtworkGeometry`.
         let mediaWidth = FullscreenArtworkGeometry(columnWidth: width, stageHeight: availableHeight).side
         return VStack(alignment: .center, spacing: columnSpacing) {
-            // The art and the song's name move as one on a skip: Apple Music hands the new
+            // Artwork, scrubber and meta move as one on a skip: Apple Music hands the new
             // song in from the side it was skipped from instead of cutting to it.
             VStack(alignment: .center, spacing: columnSpacing) {
-                self.artworkCard.frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: mediaWidth).padding(.bottom, 12)
-                self.trackMeta.frame(width: mediaWidth, alignment: .leading)
+                self.artworkCard
+                    .frame(minWidth: mediaWidth, idealWidth: mediaWidth, maxWidth: mediaWidth, maxHeight: mediaWidth)
+
+                self.progressScrubber
+                    .frame(width: mediaWidth)
+                    .padding(.top, 2)
+
+                self.trackMeta
+                    .frame(width: mediaWidth)
             }
             .offset(x: self.trackArrivalOffset)
             .opacity(self.trackArrivalOpacity)
 
-            self.transportControls(contentWidth: mediaWidth).frame(width: mediaWidth).padding(.top, 6)
+            // The transport row keeps its slot whether or not it is drawn, so revealing it on hover
+            // can never land on top of the title above it. Hidden, it is only empty room the column
+            // is centred around.
+            self.transportButtonRow(contentWidth: mediaWidth)
+                .frame(width: mediaWidth, height: FullscreenArtworkGeometry.transportHeight, alignment: .bottom)
+                .opacity(self.isLeftColumnHovered ? 1 : 0)
+                .allowsHitTesting(self.isLeftColumnHovered)
+                .animation(.easeInOut(duration: 0.25), value: self.isLeftColumnHovered)
         }
         .frame(width: width, height: availableHeight, alignment: .center)
+        .onHover { hovering in
+            self.isLeftColumnHovered = hovering
+        }
     }
 
     /// The arriving artwork's opacity: it fades up as it travels back to its resting place, so a
@@ -361,82 +391,101 @@ struct FullscreenNowPlayingView: View {
         (self.reduceMotion || self.playerService.isPlaying) ? 1 : Layout.pausedArtworkScale
     }
 
+    /// Title and artist, centred under the artwork the way Apple Music stacks them.
     private var trackMeta: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: 3) {
             Text(self.playerService.currentTrack?.title ?? String(localized: "No Song Playing"))
-                .font(.system(size: 30, weight: .bold)).lineLimit(2).foregroundStyle(.white)
+                .font(.system(size: 22, weight: .semibold)).lineLimit(2).foregroundStyle(.white)
+                .multilineTextAlignment(.center)
             Text(self.playerService.currentTrack?.artistsDisplay.isEmpty == false ? self.playerService.currentTrack?.artistsDisplay ?? "" : String(localized: "Unknown Artist"))
-                .font(.system(size: 17, weight: .medium)).lineLimit(1).foregroundStyle(.white.opacity(0.82))
+                .font(.system(size: 15, weight: .medium)).lineLimit(1).foregroundStyle(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
     }
 
-    private func transportControls(contentWidth: CGFloat) -> some View {
+    /// The same scrubber the player bar draws (``PlaybackScrubber``): times above the bar at its two
+    /// ends, a thin white line with no knob, swollen while a drag is in flight.
+    private var progressScrubber: some View {
+        PlaybackScrubber(
+            value: self.$seekValue,
+            duration: self.playerService.duration,
+            tint: .white,
+            labelColor: .white.opacity(0.72),
+            formatTime: self.formatTime,
+            onEditingChanged: { editing in
+                self.isSeeking = editing
+                guard !editing, self.playerService.duration > 0 else { return }
+                // The seek is held as the bar's position until it lands, so the bar does not jump
+                // back to where playback was before the seek took effect.
+                self.seekGeneration += 1
+                let generation = self.seekGeneration
+                let target = self.seekValue * self.playerService.duration
+                Task {
+                    await self.playerService.seek(to: target)
+                    if generation == self.seekGeneration { self.isSeeking = false }
+                }
+            }
+        )
+    }
+
+    /// The transport button row — hidden by default, revealed on hover over the left column.
+    private func transportButtonRow(contentWidth: CGFloat) -> some View {
         let buttonRowSpacing = max(12, min(22, contentWidth * 0.055))
-        let timeLabelWidth: CGFloat = 46
-        return VStack(alignment: .center, spacing: 16) {
-            HStack(spacing: 10) {
-                Text(self.formatTime(self.playerService.progress)).font(.system(size: 12, weight: .medium)).foregroundStyle(.white).monospacedDigit().frame(width: timeLabelWidth, alignment: .leading)
-                Slider(value: self.$seekValue, onEditingChanged: { isEditing in
-                    self.isSeeking = isEditing
-                    if !isEditing { Task { await self.playerService.seek(to: self.seekValue * self.playerService.duration) } }
-                }).tint(.white).disabled(self.playerService.duration <= 0)
-                Text(self.formatTime(max(0, self.playerService.duration - self.playerService.progress))).font(.system(size: 12, weight: .medium)).foregroundStyle(.white).monospacedDigit().frame(width: timeLabelWidth, alignment: .trailing)
-            }.frame(width: contentWidth)
-            HStack(spacing: buttonRowSpacing) {
-                self.transportButton(
-                    systemImage: self.playerService.currentTrackLikeStatus == .dislike ? "hand.thumbsdown.fill" : "hand.thumbsdown",
-                    size: 18,
-                    tint: self.playerService.currentTrackLikeStatus == .dislike ? .red : .white,
-                    accessibilityLabel: String(localized: "Dislike"),
-                    accessibilityValue: self.playerService.currentTrackLikeStatus == .dislike ? String(localized: "Disliked") : String(localized: "Not disliked")
-                ) { HapticService.toggle(); self.playerService.dislikeCurrentTrack() }
+        return HStack(spacing: buttonRowSpacing) {
+            self.transportButton(
+                systemImage: self.playerService.currentTrackLikeStatus == .dislike ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                size: 18,
+                tint: self.playerService.currentTrackLikeStatus == .dislike ? .red : .white,
+                accessibilityLabel: String(localized: "Dislike"),
+                accessibilityValue: self.playerService.currentTrackLikeStatus == .dislike ? String(localized: "Disliked") : String(localized: "Not disliked")
+            ) { HapticService.toggle(); self.playerService.dislikeCurrentTrack() }
 
-                self.transportButton(
-                    systemImage: "shuffle",
-                    size: 17,
-                    tint: self.playerService.shuffleEnabled ? .red : .white,
-                    accessibilityLabel: String(localized: "Shuffle"),
-                    accessibilityValue: self.playerService.shuffleEnabled ? String(localized: "On") : String(localized: "Off")
-                ) { HapticService.toggle(); self.playerService.toggleShuffle() }
+            self.transportButton(
+                systemImage: "shuffle",
+                size: 17,
+                tint: self.playerService.shuffleEnabled ? .red : .white,
+                accessibilityLabel: String(localized: "Shuffle"),
+                accessibilityValue: self.playerService.shuffleEnabled ? String(localized: "On") : String(localized: "Off")
+            ) { HapticService.toggle(); self.playerService.toggleShuffle() }
 
-                self.transportButton(
-                    systemImage: "backward.fill",
-                    size: 20,
-                    accessibilityLabel: String(localized: "Previous track")
-                ) { HapticService.playback(); Task { await self.playerService.previous() } }
+            self.transportButton(
+                systemImage: "backward.fill",
+                size: 20,
+                accessibilityLabel: String(localized: "Previous track")
+            ) { HapticService.playback(); Task { await self.playerService.previous() } }
 
-                // The play/pause button is the row's anchor: it dips further on press and its
-                // glyph morphs between the two states rather than swapping.
-                self.transportButton(
-                    systemImage: self.playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill",
-                    size: 54,
-                    weight: .regular,
-                    pressScale: 0.92,
-                    accessibilityLabel: self.playerService.isPlaying ? String(localized: "Pause") : String(localized: "Play")
-                ) { HapticService.playback(); Task { await self.playerService.playPause() } }
+            // The play/pause button is the row's anchor: it dips further on press and its
+            // glyph morphs between the two states rather than swapping.
+            self.transportButton(
+                systemImage: self.playerService.isPlaying ? "pause.circle.fill" : "play.circle.fill",
+                size: 54,
+                weight: .regular,
+                pressScale: 0.92,
+                accessibilityLabel: self.playerService.isPlaying ? String(localized: "Pause") : String(localized: "Play")
+            ) { HapticService.playback(); Task { await self.playerService.playPause() } }
 
-                self.transportButton(
-                    systemImage: "forward.fill",
-                    size: 20,
-                    accessibilityLabel: String(localized: "Next track")
-                ) { HapticService.playback(); Task { await self.playerService.next() } }
+            self.transportButton(
+                systemImage: "forward.fill",
+                size: 20,
+                accessibilityLabel: String(localized: "Next track")
+            ) { HapticService.playback(); Task { await self.playerService.next() } }
 
-                self.transportButton(
-                    systemImage: self.repeatIcon,
-                    size: 17,
-                    tint: self.playerService.repeatMode != .off ? .red : .white,
-                    accessibilityLabel: String(localized: "Repeat"),
-                    accessibilityValue: self.repeatAccessibilityValue
-                ) { HapticService.toggle(); self.playerService.cycleRepeatMode() }
+            self.transportButton(
+                systemImage: self.repeatIcon,
+                size: 17,
+                tint: self.playerService.repeatMode != .off ? .red : .white,
+                accessibilityLabel: String(localized: "Repeat"),
+                accessibilityValue: self.repeatAccessibilityValue
+            ) { HapticService.toggle(); self.playerService.cycleRepeatMode() }
 
-                self.transportButton(
-                    systemImage: self.playerService.currentTrackLikeStatus == .like ? "hand.thumbsup.fill" : "hand.thumbsup",
-                    size: 18,
-                    tint: self.playerService.currentTrackLikeStatus == .like ? .red : .white,
-                    accessibilityLabel: String(localized: "Like"),
-                    accessibilityValue: self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked")
-                ) { HapticService.toggle(); self.playerService.likeCurrentTrack() }
-            }.frame(width: contentWidth)
+            self.transportButton(
+                systemImage: self.playerService.currentTrackLikeStatus == .like ? "hand.thumbsup.fill" : "hand.thumbsup",
+                size: 18,
+                tint: self.playerService.currentTrackLikeStatus == .like ? .red : .white,
+                accessibilityLabel: String(localized: "Like"),
+                accessibilityValue: self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked")
+            ) { HapticService.toggle(); self.playerService.likeCurrentTrack() }
         }
     }
 
@@ -886,36 +935,34 @@ struct FullscreenNowPlayingView: View {
 
 /// How wide and tall the fullscreen player's artwork card ends up, given the column it lives in.
 ///
-/// Pulled out of the view as a plain value because the size *is* arithmetic here, and because the
-/// arithmetic was wrong in a way a layout hides: the card was sized as a share of the stage
-/// (`availableHeight * 0.46`), which reserved over half the column for the meta and the transport —
-/// except those are a fixed height, not a share. So the art only reached its cap once the stage itself
-/// was ~826pt (a window ~922pt tall): below that it was handed less than the room that was left over,
-/// and the column sat with empty space above and below it. Making the window taller was therefore the
-/// only way to get the artwork to the size it should have had all along. It takes what is left instead
-/// (the same rule the Now Playing sidebar's artwork follows, see
-/// ``NowPlayingSidebarLayout/reservedHeight``).
+/// The card is given whatever height the column has left once the progress scrubber, the track meta
+/// and the transport row's slot under it have theirs. The transport buttons only draw on hover, but
+/// their slot is reserved so they never overlap the title.
 struct FullscreenArtworkGeometry {
-    /// Width the column gives the artwork — 40% of the stage, which is what the view passes in.
+    /// Width the column gives the artwork. The view passes the artwork's own width here, so this
+    /// caps the side only when the art would be wider than the column it was given.
     var columnWidth: CGFloat
     /// Height the column is given: the window's, minus the room the player's own chrome takes above and
     /// below it (see the stage arithmetic in `body`).
     var stageHeight: CGFloat
 
-    /// Height of the meta under the artwork: a title that can wrap to two lines at 30pt, the artist
+    /// Height of the progress scrubber between artwork and meta: the time labels above the bar plus
+    /// the bar's own touch height.
+    static let scrubberHeight: CGFloat = 40
+    /// Height of the meta under the scrubber: a title that can wrap to two lines at 22pt, the artist
     /// line under it, and the spacing between them.
-    static let metaHeight: CGFloat = 100
-    /// Height of the transport under that: the scrubber row, the 54pt button row, the spacing between
-    /// them and the padding above the two.
-    static let transportHeight: CGFloat = 110
-    /// The artwork's own bottom padding, plus the spacing the column puts above and below it.
-    static let undrawnInsets: CGFloat = 40
+    static let metaHeight: CGFloat = 76
+    /// Height of the transport row's slot, including the gap between the row and the artist line above
+    /// it. The buttons only draw on hover, but the slot is always there: revealing them must not land
+    /// them on top of the title.
+    static let transportHeight: CGFloat = 64
+    /// The artwork's own padding and the spacing the column puts around its contents.
+    static let undrawnInsets: CGFloat = 36
 
-    /// What the column needs besides the artwork, so the art can be given the rest rather than a share
-    /// of the stage. A constant because it is one: these are fixed fonts and fixed rows, and how tall
-    /// they are does not depend on the window.
+    /// What the column needs besides the artwork — the scrubber, the meta, the transport slot and
+    /// the insets — so the art can be given the rest.
     static var reservedHeight: CGFloat {
-        self.metaHeight + self.transportHeight + self.undrawnInsets
+        self.scrubberHeight + self.metaHeight + self.transportHeight + self.undrawnInsets
     }
 
     /// Largest square the artwork card can take. Also the card's decode target: on a Retina display the
@@ -926,8 +973,8 @@ struct FullscreenArtworkGeometry {
     /// would rather overflow its stage than shrink the art further.
     static let minSide: CGFloat = 200
 
-    /// Side of the square the artwork card gets: what is left of the stage once the meta and the
-    /// transport have theirs, capped by the column's width and by ``maxSide``, and floored at
+    /// Side of the square the artwork card gets: what is left of the stage once the scrubber and the
+    /// meta have theirs, capped by the column's width and by ``maxSide``, and floored at
     /// ``minSide``.
     var side: CGFloat {
         let leftover = self.stageHeight - Self.reservedHeight
@@ -1326,7 +1373,9 @@ private struct FullscreenSyncedLineView: View {
                             displayTimeMs: displayTimeMs,
                             color: .white,
                             emphasis: self.emphasis,
-                            lineSpacing: 18,
+                            // Wrapped rows inside one line sit close, while the gap between lines
+                            // comes from the sheet's own stack spacing and stays as it was.
+                            lineSpacing: 2,
                             style: self.style,
                             isSettled: self.status == .previous,
                             richTiming: self.richTiming,
@@ -1344,7 +1393,7 @@ private struct FullscreenSyncedLineView: View {
                             displayTimeMs: displayTimeMs,
                             color: .white.opacity(0.55),
                             emphasis: self.emphasis,
-                            lineSpacing: 8,
+                            lineSpacing: 2,
                             style: self.style,
                             isSettled: self.status == .previous,
                             richTiming: self.richTiming,
