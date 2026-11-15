@@ -925,6 +925,7 @@ final class YTMusicClient: YTMusicClientProtocol {
                     channelId: detail.channelId,
                     isSubscribed: detail.isSubscribed,
                     subscriberCount: detail.subscriberCount,
+                    monthlyListeners: detail.monthlyListeners,
                     hasMoreSongs: detail.hasMoreSongs,
                     songsBrowseId: detail.songsBrowseId,
                     songsParams: detail.songsParams,

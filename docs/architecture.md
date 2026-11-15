@@ -1109,6 +1109,8 @@ The artwork-first right sidebar, the alternative to the two panels above (see [A
 - The artwork crossfades to the track's animated canvas with the fullscreen player's readiness rule (first *rendered* frame, never "item is ready"); `CanvasService` lookups are cache-backed, so the sidebar and the fullscreen player share one lookup per track
 - Owns one lyrics lookup on its root so the window and the sheet share it — a page change never looks like a new track and never re-searches
 
+- Each card **opens into its page by growing**: the card's rect (its own 16pt corners and all) is the window a masked shape grows into the column, while the page is drawn at its final size from the first frame and only uncovered — so the page never re-lays out and the two are never crossfaded as different views. The column draws its own copy of the page state (`presentedPage`), one update behind the app's, so no frame can show a new page before the window it lives in has been prepared; the geometry comes from the cards' own measurements (`onGeometryChange` into `NowPlayingSidebarCardWindows`), because a card's y is a function of the artwork's height, the title's lines and the scroll position. See [ADR-0051](adr/0051-now-playing-card-expansion.md)
+
 **Integration**: Hosted as the inspector pane of `WindowShell` (see [ADR-0030](adr/0030-appkit-window-shell.md)); shown via `PlayerService.nowPlayingSidebarPage`, and the transport's lyrics/queue buttons and ⌘L follow whichever design is enabled (`isLyricsPanelActive` / `isQueuePanelActive`).
 
 ### LyricsSurfaceViews

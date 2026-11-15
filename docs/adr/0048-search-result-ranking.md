@@ -47,6 +47,8 @@ None of that order came from YouTube Music; it came from the flattening.
   before it queues anything. The chevron stays beside the title, where it reads as "this opens" rather
   than as one more action; a song has none, and a podcast show — whose actions live in the card — has no
   quick action of its own.
+- Right-clicking the card, or one of the rows beside it, opens the same menu that row has in the results
+  list; the card takes the menu from the page rather than re-deciding what a song offers.
 - A song's supporting line is rebuilt from the song rather than the card's text, so an album version
   standing in for the card's official video does not keep the word "Video". Other kinds keep
   YouTube Music's own line: it carries numbers a row has nowhere to put.

@@ -53,6 +53,33 @@ struct ArtistParserTests {
         #expect(result.channelId == nil)
     }
 
+    @Test("parseArtistDetail keeps the monthly audience count without YouTube's wording")
+    func parseArtistDetailExtractsMonthlyListeners() {
+        let data: [String: Any] = [
+            "header": [
+                "musicImmersiveHeaderRenderer": [
+                    "title": ["runs": [["text": "Slayyyter"]]],
+                    "monthlyListenerCount": [
+                        "runs": [["text": "103M monthly audience"]],
+                    ],
+                ],
+            ],
+        ]
+
+        let result = ArtistParser.parseArtistDetail(data, artistId: "UC-slayyyter")
+
+        #expect(result.monthlyListeners == "103M")
+    }
+
+    @Test("parseArtistDetail leaves monthly listeners empty when the header has none")
+    func parseArtistDetailWithoutMonthlyListeners() {
+        let data = Self.makeArtistResponse(name: "Test Artist", songs: 0, albums: 0)
+
+        let result = ArtistParser.parseArtistDetail(data, artistId: "UC-test")
+
+        #expect(result.monthlyListeners == nil)
+    }
+
     @Test("parseArtistDetail extracts subscription status")
     func parseArtistDetailExtractsSubscription() {
         let data = Self.makeArtistResponseWithSubscription(

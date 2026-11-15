@@ -10,6 +10,8 @@ struct SearchTopResultCard: View {
     let topResult: SearchTopResult
     let onSelect: (SearchResultItem) -> Void
     let onQuickAction: (SearchResultItem, QuickAction) -> Void
+    /// The menu the results list gives a row, so the card and its rows answer a right-click the same way.
+    let contextMenu: (SearchResultItem) -> AnyView
 
     private static let artworkSize: CGFloat = 64
     private static let cornerRadius: CGFloat = 16
@@ -125,6 +127,9 @@ struct SearchTopResultCard: View {
                 .frame(maxHeight: .infinity, alignment: .center)
             }
         }
+        // On the head, not the whole card: a menu on the outer button answers the right-clicks that
+        // belong to the song rows beside it, which carry menus of their own.
+        .contextMenu { self.contextMenu(self.topResult.item) }
     }
 
     private var isSong: Bool {
@@ -289,6 +294,7 @@ struct SearchTopResultCard: View {
             .contentShape(.rect(cornerRadius: Self.rowCornerRadius))
         }
         .buttonStyle(.interactiveRow(cornerRadius: Self.rowCornerRadius, hapticFeedback: .navigation))
+        .contextMenu { self.contextMenu(item) }
     }
 
     private func rowSubtitle(_ item: SearchResultItem) -> String {

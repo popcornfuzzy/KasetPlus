@@ -473,7 +473,8 @@ struct SearchView: View {
                             onSelect: { self.handleItemTap($0) },
                             onQuickAction: { item, action in
                                 self.handleQuickAction(action, on: item)
-                            }
+                            },
+                            contextMenu: { item in AnyView(self.contextMenuItems(for: item)) }
                         )
                         .padding(.horizontal, 24)
                         .padding(.top, 10)

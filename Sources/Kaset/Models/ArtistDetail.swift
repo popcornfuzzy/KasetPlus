@@ -30,6 +30,9 @@ struct ArtistDetail {
     var isSubscribed: Bool
     /// Subscriber count text (e.g., "34.6M subscribers").
     let subscriberCount: String?
+    /// The artist's monthly audience without the header's "monthly audience" wording (e.g. "103M"). The
+    /// page calls it monthly listeners.
+    let monthlyListeners: String?
     /// Whether there are more songs available beyond what's loaded.
     let hasMoreSongs: Bool
     /// Browse ID for loading all songs (e.g., from "More songs" button).
@@ -64,6 +67,7 @@ struct ArtistDetail {
         channelId: String? = nil,
         isSubscribed: Bool = false,
         subscriberCount: String? = nil,
+        monthlyListeners: String? = nil,
         hasMoreSongs: Bool = false,
         songsBrowseId: String? = nil,
         songsParams: String? = nil,
@@ -84,6 +88,7 @@ struct ArtistDetail {
         self.channelId = channelId
         self.isSubscribed = isSubscribed
         self.subscriberCount = subscriberCount
+        self.monthlyListeners = monthlyListeners
         self.hasMoreSongs = hasMoreSongs
         self.songsBrowseId = songsBrowseId
         self.songsParams = songsParams

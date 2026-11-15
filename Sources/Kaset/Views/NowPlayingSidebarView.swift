@@ -240,6 +240,33 @@ struct NowPlayingSidebarView: View {
     /// transcript text at all — a paragraph is long, and the overview is the column's quiet part.
     @State private var isTranscriptOpen = false
 
+    /// Names this column's own coordinate space: the cards are measured in it, and the window that
+    /// opens one grows in it.
+    private static let columnSpace = "NowPlayingSidebar.column"
+
+    /// Where the overview's cards sit in that space (see `NowPlayingSidebarCardWindows`).
+    @State private var cardWindows = NowPlayingSidebarCardWindows()
+
+    /// The page the column is drawing.
+    ///
+    /// `PlayerService.nowPlayingSidebarPage` is the app's state; this is the column's copy of it, and it
+    /// trails the app's by the update in which a page change is turned into a move. That trail is the
+    /// point: the column draws a page only once the window that page lives in has been installed, so no
+    /// frame can show the new page at full size for an instant before the card it comes from has been
+    /// measured. `nil` means "follow the app", which is how the column opens.
+    @State private var presentedPage: NowPlayingSidebarPage?
+
+    /// The move in flight: a page arriving from a card, or leaving back into it.
+    @State private var expansion: NowPlayingSidebarCardExpansion?
+
+    /// How far the window has grown: `0` is the card, `1` is the column. Everything the move draws —
+    /// the window, the page's fade and its settle, the overview's own fade — is read from this one
+    /// number, so no part of the move can drift from another.
+    @State private var expansionProgress: CGFloat = 1
+
+    /// Counts moves, so a completion that lands after a later move began cannot tear that one down.
+    @State private var expansionGeneration = 0
+
     /// What the lyric surfaces can show for the current track.
     private enum LyricsState {
         case noTrack
@@ -250,9 +277,48 @@ struct NowPlayingSidebarView: View {
     }
 
     var body: some View {
-        if let page = self.playerService.nowPlayingSidebarPage {
-            self.pageContent(page)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        if self.playerService.nowPlayingSidebarPage != nil {
+            ZStack(alignment: .topLeading) {
+                // The overview stays mounted under a page that is arriving, and comes back under one
+                // that is leaving, so the window always grows out of — or back into — a card that is
+                // really there. Exactly one of the two is at rest; both are on screen for the length
+                // of a move, and their opacities always sum to one.
+                if self.drawsOverview {
+                    self.overview
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .opacity(self.overviewOpacity)
+                        // A card is a click target, and a press during the move would begin another one
+                        // from a window that is already halfway across the column.
+                        .allowsHitTesting(self.expansion == nil)
+                }
+
+                if let page = self.windowPage {
+                    self.pageContent(page)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        // The page is laid out at its final size on *every* frame of the move and the
+                        // window uncovers it; it is never laid out at the card's size. A page re-laid
+                        // out per frame would re-column the queue's table and re-wrap every lyric line
+                        // as it grew, which is the two-views look this move exists to avoid.
+                        .scaleEffect(self.pageArrivalScale, anchor: self.expansionAnchor)
+                        .mask {
+                            NowPlayingSidebarExpansionWindow(
+                                card: self.expansion?.window,
+                                progress: self.expansionProgress,
+                                cornerRadius: self.expansion?.cornerRadius ?? 0
+                            )
+                            .fill(.black)
+                        }
+                        .opacity(self.pageOpacity)
+                        // The opening starts here rather than in the action that began it, so the page
+                        // is on screen at the card's size before the window begins to grow (see
+                        // `startExpansionIfPending`).
+                        .onAppear { self.startExpansionIfPending() }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // One space for the measurement and the move, so the card's rect and the window that grows
+            // from it can never be a layout pass apart.
+            .coordinateSpace(.named(Self.columnSpace))
                 // The background is a modifier, never a ZStack sibling: it can then fill the column and
                 // bleed under the toolbar without ever taking part in the content's layout. As a stack
                 // child it could grow the column's layout box and push everything in the page off the
@@ -300,8 +366,8 @@ struct NowPlayingSidebarView: View {
             .onChange(of: self.isTranscriptOpen) { _, _ in
                 self.updatePlaybackPoll()
             }
-            .onChange(of: self.playerService.nowPlayingSidebarPage) { _, _ in
-                self.updatePlaybackPoll()
+            .onChange(of: self.playerService.nowPlayingSidebarPage) { oldPage, newPage in
+                self.pageDidChange(from: oldPage, to: newPage)
             }
             .onChange(of: self.playerService.isCurrentTrackPodcast) { _, isPodcast in
                 // The transcript page belongs to an episode. A song takes the column back to its
@@ -654,6 +720,14 @@ struct NowPlayingSidebarView: View {
             }
             .animation(.smooth(duration: 0.4), value: self.showsLyricsSearchingCaption)
         }
+        // Where the page this card opens grows out of. Measured here rather than derived from the
+        // column's layout: the artwork's height, the title's line count and the overview's scroll
+        // position all move this rect, and only the layout knows the answer.
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named(Self.columnSpace))
+        } action: { window in
+            self.cardWindows[.lyrics] = window
+        }
     }
 
     // MARK: - Transcript Section
@@ -839,6 +913,12 @@ struct NowPlayingSidebarView: View {
                 .buttonStyle(.plain)
                 .help(String(localized: "Open the queue"))
             }
+        }
+        // See `lyricsCard`: the queue's page grows out of this card's rect.
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named(Self.columnSpace))
+        } action: { window in
+            self.cardWindows[.queue] = window
         }
     }
 
@@ -1075,10 +1155,198 @@ struct NowPlayingSidebarView: View {
         // A card is one click target whose own content also handles clicks, so one press can arrive
         // twice (the header's button and the card's gesture). Opening the page that is already open is
         // the same page, so the second arrival is dropped rather than ticking the haptic again.
-        guard self.playerService.nowPlayingSidebarPage != page else { return }
+        guard self.drawnPage != page else { return }
+        // A move is already running: there is no card on screen to grow from any more.
+        guard self.expansion == nil else { return }
         HapticService.toggle()
-        withAnimation(AppAnimation.standard) {
-            self.playerService.setNowPlayingSidebarPage(page)
+        // The move is not begun here: the change is all this does, and `pageDidChange` prepares the
+        // window in the same update — so the page's first frame already carries the card's shape.
+        self.playerService.setNowPlayingSidebarPage(page)
+    }
+
+    // MARK: - Page Hand-Off
+
+    private var drawnPage: NowPlayingSidebarPage? {
+        self.presentedPage ?? self.playerService.nowPlayingSidebarPage
+    }
+
+    /// The page drawn inside the window: the page arriving, or — while one is closing — the page that
+    /// is leaving.
+    ///
+    /// This is what makes a closing the same move backwards rather than a swap: the column's page has
+    /// already changed to the overview underneath, and the layer the window is shrinking is still the
+    /// page the reader was reading. The slot stays put across the whole change, so the page is never
+    /// rebuilt at the moment it starts to leave (a remounted queue table would lose its scroll on the
+    /// first frame of the shrink).
+    private var windowPage: NowPlayingSidebarPage? {
+        if let expansion = self.expansion, expansion.direction == .closing {
+            return expansion.page
+        }
+        return self.drawnPage == .overview ? nil : self.drawnPage
+    }
+
+    /// Whether the overview is on screen: at rest on it, or under a page that is arriving or leaving.
+    private var drawsOverview: Bool {
+        self.drawnPage == .overview || self.expansion != nil
+    }
+
+    /// The overview's own fade: whole on the overview, gone once a page's window has grown over it.
+    private var overviewOpacity: CGFloat {
+        guard self.expansion != nil else { return 1 }
+        return max(0, 1 - self.expansionProgress)
+    }
+
+    private var pageOpacity: CGFloat {
+        self.expansion == nil ? 1 : self.expansionProgress
+    }
+
+    /// The page's own settle: laid out at its final size, it arrives a little small and grows into
+    /// place as the window does. Without it the move is a wipe — a window opens and the page behind it
+    /// stands still — and with it the page *grows* out of the card, which is the motion the card
+    /// itself describes.
+    private var pageArrivalScale: CGFloat {
+        self.expansion == nil ? 1 : 0.94 + 0.06 * self.expansionProgress
+    }
+
+    /// The point the page settles around: the middle of the card it comes from, so its own ink moves
+    /// outward from where the reader clicked.
+    private var expansionAnchor: UnitPoint {
+        guard let window = self.expansion?.window,
+              self.columnWidth > 0,
+              self.columnHeight > 0
+        else { return .center }
+        return UnitPoint(
+            x: min(max(window.midX / self.columnWidth, 0), 1),
+            y: min(max(window.midY / self.columnHeight, 0), 1)
+        )
+    }
+
+    /// Turns a page change into a card's move.
+    ///
+    /// Every change arrives here — a card's own click, the transport's buttons, the column's back
+    /// control in the toolbar — because a move has to be prepared *before* the page is drawn. The
+    /// `onChange` is the one hook that sees a change the column did not make, and the column draws
+    /// `presentedPage` rather than the service's own value, which is what keeps that change out of the
+    /// frame until this has run.
+    private func pageDidChange(from oldPage: NowPlayingSidebarPage?, to newPage: NowPlayingSidebarPage?) {
+        self.updatePlaybackPoll()
+
+        guard let newPage, newPage != self.presentedPage else { return }
+        // A move still running is landed, not re-animated: the column cannot read where its window is
+        // mid-spring, and starting the next move from the previous one's end point would jump the card
+        // across the column.
+        if self.expansion != nil {
+            self.landExpansion()
+        }
+
+        self.startExpansion(from: oldPage, to: newPage)
+        self.presentedPage = newPage
+    }
+
+    /// Prepares the window a page change is drawn in.
+    private func startExpansion(from oldPage: NowPlayingSidebarPage?, to newPage: NowPlayingSidebarPage) {
+        guard let oldPage, oldPage != newPage, !self.reduceMotion else { return }
+
+        let direction: NowPlayingSidebarCardExpansion.Direction
+        let page: NowPlayingSidebarPage
+        if newPage == .overview {
+            direction = .closing
+            page = oldPage
+        } else if oldPage == .overview {
+            direction = .opening
+            page = newPage
+        } else {
+            // One page replaced by another (the transport's own buttons) is not a card's move: nothing
+            // in the column was clicked, so there is no card for it to come from.
+            return
+        }
+
+        guard let window = self.cardWindow(for: page) else { return }
+
+        self.expansionGeneration += 1
+        withAnimation(nil) {
+            self.expansion = NowPlayingSidebarCardExpansion(
+                page: page,
+                direction: direction,
+                window: window,
+                cornerRadius: NowPlayingSidebarLayout.cardCornerRadius,
+                generation: self.expansionGeneration,
+                startedAt: Date()
+            )
+            self.expansionProgress = direction == .opening ? 0 : 1
+        }
+        DiagnosticsLogger.ui.debug(
+            "Card expansion started: \(page.rawValue) \(direction == .opening ? "opening" : "closing", privacy: .public) window=\(Int(window.minX)),\(Int(window.minY)) \(Int(window.width))x\(Int(window.height))"
+        )
+
+        // A closing page is already on screen in its window, so its move can begin in this same
+        // update; an opening has to wait for its page to be laid out (see `startExpansionIfPending`).
+        if direction == .closing {
+            self.runExpansion(to: 0)
+        }
+    }
+
+    /// The card a page comes from, as it was last measured.
+    ///
+    /// `nil` when there is no measurement to trust: the overview has never been laid out (a page opened
+    /// from the transport right after launch), or the rect belongs to a column this one no longer is
+    /// (a resize while the page was open). The page still opens either way — it simply has no card to
+    /// grow out of and fades in instead of moving.
+    private func cardWindow(for page: NowPlayingSidebarPage) -> CGRect? {
+        guard let window = self.cardWindows[page], !window.isEmpty else { return nil }
+        guard self.columnWidth > 0, self.columnHeight > 0 else { return window }
+        let column = CGRect(
+            origin: .zero,
+            size: CGSize(width: self.columnWidth, height: self.columnHeight)
+        )
+        return column.contains(window) ? window : nil
+    }
+
+    /// Starts an opening once its page has been laid out.
+    ///
+    /// The move cannot begin in the update that mounts the page: an animatable shape has nothing to
+    /// interpolate from until a window of the card's own size has been *committed*, and a shape first
+    /// drawn at the end of the move never grows at all — the page simply appears, at once, which is
+    /// the exact frame this whole arrangement exists to avoid. `onAppear` is normally that later
+    /// update, but it can also run inside the update that mounts the page; the pause is the guarantee,
+    /// and one frame at the card's size before the window opens is not something a reader can see.
+    private func startExpansionIfPending() {
+        guard let expansion = self.expansion, expansion.direction == .opening else { return }
+        let generation = self.expansionGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1))
+            guard self.expansionGeneration == generation else { return }
+            self.runExpansion(to: 1)
+        }
+    }
+
+    /// Runs the move, and puts the column back at rest once it lands.
+    private func runExpansion(to target: CGFloat) {
+        let generation = self.expansionGeneration
+        withAnimation(AppAnimation.cardExpansion) {
+            self.expansionProgress = target
+        } completion: {
+            // The landing state is the resting one either way — the page is full and whole at `1`, and
+            // gone behind the overview at `0` — so dropping the window here cannot show.
+            Task { @MainActor in
+                guard self.expansionGeneration == generation,
+                      let expansion = self.expansion
+                else { return }
+                DiagnosticsLogger.ui.debug(
+                    "Card expansion landed: \(expansion.page.rawValue) in \(Int(Date().timeIntervalSince(expansion.startedAt) * 1000))ms"
+                )
+                self.expansion = nil
+                self.expansionProgress = 1
+            }
+        }
+    }
+
+    /// Ends the move where it is: no window, no fade, the page standing where it belongs.
+    private func landExpansion() {
+        self.expansionGeneration += 1
+        withAnimation(nil) {
+            self.expansion = nil
+            self.expansionProgress = 1
         }
     }
 

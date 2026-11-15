@@ -192,9 +192,10 @@ struct ArtistDetailView: View {
                 .frame(height: 64, alignment: .leading)
                 .animation(.easeInOut(duration: 0.35), value: self.artistLogoImage == nil)
 
-                // Subscriber count
-                if let subscriberCount = detail.subscriberCount {
-                    Text(subscriberCount)
+                // Monthly listeners under the name: the figure a visitor is curious about, and the one
+                // the search card already shows.
+                if let monthlyListeners = detail.monthlyListeners {
+                    Text("\(monthlyListeners) monthly listeners")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -238,6 +239,14 @@ struct ArtistDetailView: View {
                     // Subscribe button
                     if detail.channelId != nil {
                         self.subscribeButton(detail)
+                    }
+
+                    // The subscriber count keeps one quiet home, beside the action it qualifies: under
+                    // the name it competed with the monthly listeners for the same glance.
+                    if let subscriberCount = detail.subscriberCount {
+                        Text("\(subscriberCount) subscribers")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
             }
@@ -371,22 +380,9 @@ struct ArtistDetailView: View {
         }
     }
 
-    /// Returns the text for the subscribe button.
+    /// The button names the action alone: the count is stated once, beside it.
     private func subscribeButtonText(_ detail: ArtistDetail) -> String {
-        if detail.isSubscribed {
-            return String(localized: "Subscribed")
-        }
-        if let count = detail.subscriberCount {
-            return String(localized: "Subscribe \(self.trimmedSubscriberCount(count))")
-        }
-        return String(localized: "Subscribe")
-    }
-
-    private func trimmedSubscriberCount(_ count: String) -> String {
-        count
-            .replacingOccurrences(of: " subscribers", with: "")
-            .replacingOccurrences(of: " subscriber", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        detail.isSubscribed ? String(localized: "Subscribed") : String(localized: "Subscribe")
     }
 
     @ViewBuilder

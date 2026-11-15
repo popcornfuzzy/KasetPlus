@@ -41,6 +41,10 @@ enum NowPlayingSidebarLayout {
     /// preview, the up-next row and the spacing between them — so the artwork can take what is left.
     static let reservedHeight: CGFloat = 316
 
+    /// Rounding of the cards that open into a page (`NowPlayingSidebarCard`) — and so of the window
+    /// those pages grow out of, which starts as the card's own shape.
+    static let cardCornerRadius: CGFloat = 16
+
     /// Softens the top and bottom of the three-line lyric window, so the rows that run past it fade
     /// instead of being cut through the middle of their glyphs.
     static let lyricsPreviewFadeMask = LinearGradient(
@@ -211,7 +215,7 @@ struct NowPlayingSidebarBackground: View {
 /// as part of the sidebar rather than a card floating on top of it.
 @available(macOS 26.0, *)
 struct NowPlayingSidebarCard<Content: View>: View {
-    var cornerRadius: CGFloat = 16
+    var cornerRadius: CGFloat = NowPlayingSidebarLayout.cardCornerRadius
     /// Opens what the card previews. Set on the whole card, not just its header and content, so the
     /// empty space inside its edges is the same target as the text is.
     var onTap: (() -> Void)?

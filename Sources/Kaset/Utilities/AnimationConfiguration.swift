@@ -30,6 +30,14 @@ enum AppAnimation {
     /// Snappy spring for quick snaps
     static let snappy = Animation.spring(response: 0.25, dampingFraction: 0.8)
 
+    /// A card growing into the page it opens — and shrinking back into it.
+    ///
+    /// Short on purpose: the reader pressed a card, and the page has to feel like it was already
+    /// there rather than being animated into place. Nearly critically damped, because the window's
+    /// edge is the column's own edge by the end of the move: a card that bounced past it would read as
+    /// a panel landing rather than as a card becoming the page.
+    static let cardExpansion = Animation.spring(response: 0.3, dampingFraction: 0.88)
+
     /// The baton passing from one lyric line to the next: the row coming in rises to full size and
     /// brightness as the row leaving goes back to its place as an already-sung line.
     ///

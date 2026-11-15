@@ -88,6 +88,7 @@ enum ArtistParser {
             channelId: headerResult.channelId,
             isSubscribed: headerResult.isSubscribed,
             subscriberCount: headerResult.subscriberCount,
+            monthlyListeners: headerResult.monthlyListeners,
             hasMoreSongs: hasMoreSongs,
             songsBrowseId: songsBrowseId,
             songsParams: songsParams,
@@ -420,6 +421,7 @@ enum ArtistParser {
         var channelId: String?
         var isSubscribed: Bool = false
         var subscriberCount: String?
+        var monthlyListeners: String?
         var mixPlaylistId: String?
         var mixVideoId: String?
     }
@@ -447,6 +449,7 @@ enum ArtistParser {
 
             // Parse subscription button for channel ID and subscription status
             self.parseSubscriptionButton(from: immersiveHeader, into: &result)
+            self.parseMonthlyListeners(from: immersiveHeader, into: &result)
 
             // Parse startRadioButton for mix (personalized radio)
             self.parseStartRadioButton(from: immersiveHeader, into: &result)
@@ -466,12 +469,32 @@ enum ArtistParser {
 
             // Parse subscription button for channel ID and subscription status
             self.parseSubscriptionButton(from: visualHeader, into: &result)
+            self.parseMonthlyListeners(from: visualHeader, into: &result)
 
             // Parse startRadioButton for mix (personalized radio)
             self.parseStartRadioButton(from: visualHeader, into: &result)
         }
 
         return result
+    }
+
+    // MARK: - Monthly Listeners
+
+    /// The header names the audience as "103M monthly audience"; the count is kept on its own so the
+    /// page can say what it means, and say it once.
+    private static func parseMonthlyListeners(from header: [String: Any], into result: inout HeaderParseResult) {
+        guard let monthly = header["monthlyListenerCount"] as? [String: Any],
+              let runs = monthly["runs"] as? [[String: Any]]
+        else { return }
+
+        let text = runs.compactMap { $0["text"] as? String }
+            .joined()
+            .trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+
+        result.monthlyListeners = text
+            .replacingOccurrences(of: " monthly audience", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - Subscription Parsing
