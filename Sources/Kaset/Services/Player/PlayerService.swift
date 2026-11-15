@@ -719,8 +719,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     }
 
     /// Whether the transport's lyrics button reads as active.
+    ///
+    /// On an episode the same button opens the column's transcript page, so that page counts as the
+    /// button's own state: the control stays lit while the transcript it opened is on screen.
     var isLyricsPanelActive: Bool {
-        self.isNowPlayingSidebarEnabled ? self.nowPlayingSidebarPage == .lyrics : self.showLyrics
+        guard self.isNowPlayingSidebarEnabled else { return self.showLyrics }
+        return self.nowPlayingSidebarPage == .lyrics || self.nowPlayingSidebarPage == .transcript
     }
 
     /// Whether the transport's queue button reads as active.

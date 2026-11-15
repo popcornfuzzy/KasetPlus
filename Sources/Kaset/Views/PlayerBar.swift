@@ -731,79 +731,85 @@ struct PlayerBar: View {
         @Bindable var player = self.playerService
 
         return HStack(spacing: 12) {
-            // Dislike button
-            Button {
-                HapticService.toggle()
-                self.playerService.dislikeCurrentTrack()
-            } label: {
-                Image(systemName: self.playerService.currentTrackLikeStatus == .dislike
-                    ? "hand.thumbsdown.fill"
-                    : "hand.thumbsdown")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(self.playerService.currentTrackLikeStatus == .dislike ? .red : .primary.opacity(0.85))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(.pressable)
-            .symbolEffect(.bounce, value: self.playerService.currentTrackLikeStatus == .dislike)
-            .accessibilityLabel(String(localized: "Dislike"))
-            .accessibilityValue(self.playerService.currentTrackLikeStatus == .dislike ? String(localized: "Disliked") : String(localized: "Not disliked"))
-            .disabled(self.playerService.currentTrack == nil)
+            // An episode is not a song: it has no like of its own and no playlist row to land in, so
+            // the transport keeps only the actions it can answer.
+            if !self.playerService.isCurrentTrackPodcast {
+                // Dislike button
+                Button {
+                    HapticService.toggle()
+                    self.playerService.dislikeCurrentTrack()
+                } label: {
+                    Image(systemName: self.playerService.currentTrackLikeStatus == .dislike
+                        ? "hand.thumbsdown.fill"
+                        : "hand.thumbsdown")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(self.playerService.currentTrackLikeStatus == .dislike ? .red : .primary.opacity(0.85))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.pressable)
+                .symbolEffect(.bounce, value: self.playerService.currentTrackLikeStatus == .dislike)
+                .accessibilityLabel(String(localized: "Dislike"))
+                .accessibilityValue(self.playerService.currentTrackLikeStatus == .dislike ? String(localized: "Disliked") : String(localized: "Not disliked"))
+                .disabled(self.playerService.currentTrack == nil)
 
-            // Like button
-            Button {
-                HapticService.toggle()
-                self.playerService.likeCurrentTrack()
-            } label: {
-                Image(systemName: self.playerService.currentTrackLikeStatus == .like
-                    ? "hand.thumbsup.fill"
-                    : "hand.thumbsup")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(self.playerService.currentTrackLikeStatus == .like ? .red : .primary.opacity(0.85))
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(.pressable)
-            .symbolEffect(.bounce, value: self.playerService.currentTrackLikeStatus == .like)
-            .accessibilityLabel(String(localized: "Like"))
-            .accessibilityValue(self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked"))
-            .disabled(self.playerService.currentTrack == nil)
+                // Like button
+                Button {
+                    HapticService.toggle()
+                    self.playerService.likeCurrentTrack()
+                } label: {
+                    Image(systemName: self.playerService.currentTrackLikeStatus == .like
+                        ? "hand.thumbsup.fill"
+                        : "hand.thumbsup")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(self.playerService.currentTrackLikeStatus == .like ? .red : .primary.opacity(0.85))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.pressable)
+                .symbolEffect(.bounce, value: self.playerService.currentTrackLikeStatus == .like)
+                .accessibilityLabel(String(localized: "Like"))
+                .accessibilityValue(self.playerService.currentTrackLikeStatus == .like ? String(localized: "Liked") : String(localized: "Not liked"))
+                .disabled(self.playerService.currentTrack == nil)
 
-
-            // Add to Playlist button
-            if let currentTrack = self.playerService.currentTrack,
-               let client = self.libraryViewModel?.client ?? self.playerService.ytMusicClient
-            {
-                AddToPlaylistPopoverButton(
-                    song: currentTrack,
-                    client: client,
-                    libraryViewModel: self.libraryViewModel,
-                    preferredLikeStatus: self.playerService.currentTrackLikeStatus,
-                    icon: "plus.circle",
-                    iconSize: 15,
-                    usePressableStyle: true
-                )
-                .accessibilityLabel(String(localized: "Add to Playlist"))
+                // Add to Playlist button
+                if let currentTrack = self.playerService.currentTrack,
+                   let client = self.libraryViewModel?.client ?? self.playerService.ytMusicClient
+                {
+                    AddToPlaylistPopoverButton(
+                        song: currentTrack,
+                        client: client,
+                        libraryViewModel: self.libraryViewModel,
+                        preferredLikeStatus: self.playerService.currentTrackLikeStatus,
+                        icon: "plus.circle",
+                        iconSize: 15,
+                        usePressableStyle: true
+                    )
+                    .accessibilityLabel(String(localized: "Add to Playlist"))
+                }
             }
 
             if !self.playerService.showFullscreenNowPlaying {
-                // Lyrics button
+                // Lyrics button — the transcript's button on an episode, which has no lyrics to show:
+                // it opens the column's transcript page rather than the lyric sheet.
                 Button {
                     HapticService.toggle()
                     withAnimation(AppAnimation.standard) {
                         if self.playerService.isNowPlayingSidebarEnabled {
-                            self.playerService.toggleNowPlayingSidebar(page: .lyrics)
+                            self.playerService.toggleNowPlayingSidebar(
+                                page: self.playerService.isCurrentTrackPodcast ? .transcript : .lyrics
+                            )
                         } else {
                             player.showLyrics.toggle()
                         }
                     }
                 } label: {
-                    Image(systemName: "quote.bubble")
+                    Image(systemName: self.playerService.isCurrentTrackPodcast ? "text.bubble" : "quote.bubble")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(self.playerService.isLyricsPanelActive ? .red : .primary.opacity(0.85))
                 }
                 .buttonStyle(.pressable)
                 .glassEffectID("lyrics", in: self.playerNamespace)
                 .accessibilityIdentifier(AccessibilityID.PlayerBar.lyricsButton)
-                .accessibilityLabel(String(localized: "Lyrics"))
+                .accessibilityLabel(self.lyricsButtonLabel)
                 .accessibilityValue(self.playerService.isLyricsPanelActive ? String(localized: "Showing") : String(localized: "Hidden"))
 
                 // Queue button
@@ -858,6 +864,13 @@ struct PlayerBar: View {
             )
             .accessibilityValue(self.playerService.showFullscreenNowPlaying ? String(localized: "On") : String(localized: "Off"))
         }
+    }
+
+    /// What the lyrics button names: the lyric sheet, or — on an episode — the transcript it opens.
+    private var lyricsButtonLabel: String {
+        self.playerService.isCurrentTrackPodcast
+            ? String(localized: "Transcript")
+            : String(localized: "Lyrics")
     }
 
     private var volumeIcon: String {

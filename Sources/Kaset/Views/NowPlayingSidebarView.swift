@@ -300,6 +300,16 @@ struct NowPlayingSidebarView: View {
             .onChange(of: self.isTranscriptOpen) { _, _ in
                 self.updatePlaybackPoll()
             }
+            .onChange(of: self.playerService.nowPlayingSidebarPage) { _, _ in
+                self.updatePlaybackPoll()
+            }
+            .onChange(of: self.playerService.isCurrentTrackPodcast) { _, isPodcast in
+                // The transcript page belongs to an episode. A song takes the column back to its
+                // overview rather than standing on a page with nothing to show.
+                if !isPodcast, self.playerService.nowPlayingSidebarPage == .transcript {
+                    self.playerService.setNowPlayingSidebarPage(.overview)
+                }
+            }
             .onChange(of: self.playerService.observedWebMetadata) { _, _ in
                 self.retryLyricsLoadIfMetadataImproved()
             }
@@ -358,6 +368,8 @@ struct NowPlayingSidebarView: View {
         switch page {
         case .lyrics:
             self.lyricsPage
+        case .transcript:
+            self.transcriptPage
         case .queue:
             self.queuePage
         case .overview:
@@ -677,15 +689,33 @@ struct NowPlayingSidebarView: View {
         .animation(AppAnimation.standard, value: self.isTranscriptOpen)
     }
 
-    @ViewBuilder
+    /// The transcript inside the overview's card: the card's window, faded at both edges like the lyric
+    /// window so the paragraphs run past it instead of being cut through the middle of their glyphs.
     private var transcriptPanel: some View {
+        self.transcriptContent(compact: true)
+            .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
+    }
+
+    /// The transcript as the column's own page — where the transport's lyrics button opens on an
+    /// episode (``NowPlayingSidebarPage/transcript``).
+    private var transcriptPage: some View {
+        self.transcriptContent(compact: false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, NowPlayingSidebarLayout.padding)
+            .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.transcript)
+    }
+
+    /// The transcript's three states, shared by the card's window and the column's page: loading, the
+    /// rows, and the episode that has no captions to draw.
+    @ViewBuilder
+    private func transcriptContent(compact: Bool) -> some View {
         if self.transcriptService.isLoading {
             LyricsStateView(
                 icon: nil,
                 title: String(localized: "Loading transcript…"),
                 message: nil,
                 isLoading: true,
-                compact: true
+                compact: compact
             )
         } else if self.hasLoadedTranscript {
             LyricsClockReader { currentTimeMs, _, _ in
@@ -698,16 +728,13 @@ struct NowPlayingSidebarView: View {
                     style: .sidebar
                 )
             }
-            // Faded at both edges like the lyric window, so the paragraphs run past the card's
-            // window instead of being cut through the middle of their glyphs.
-            .mask(NowPlayingSidebarLayout.lyricsPreviewFadeMask)
         } else {
             LyricsStateView(
                 icon: "text.bubble",
                 title: String(localized: "No Transcript Available"),
                 message: self.transcriptService.errorMessage
                     ?? String(localized: "This episode has no captions on YouTube, so there is no transcript to show."),
-                compact: true
+                compact: compact
             )
         }
     }
@@ -1098,15 +1125,21 @@ struct NowPlayingSidebarView: View {
 
     // MARK: - Transcript Loading
 
-    /// Identity of the transcript the card would show: opening is what starts a lookup, and a new
-    /// episode while it is open is a new transcript.
+    /// Whether an episode's transcript is on screen: the card opened on the overview, or the column's
+    /// transcript page.
+    private var isTranscriptVisible: Bool {
+        self.isTranscriptOpen || self.playerService.nowPlayingSidebarPage == .transcript
+    }
+
+    /// Identity of the transcript the column would show: opening it (the card, or the page) is what
+    /// starts a lookup, and a new episode is a new transcript.
     ///
-    /// Whether a transcript is on hand is part of it so the card heals itself: the fullscreen
+    /// Whether a transcript is on hand is part of it so the surface heals itself: the fullscreen
     /// podcast experience clears the service when it closes (it owns that reset), and the card that
     /// stayed open behind it would otherwise sit on "No Transcript Available" until re-opened.
     private var transcriptTaskID: String {
         let videoId = self.playerService.currentTrack?.videoId ?? "none"
-        return "\(self.isTranscriptOpen)|\(videoId)|\(self.hasLoadedTranscript)"
+        return "\(self.isTranscriptVisible)|\(videoId)|\(self.hasLoadedTranscript)"
     }
 
     /// Shows or hides the episode's transcript. Nothing is fetched while it is closed.
@@ -1117,30 +1150,31 @@ struct NowPlayingSidebarView: View {
         }
     }
 
-    /// Loads the transcript once the card is opened, never while it is collapsed.
+    /// Loads the transcript once it is on screen, never while it is closed.
     @MainActor
     private func loadTranscriptIfNeeded() async {
-        guard self.isTranscriptOpen,
+        guard self.isTranscriptVisible,
               self.playerService.isCurrentTrackPodcast,
               let videoId = self.playerService.currentTrack?.videoId
         else { return }
         await self.transcriptService.loadTranscript(for: videoId)
     }
 
-    /// Keeps the high-frequency playback clock running for whichever surface needs it: the open
-    /// transcript, or synced lyrics. A collapsed card hands it back to the lyric pipeline.
+    /// Keeps the high-frequency playback clock running for whichever surface needs it: the visible
+    /// transcript, or synced lyrics. Nothing on screen hands it back to the lyric pipeline.
     private func updatePlaybackPoll() {
-        if self.isTranscriptOpen {
-            SingletonPlayerWebView.shared.startLyricsPoll()
-        } else {
-            self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
-        }
+        self.updateLyricsPolling(for: self.syncedLyricsService.currentLyrics)
     }
 
     // MARK: - Lyrics Loading
 
+    /// The transcript follows playback on the same clock the synced lyrics use, so a visible transcript
+    /// keeps the poll running whatever the lyric search answered — an episode's lyric lookup usually
+    /// finds nothing, and that verdict must not freeze the transcript.
     private func updateLyricsPolling(for result: LyricResult) {
-        if case .synced = result {
+        if self.isTranscriptVisible {
+            SingletonPlayerWebView.shared.startLyricsPoll()
+        } else if case .synced = result {
             SingletonPlayerWebView.shared.startLyricsPoll()
         } else {
             SingletonPlayerWebView.shared.stopLyricsPoll()
