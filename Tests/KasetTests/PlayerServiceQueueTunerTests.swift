@@ -229,4 +229,38 @@ struct PlayerServiceQueueTunerTests {
         #expect(service.queue.isEmpty)
         #expect(service.activeQueueTunerId == nil)
     }
+
+    // MARK: - Persistence
+
+    @Test("Save and restore keeps the queue's tuning row and its active chip")
+    func tuningRowSurvivesRestore() async {
+        await self.playerService.playQueue(TestFixtures.makeSongs(count: 3), startingAt: 0)
+        self.playerService.setQueueTunerChips(Self.makeChips())
+        self.playerService.markQueueTunerChipSelected("Discover")
+        self.playerService.saveQueueForPersistence()
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+
+        #expect(restored.queueTunerChips.map(\.id) == ["All", "Discover"])
+        #expect(restored.activeQueueTunerId == "Discover")
+        #expect(restored.queueTunerChips.first(where: { $0.id == "Discover" })?.isSelected == true)
+        // The row is what makes the restored mix retunable, so it has to carry its tune request.
+        #expect(restored.queueTunerChips.first(where: { $0.id == "Discover" })?.playlistId == "RDATdiscover")
+        #expect(restored.queueTunerChips.first(where: { $0.id == "Discover" })?.params == "params-discover")
+    }
+
+    @Test("A queue without a tuning row restores without one")
+    func queueWithoutTuningRowRestoresWithoutOne() async {
+        await self.playerService.playQueue(TestFixtures.makeSongs(count: 2), startingAt: 0)
+        self.playerService.saveQueueForPersistence()
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+
+        #expect(restored.queueTunerChips.isEmpty)
+        #expect(restored.activeQueueTunerId == nil)
+    }
 }

@@ -138,6 +138,34 @@ struct PlayerServiceMixTests {
         #expect(self.playerService.mixContinuationToken == nil)
     }
 
+    // MARK: - Persistence Tests
+
+    @Test("A restored session keeps the mix continuation token")
+    func restoredSessionKeepsMixContinuationToken() async {
+        let songs = TestFixtures.makeSongs(count: 2)
+        await self.playerService.playQueue(songs, startingAt: 0)
+        self.playerService.mixContinuationToken = "restored-token"
+        self.playerService.saveQueueForPersistence()
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+
+        #expect(restored.mixContinuationToken == "restored-token")
+    }
+
+    @Test("A restored queue that is not a mix has no continuation token")
+    func restoredPlainQueueHasNoContinuationToken() async {
+        await self.playerService.playQueue(TestFixtures.makeSongs(count: 2), startingAt: 0)
+        self.playerService.saveQueueForPersistence()
+
+        let restored = PlayerService()
+        restored.setYTMusicClient(self.mockClient)
+        #expect(restored.restoreQueueFromPersistence() == true)
+
+        #expect(restored.mixContinuationToken == nil)
+    }
+
     // MARK: - playWithRadio Tests
 
     @Test("playWithRadio clears mixContinuationToken")

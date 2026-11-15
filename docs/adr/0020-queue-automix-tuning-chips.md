@@ -50,6 +50,8 @@ Treat the tuning row as server-driven data that Kaset renders rather than define
   is never restarted.
 - A re-tuned response omits the row, so `PlayerService` keeps the existing row and only moves the
   selection to the tuned chip.
+- The row is saved with the playback session, so a queue restored at launch still offers its
+  tunings; a session saved before the row was persisted restores without one.
 - Queues that are not automixes (playlists, albums, YouTube's own autoplay takeover) clear the row,
   so it can never tune a mix that is no longer loaded.
 - `QueueTunerChipsView` renders the row in both queue presentations (popup and side panel), shows
@@ -68,8 +70,9 @@ Treat the tuning row as server-driven data that Kaset renders rather than define
 ### Negative
 
 - Chip labels arrive in the service's own language and are not localized by Kaset.
-- The tuned queue cannot be re-derived from the mix alone: once YouTube's autoplay takes over or the
-  queue is restored from persistence, the row is gone until the next automix is fetched.
+- The tuned queue cannot be re-derived from the mix alone: once YouTube's autoplay takes over, the
+  row is gone until the next automix is fetched. Restoring a saved session keeps the row, because the
+  chips are persisted with the queue.
 - `getRadioQueue(videoId:)` changed its return type, so every caller and mock had to be updated.
 
 ### Neutral

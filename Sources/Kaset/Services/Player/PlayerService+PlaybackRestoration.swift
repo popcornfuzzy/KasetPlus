@@ -40,7 +40,10 @@ extension PlayerService {
         currentIndex: Int,
         progress: TimeInterval,
         duration: TimeInterval,
-        manualQueueCount: Int = 0
+        manualQueueCount: Int = 0,
+        tunerChips: [QueueTunerChip] = [],
+        activeTunerId: String? = nil,
+        mixContinuationToken: String? = nil
     ) {
         guard let originalSong = queue[safe: currentIndex] else { return }
 
@@ -96,6 +99,11 @@ extension PlayerService {
         if let cachedStatus = SongLikeStatusManager.shared.status(for: currentSong.videoId) {
             self.currentTrackLikeStatus = cachedStatus
         }
+
+        // The restored queue is still the automix the listener tuned, so its row comes back with it,
+        // along with the continuation that keeps the mix loading past the songs that were saved.
+        self.restoreQueueTunerChips(tunerChips, activeTunerId: activeTunerId)
+        self.mixContinuationToken = mixContinuationToken
 
         // Resolve the song variants of the upcoming entries ahead of their playback.
         self.resolveUpcomingVariants()

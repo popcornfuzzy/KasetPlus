@@ -49,12 +49,31 @@ struct PodcastEpisode: Identifiable, Hashable {
         }
         return self.duration
     }
+
+    /// The song an episode is played as.
+    ///
+    /// Episodes have no album and no artist page, so the show's name is carried as the artist — the same
+    /// shape the episode rows and the fullscreen player use. One mapping for every caller, so a page
+    /// cannot play an episode as a differently shaped song than the row beside it.
+    var playbackSong: Song {
+        Song(
+            id: self.id,
+            title: self.title,
+            artists: self.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
+            album: nil,
+            duration: self.durationSeconds.map { TimeInterval($0) },
+            thumbnailURL: self.thumbnailURL,
+            videoId: self.id
+        )
+    }
 }
 
 // MARK: - PodcastSection
 
 /// Represents a section of podcast content on the discovery page.
-struct PodcastSection: Identifiable {
+///
+/// `Hashable` so the page's collection view can tell a new feed from the one it is already showing.
+struct PodcastSection: Identifiable, Hashable {
     let id: String
     let title: String
     let items: [PodcastSectionItem]

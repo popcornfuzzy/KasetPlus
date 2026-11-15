@@ -27,6 +27,23 @@ extension PlayerService {
         self.activeQueueTunerId = chipId
     }
 
+    /// Puts back the tuning row a saved session carried, with its own active chip.
+    ///
+    /// The row is server data Kaset cannot re-derive from the restored songs, so the chips are
+    /// persisted with the queue. A session saved before the row was persisted restores without one.
+    /// - Parameters:
+    ///   - chips: The chips saved with the queue, in server order.
+    ///   - activeTunerId: The chip that was selected when the session was saved.
+    func restoreQueueTunerChips(_ chips: [QueueTunerChip], activeTunerId: String?) {
+        guard !chips.isEmpty else {
+            self.setQueueTunerChips([])
+            return
+        }
+
+        let resolvedActiveId = activeTunerId ?? chips.first(where: { $0.isSelected })?.id
+        self.setQueueTunerChips(chips.map { $0.selecting($0.id == resolvedActiveId) })
+    }
+
     /// Re-tunes the current automix queue using one of the server's tuning chips.
     ///
     /// A tuned variant is a different mix playlist, so the upcoming songs are replaced while the
@@ -635,6 +652,12 @@ extension PlayerService {
         let duration: TimeInterval
         /// Optional so a session saved before the hand-queued run existed still decodes.
         let manualQueueCount: Int?
+        /// The automix tuning row the queue offered; `nil` for a queue without one.
+        let tunerChips: [QueueTunerChip]?
+        /// The chip that was selected when the session was saved.
+        let activeTunerId: String?
+        /// Continuation of the infinite mix the queue came from; `nil` when the queue has no mix.
+        let mixContinuationToken: String?
     }
 
     /// UserDefaults keys for queue persistence (no expiry; saved queue is kept until overwritten or cleared).
@@ -670,7 +693,10 @@ extension PlayerService {
                     currentVideoId: currentVideoId,
                     progress: clampedProgress,
                     duration: resolvedDuration,
-                    manualQueueCount: self.manualQueueCount
+                    manualQueueCount: self.manualQueueCount,
+                    tunerChips: self.queueTunerChips.isEmpty ? nil : self.queueTunerChips,
+                    activeTunerId: self.activeQueueTunerId,
+                    mixContinuationToken: self.mixContinuationToken
                 )
             )
 
@@ -715,7 +741,10 @@ extension PlayerService {
                     currentIndex: resolvedIndex,
                     progress: savedSession.progress,
                     duration: savedSession.duration,
-                    manualQueueCount: savedSession.manualQueueCount ?? 0
+                    manualQueueCount: savedSession.manualQueueCount ?? 0,
+                    tunerChips: savedSession.tunerChips ?? [],
+                    activeTunerId: savedSession.activeTunerId,
+                    mixContinuationToken: savedSession.mixContinuationToken
                 )
                 self.logger.info(
                     "Restored playback session with \(savedSession.queue.count) songs at index \(resolvedIndex)"

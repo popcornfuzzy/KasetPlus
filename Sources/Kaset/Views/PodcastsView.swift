@@ -59,70 +59,27 @@ struct PodcastsView: View {
 
     // MARK: - Views
 
+    /// The shelves, as one native collection view — the same shape Home's feed uses (ADR-0046).
+    /// One scroll view for the page, AppKit's own horizontal scrolling for the shelves, and recycled
+    /// cards in fixed slots instead of a nested scroll view and a mask per shelf.
     private var contentView: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 32) {
-                ForEach(self.viewModel.sections) { section in
-                    self.sectionView(section)
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-        }
-    }
-
-    private func sectionView(_ section: PodcastSection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(section.title)
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 16) {
-                    ForEach(section.items) { item in
-                        self.itemCard(item)
-                    }
-                }
-            }
-            .horizontalRowEdgeFade()
-        }
-    }
-
-    @ViewBuilder
-    private func itemCard(_ item: PodcastSectionItem) -> some View {
-        switch item {
-        case let .show(show):
-            PodcastShowCard(show: show) {
-                self.navigationPath.append(show)
-            }
-        case let .episode(episode):
-            PodcastEpisodeCard(episode: episode) {
-                self.playEpisode(episode)
-            }
-        }
+        PodcastFeedCollectionView(
+            sections: self.viewModel.sections,
+            onSelectShow: { show in self.navigationPath.append(show) },
+            onPlayEpisode: { episode in self.playEpisode(episode) }
+        )
     }
 
     // MARK: - Actions
 
     private func playEpisode(_ episode: PodcastEpisode) {
-        // Create a Song from the episode to play via WebView
-        let song = Song(
-            id: episode.id,
-            title: episode.title,
-            artists: episode.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
-            album: nil,
-            duration: episode.durationSeconds.map { TimeInterval($0) },
-            thumbnailURL: episode.thumbnailURL,
-            videoId: episode.id
-        )
-
         DiagnosticsLogger.api.debug(
             "PodcastsView.playEpisode tapped episode '\(episode.title)' with videoId=\(episode.id)"
         )
 
         Task {
             // Use an explicit queue to avoid stale queue sync selecting a different track.
-            await self.playerService.playQueue([song], startingAt: 0)
+            await self.playerService.playQueue([episode.playbackSong], startingAt: 0)
         }
     }
 }
@@ -130,7 +87,7 @@ struct PodcastsView: View {
 // MARK: - PodcastShowCard
 
 @available(macOS 26.0, *)
-private struct PodcastShowCard: View {
+struct PodcastShowCard: View {
     let show: PodcastShow
     let action: () -> Void
 
@@ -146,31 +103,37 @@ private struct PodcastShowCard: View {
                 .frame(width: 160, height: 160)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                // Title
+                // One line, truncated. A card's title is a label on a shelf: wrapped, it made one card
+                // taller than the next and every row in the card move with it. At one line every card
+                // of a kind is exactly the same height.
                 Text(self.show.title)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                // Author
-                if let author = show.author {
-                    Text(author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                // Author, drawn even when the show has none, so a missing one cannot change the height.
+                Text(self.authorText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .frame(width: 160)
+            .frame(width: PodcastFeedMetrics.showCardWidth, alignment: .topLeading)
         }
         .buttonStyle(.plain)
+    }
+
+    /// The author line's text, blank rather than missing — see the comment above it.
+    private var authorText: String {
+        guard let author = self.show.author, !author.isEmpty else { return " " }
+        return author
     }
 }
 
 // MARK: - PodcastEpisodeCard
 
 @available(macOS 26.0, *)
-private struct PodcastEpisodeCard: View {
+struct PodcastEpisodeCard: View {
     let episode: PodcastEpisode
     let action: () -> Void
 
@@ -216,51 +179,35 @@ private struct PodcastEpisodeCard: View {
                     }
                 }
 
-                // Title
+                // One line, truncated — see `PodcastShowCard`.
                 Text(self.episode.title)
                     .font(.subheadline)
                     .fontWeight(.medium)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                // Show name and date
-                HStack(spacing: 4) {
-                    if let showTitle = episode.showTitle {
-                        Text(showTitle)
-                            .lineLimit(1)
-                    }
-                    if self.episode.showTitle != nil, self.episode.publishedDate != nil {
-                        Text("•")
-                    }
-                    if let date = episode.publishedDate {
-                        Text(date)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
+                // Show name and date, drawn even when the episode carries neither — see
+                // `PodcastShowCard`.
+                Text(self.metaText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .frame(width: 200)
+            .frame(width: PodcastFeedMetrics.episodeCardWidth, alignment: .topLeading)
         }
         .buttonStyle(.plain)
     }
+
+    /// "Show • 3d ago", or a blank line when the episode carries neither.
+    private var metaText: String {
+        let parts = [self.episode.showTitle, self.episode.publishedDate].compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        return parts.isEmpty ? " " : parts.joined(separator: " • ")
+    }
 }
 
-// MARK: - Podcast Playback
-
-/// The song an episode is played as. Podcast episodes have no album or artist page, so the show's name
-/// is carried as the artist — the same shape the episode rows and the fullscreen player already use.
-private func podcastSong(for episode: PodcastEpisode) -> Song {
-    Song(
-        id: episode.id,
-        title: episode.title,
-        artists: episode.showTitle.map { [Artist(id: "podcast", name: $0)] } ?? [],
-        album: nil,
-        duration: episode.durationSeconds.map { TimeInterval($0) },
-        thumbnailURL: episode.thumbnailURL,
-        videoId: episode.id
-    )
-}
 
 // MARK: - PodcastShowView
 
@@ -268,8 +215,9 @@ private func podcastSong(for episode: PodcastEpisode) -> Song {
 ///
 /// The page follows the same shape as the playlist and artist pages: the header is the list's first row
 /// (ADR-0023), the episodes are AppKit-backed `List` rows (ADR-0014), and the header's controls are the
-/// app's glass controls. Loading and failure use the shared `LoadingView` / `ErrorView`, so opening a
-/// show works the same way as opening any other detail page.
+/// app's glass controls. Its state lives in `PodcastShowViewModel`, and the header is drawn from the show
+/// the navigation carried — so opening a show paints its name, author and artwork in the first frame
+/// while the episodes are still on their way.
 @available(macOS 26.0, *)
 struct PodcastShowView: View {
     let show: PodcastShow
@@ -286,57 +234,57 @@ struct PodcastShowView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
-    @State private var episodes: [PodcastEpisode] = []
-    @State private var continuationToken: String?
-    @State private var loadingState: LoadingState = .idle
-    @State private var isSubscribed: Bool = false
-    @State private var isSubscribing: Bool = false
-    @State private var subscriptionError: String?
+    /// The page's state: the show it was opened with, its first page of episodes and its subscription.
+    ///
+    /// The model is built in `init`, not in `.task`, so the header the navigation carried is on screen
+    /// in the page's first frame instead of after the request — the shape `PlaylistDetailView` and
+    /// `ArtistDetailView` already use.
+    @State private var viewModel: PodcastShowViewModel
     @State private var isScrolling = false
-
-    /// Number of episodes the page previews before "Show All".
-    private static let previewEpisodeCount = 5
 
     /// Edge length of the header artwork, shared with the playlist and artist headers.
     private static let artworkSize: CGFloat = 180
 
+    init(
+        show: PodcastShow,
+        client: any YTMusicClientProtocol,
+        onShowAllEpisodes: @escaping (AllEpisodesDestination) -> Void
+    ) {
+        self.show = show
+        self.client = client
+        self.onShowAllEpisodes = onShowAllEpisodes
+        _viewModel = State(initialValue: PodcastShowViewModel(show: show, client: client))
+    }
+
     var body: some View {
-        Group {
-            switch self.loadingState {
-            case .idle, .loading:
-                LoadingView(String(localized: "Loading podcast..."))
-            case .loaded, .loadingMore:
-                self.contentView
-            case let .error(error):
-                ErrorView(error: error) {
-                    Task { await self.loadShow(force: true) }
-                }
-            }
-        }
-        .accentBackground(from: self.show.thumbnailURL)
-        .pageTitle(id: "podcast-\(self.show.id)", title: self.show.title)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.loadingState {} else {
+        self.contentView
+            .accentBackground(from: self.viewModel.show.thumbnailURL)
+            .pageTitle(id: "podcast-\(self.show.id)", title: self.viewModel.show.title)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 PlayerBar()
             }
-        }
-        .task {
-            await self.loadShow()
-        }
-        .refreshable {
-            await self.loadShow(force: true)
-        }
-        .alert(
-            String(localized: "Subscription Error"),
-            isPresented: Binding(
-                get: { self.subscriptionError != nil },
-                set: { if !$0 { self.subscriptionError = nil } }
-            )
-        ) {
-            Button(String(localized: "OK")) { self.subscriptionError = nil }
-        } message: {
-            Text(self.subscriptionError ?? String(localized: "An unknown error occurred"))
-        }
+            .task {
+                await self.viewModel.load()
+            }
+            // Rows decode at their 64 pt slot, so the page warms the artwork it is about to draw rather
+            // than decoding it on the scroll path (`PlaylistDetailView` does the same for its rows).
+            .task(id: self.viewModel.episodes.count) {
+                await self.viewModel.prefetchArtwork()
+            }
+            .refreshable {
+                await self.viewModel.refresh()
+            }
+            .alert(
+                String(localized: "Subscription Error"),
+                isPresented: Binding(
+                    get: { self.viewModel.subscriptionError != nil },
+                    set: { if !$0 { self.viewModel.dismissSubscriptionError() } }
+                )
+            ) {
+                Button(String(localized: "OK")) { self.viewModel.dismissSubscriptionError() }
+            } message: {
+                Text(self.viewModel.subscriptionError ?? String(localized: "An unknown error occurred"))
+            }
     }
 
     // MARK: - Views
@@ -360,14 +308,7 @@ struct PodcastShowView: View {
                 .listRowInsets(EdgeInsets(top: 20, leading: 24, bottom: 8, trailing: 24))
                 .listRowBackground(Color.clear)
 
-            if self.previewEpisodes.isEmpty {
-                self.emptyEpisodesView
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 32, trailing: 24))
-                    .listRowBackground(Color.clear)
-            } else {
-                self.episodeRows
-            }
+            self.episodeContent
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -383,7 +324,7 @@ struct PodcastShowView: View {
     private var headerView: some View {
         HStack(alignment: .top, spacing: 20) {
             CachedAsyncImage(
-                url: self.show.thumbnailURL,
+                url: self.viewModel.show.thumbnailURL,
                 identity: self.show.id
             ) { image in
                 image
@@ -409,25 +350,25 @@ struct PodcastShowView: View {
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
 
-                Text(self.show.title)
+                Text(self.viewModel.show.title)
                     .font(.title)
                     .fontWeight(.bold)
                     .foregroundStyle(.primary)
 
-                if let author = self.show.author, !author.isEmpty {
+                if let author = self.viewModel.show.author, !author.isEmpty {
                     Text(author)
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
 
-                if let description = self.show.description, !description.isEmpty {
+                if let description = self.viewModel.show.description, !description.isEmpty {
                     Text(description)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(4)
                 }
 
-                if let count = self.episodeCount {
+                if let count = self.viewModel.episodeCount {
                     Text(count == 1 ? "1 episode" : "\(count) episodes")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -450,24 +391,28 @@ struct PodcastShowView: View {
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
-            .disabled(self.episodes.isEmpty)
+            .disabled(self.viewModel.episodes.isEmpty)
 
             Button {
-                Task { await self.toggleSubscription() }
+                Task {
+                    await self.viewModel.toggleSubscription(libraryViewModel: self.libraryViewModel)
+                }
             } label: {
-                if self.isSubscribing {
+                if self.viewModel.isSubscribing {
                     ProgressView()
                         .controlSize(.small)
                 } else {
                     Label(
-                        self.isSubscribed ? String(localized: "In Library") : String(localized: "Add to Library"),
-                        systemImage: self.isSubscribed ? "checkmark" : "plus"
+                        self.viewModel.isSubscribed
+                            ? String(localized: "In Library")
+                            : String(localized: "Add to Library"),
+                        systemImage: self.viewModel.isSubscribed ? "checkmark" : "plus"
                     )
                 }
             }
             .buttonStyle(.glass)
             .controlSize(.large)
-            .disabled(self.isSubscribing)
+            .disabled(self.viewModel.isSubscribing)
         }
     }
 
@@ -479,7 +424,7 @@ struct PodcastShowView: View {
 
             Spacer()
 
-            if self.episodes.count > Self.previewEpisodeCount || self.continuationToken != nil {
+            if self.viewModel.hasMoreEpisodes {
                 Button {
                     self.showAllEpisodes()
                 } label: {
@@ -501,12 +446,12 @@ struct PodcastShowView: View {
         let currentVideoId = self.playerService.currentTrack?.videoId
         let isPlaying = self.playerService.isPlaying
 
-        ForEach(Array(self.previewEpisodes.enumerated()), id: \.element.id) { index, episode in
+        ForEach(Array(self.viewModel.previewEpisodes.enumerated()), id: \.element.id) { index, episode in
             PodcastEpisodeRow(
                 episode: episode,
                 isCurrent: episode.id == currentVideoId,
                 isPlaying: isPlaying && episode.id == currentVideoId,
-                showsSeparator: index < self.previewEpisodes.count - 1,
+                showsSeparator: index < self.viewModel.previewEpisodes.count - 1,
                 isScrolling: self.isScrolling
             ) {
                 self.playEpisodeInQueue(at: index)
@@ -526,19 +471,46 @@ struct PodcastShowView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// Episodes to show in the preview (limited to previewEpisodeCount).
-    private var previewEpisodes: [PodcastEpisode] {
-        Array(self.episodes.prefix(Self.previewEpisodeCount))
+    /// The page's episodes slot: rows once they are here, a loading line while the first page is on its
+    /// way, an explanation for a show that has none, and a retry when the request failed.
+    ///
+    /// The header above it is already readable, so an empty or failed episode list is stated in place
+    /// instead of replacing the whole page with a spinner.
+    @ViewBuilder
+    private var episodeContent: some View {
+        if case let .error(error) = self.viewModel.loadingState {
+            ErrorView(error: error) {
+                Task { await self.viewModel.refresh() }
+            }
+            .frame(maxWidth: .infinity)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 12, leading: 24, bottom: 24, trailing: 24))
+            .listRowBackground(Color.clear)
+        } else if self.viewModel.episodes.isEmpty, self.viewModel.loadingState == .loaded {
+            self.emptyEpisodesView
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 24, leading: 24, bottom: 32, trailing: 24))
+                .listRowBackground(Color.clear)
+        } else if self.viewModel.episodes.isEmpty {
+            self.loadingRow
+        } else {
+            self.episodeRows
+        }
     }
 
-    /// The show's episode count when it can be stated: the API's total when it reported one, otherwise
-    /// the page's first page. `nil` before the page has loaded, so the header never says "0 episodes" at
-    /// a show it has not asked about yet.
-    private var episodeCount: Int? {
-        if let count = self.show.episodeCount, count > 0 {
-            return count
+    private var loadingRow: some View {
+        HStack(spacing: 8) {
+            FixedProgressView(controlSize: .small)
+
+            Text("Loading episodes…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
-        return self.episodes.isEmpty ? nil : self.episodes.count
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Color.clear)
     }
 
     // MARK: - Actions
@@ -546,74 +518,18 @@ struct PodcastShowView: View {
     private func showAllEpisodes() {
         self.onShowAllEpisodes(
             AllEpisodesDestination(
-                show: self.show,
-                episodes: self.episodes,
-                continuationToken: self.continuationToken
+                show: self.viewModel.show,
+                episodes: self.viewModel.episodes,
+                continuationToken: self.viewModel.continuationToken
             )
         )
     }
 
-    private func loadShow(force: Bool = false) async {
-        if !force, self.loadingState != .idle {
-            return
-        }
-        // A refresh keeps the page on screen: only a page with nothing to show flips to the spinner.
-        if self.episodes.isEmpty {
-            self.loadingState = .loading
-        }
-
-        do {
-            let showDetail = try await self.client.getPodcastShow(browseId: self.show.id)
-            self.episodes = showDetail.episodes
-            self.continuationToken = showDetail.continuationToken
-            self.isSubscribed = showDetail.isSubscribed
-            self.loadingState = .loaded
-        } catch {
-            DiagnosticsLogger.api.error("Failed to load podcast show: \(error.localizedDescription)")
-            if self.episodes.isEmpty {
-                self.loadingState = .error(LoadingError(from: error))
-            }
-        }
-    }
-
     /// Plays an episode and queues the remaining episodes from the show.
     private func playEpisodeInQueue(at index: Int) {
-        let songs = self.episodes.map { podcastSong(for: $0) }
+        let songs = self.viewModel.playableSongs()
         Task {
             await self.playerService.playQueue(songs, startingAt: index)
-        }
-    }
-
-    private func toggleSubscription() async {
-        self.isSubscribing = true
-        defer { self.isSubscribing = false }
-
-        DiagnosticsLogger.api.debug("toggleSubscription called, isSubscribed=\(self.isSubscribed), showId=\(self.show.id)")
-
-        do {
-            if self.isSubscribed {
-                try await SongActionsHelper.unsubscribeFromPodcast(
-                    self.show,
-                    client: self.client,
-                    libraryViewModel: self.libraryViewModel
-                )
-                self.isSubscribed = false
-                DiagnosticsLogger.api.debug("Unsubscribe completed, isSubscribed now=\(self.isSubscribed)")
-            } else {
-                try await SongActionsHelper.subscribeToPodcast(
-                    self.show,
-                    client: self.client,
-                    libraryViewModel: self.libraryViewModel
-                )
-                self.isSubscribed = true
-                DiagnosticsLogger.api.debug("Subscribe completed, isSubscribed now=\(self.isSubscribed)")
-            }
-        } catch {
-            let errorMessage = error.localizedDescription
-            DiagnosticsLogger.api.error(
-                "Failed to toggle podcast subscription for \(self.show.title): \(errorMessage)"
-            )
-            self.subscriptionError = errorMessage
         }
     }
 }
@@ -1030,7 +946,7 @@ struct AllEpisodesView: View {
 
     /// Plays an episode and queues the remaining episodes.
     private func playEpisodeInQueue(at index: Int) {
-        let songs = self.episodes.map { podcastSong(for: $0) }
+        let songs = self.episodes.map(\.playbackSong)
         Task {
             await self.playerService.playQueue(songs, startingAt: index)
         }

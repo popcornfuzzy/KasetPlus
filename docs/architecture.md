@@ -1158,6 +1158,8 @@ Reusable components used across the app:
 | `EqualizerView` | Animated bars for "now playing" indicator |
 | `HomeSectionItemCard` | Card component for carousel items |
 | `HomeFeedCollectionView` | Home's feed as one `NSCollectionView` with orthogonal shelf sections (see [ADR-0046](adr/0046-home-native-shelf-feed.md)) |
+| `PodcastFeedCollectionView` | The podcasts page's shelves in the same shape, with a mixed-width shelf group (see [ADR-0050](adr/0050-podcast-shelf-feed.md)) |
+| `ShelfFeedCollectionView` | The `NSCollectionView` both feeds use: document sizing, page-wide edge fade, shelf scroll appearance |
 | `InteractiveCardStyle` | Hover/press effects for cards |
 | `NavigationDestinationsModifier` | Centralized navigation destination handling |
 | `ShareContextMenu` | Context menu for sharing content |

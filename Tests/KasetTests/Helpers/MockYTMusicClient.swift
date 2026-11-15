@@ -37,6 +37,10 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     var historyContinuationSections: [[HomeSection]] = []
     var podcastsSections: [PodcastSection] = []
     var podcastsContinuationSections: [[PodcastSection]] = []
+    /// The page `getPodcastShow` answers with. `nil` answers with an empty show.
+    var podcastShowDetail: PodcastShowDetail?
+    /// Artificial latency for `getPodcastShow()`, so a test can exercise two overlapping page loads.
+    var podcastShowDelay: Duration?
     var searchResponse: SearchResponse = .empty
     var searchContinuationResponses: [SearchResponse] = []
     var searchSuggestions: [SearchSuggestion] = []
@@ -100,6 +104,7 @@ final class MockYTMusicClient: YTMusicClientProtocol {
 
     private(set) var getSongCalled = false
     private(set) var getSongVideoIds: [String] = []
+    private(set) var getPodcastShowCallCount = 0
 
     // MARK: - Continuation State
 
@@ -376,7 +381,14 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     }
 
     func getPodcastShow(browseId _: String) async throws -> PodcastShowDetail {
+        self.getPodcastShowCallCount += 1
+        if let delay = self.podcastShowDelay {
+            try? await Task.sleep(for: delay)
+        }
         if let error = shouldThrowError { throw error }
+        if let detail = self.podcastShowDetail {
+            return detail
+        }
         return PodcastShowDetail(
             show: PodcastShow(id: "test", title: "Test Show", author: nil, description: nil, thumbnailURL: nil, episodeCount: nil),
             episodes: [],

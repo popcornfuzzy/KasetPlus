@@ -114,16 +114,19 @@ struct HomeCardEnvironment {
     let libraryViewModel: LibraryViewModel?
 }
 
-// MARK: - HomeCollectionView
+// MARK: - ShelfFeedCollectionView
 
-/// A collection view that keeps the scroll view's document as tall as its layout.
+/// A shelf feed's collection view: keeps the scroll view's document as tall as its layout.
+///
+/// Shared by every feed made of orthogonal shelves — Home's and the podcasts page's — so the document
+/// sizing, the page-wide edge fade and the shelf scroll views' appearance are one implementation.
 ///
 /// As a representable's document view the collection view is framed to the *visible* area and AppKit
 /// never grows it: the page scrolled one screen and stopped, with the rest of the feed below an edge it
 /// could not reach. A collection view's own layout knows its content size, so the height is taken from
 /// it here, once per layout pass, with the clip view's height as the floor.
 @available(macOS 26.0, *)
-final class HomeCollectionView: NSCollectionView {
+final class ShelfFeedCollectionView: NSCollectionView {
     /// Fades both page edges where a shelf runs past them.
     ///
     /// Masked onto *this* view, not the scroll view's clip view. A mask smaller than the view it masks
@@ -262,7 +265,7 @@ final class HomeCollectionView: NSCollectionView {
 @MainActor
 final class HomeFeedCollectionViewController: NSViewController {
     private let environment: HomeCardEnvironment
-    private let collectionView = HomeCollectionView()
+    private let collectionView = ShelfFeedCollectionView()
     private var dataSource: NSCollectionViewDiffableDataSource<HomeFeedSection, HomeFeedItem>?
     /// The sections the layout must answer for, in order. The layout provider is handed an index, not
     /// an identifier, so the order the snapshot applied is kept here.

@@ -8,7 +8,7 @@ import Foundation
 /// `musicQueueRenderer.subHeaderChipCloud`. Each chip carries the mix playlist and opaque params
 /// that select that variant, so the app renders exactly the options the server offers
 /// ("All", "Discover", "Deep cuts", "Party", genre chips, …) instead of hard-coding them.
-struct QueueTunerChip: Identifiable, Hashable, Sendable {
+struct QueueTunerChip: Identifiable, Hashable, Codable, Sendable {
     /// Server identifier for the tuning, e.g. `Discover`.
     let id: String
 

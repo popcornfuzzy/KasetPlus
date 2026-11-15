@@ -598,7 +598,7 @@ infinite queue loading:
 | Component | Purpose |
 |-----------|----------|
 | `RadioQueueResult` | Holds songs + continuation token |
-| `mixContinuationToken` | Stored in `PlayerService` |
+| `mixContinuationToken` | Stored in `PlayerService`, saved with the playback session so a restored mix keeps loading |
 | `isFetchingMoreMixSongs` | Prevents concurrent fetches |
 | `fetchMoreMixSongsIfNeeded()` | Triggered on `next()` and `playFromQueue()` |
 
