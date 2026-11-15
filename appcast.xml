@@ -3,6 +3,16 @@
     <channel>
         <title>Kaset</title>
         <item>
+            <title>0.9.2</title>
+            <pubDate>Sun, 15 Nov 2026 17:33:05 +0000</pubDate>
+            <link>https://github.com/popcornfuzzy/KasetPlus/releases</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/popcornfuzzy/KasetPlus/releases/tag/v0.9.2</sparkle:fullReleaseNotesLink>
+            <sparkle:version>26</sparkle:version>
+            <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.2/kaset-v0.9.2.dmg" length="13560609" type="application/octet-stream" sparkle:edSignature="vZBN2rhFnKQ5ivcXY7CkugLB0S2Tp3xDfQtU4Ofqe7BB6mZh7mq2e7ndAbh0J7Zb1oPAuBondxUseTPWFreIAA=="/>
+        </item>
+        <item>
             <title>0.9.1</title>
             <pubDate>Sat, 07 Nov 2026 14:52:58 +0000</pubDate>
             <link>https://github.com/popcornfuzzy/KasetPlus/releases</link>
