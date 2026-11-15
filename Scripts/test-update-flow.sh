@@ -17,13 +17,16 @@
 #   1. Builds an old Kaset (KASET_E2E_FROM_*) and a new one (KASET_E2E_TO_*).
 #   2. Enables automatic downloads in both builds - the one test-only override -
 #      so the check, the download and the install need no clicks at all.
-#   3. Packages the new build as a DMG, signs it with Sparkle's EdDSA key, and
-#      serves that DMG plus the generated appcast over http://localhost.
-#   4. Launches the old build and waits for it to replace itself, then reads the
-#      version off disk.
+#   3. Packages both builds as DMGs, so the feed carries a delta from the old one
+#      to the new one, signs them with Sparkle's EdDSA key, and serves them plus
+#      the generated appcast over http://localhost.
+#   4. Installs the old build from its own DMG - a delta is generated against
+#      exactly what sits on disk, and that is also how users get it - launches it,
+#      and waits for it to replace itself, then reads the version off disk.
 #
-# Exit status is 0 only if the app on disk reaches the new build number. On
-# failure, the Sparkle log lines explaining the rejection are printed.
+# Exit status is 0 only if the app on disk reaches the new build number *and* the
+# update arrived as a delta. On failure, the Sparkle log lines explaining the
+# rejection are printed.
 #
 # Environment overrides: KASET_E2E_FROM_VERSION, KASET_E2E_FROM_BUILD,
 # KASET_E2E_TO_VERSION, KASET_E2E_TO_BUILD, KASET_E2E_BUNDLE_ID, KASET_E2E_PORT,
@@ -62,7 +65,7 @@ KEEP_WORK_DIR=0
 for arg in "$@"; do
   case "$arg" in
     --keep-work-dir) KEEP_WORK_DIR=1 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 64 ;;
   esac
 done
@@ -172,6 +175,21 @@ build_app() {
   echo "  Built Kaset $version ($build)"
 }
 
+# Installs a build the way a user gets one, so the app on disk is exactly the tree
+# generate_appcast extracted from the DMG to build the delta from.
+install_from_dmg() {
+  local dmg="$1" destination="$2"
+  local mount="$WORK/mnt" dmg_log="$WORK/hdiutil.log"
+
+  rm -rf "$mount" "$destination"
+  mkdir -p "$mount" "$(dirname "$destination")"
+  hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount" -quiet > "$dmg_log" 2>&1 \
+    || { fail "Could not mount $dmg."; cat "$dmg_log" >&2; exit 1; }
+  ditto "$mount/Kaset.app" "$destination"
+  hdiutil detach "$mount" -quiet >> "$dmg_log" 2>&1 || true
+  rmdir "$mount" 2>/dev/null || true
+}
+
 # The only test-only overrides: automatic downloads turn the update into a
 # headless one, a 1 second check interval skips Sparkle's day-long scheduler, and
 # the ATS exception lets the app fetch a loopback feed over plain http.
@@ -200,10 +218,14 @@ build_app "$TO_VERSION" "$TO_BUILD" "$TO_APP"
 patch_for_test "$FROM_APP"
 patch_for_test "$TO_APP"
 
-# --- Package the new build and generate the feed ----------------------------
+# --- Package both builds and generate the feed ------------------------------
 
-step "Packaging Kaset $TO_VERSION as a DMG"
+step "Packaging both builds as DMGs"
+Scripts/create-dmg.sh "$FEED_DIR/kaset-$FROM_VERSION.dmg" "$FROM_APP"
 Scripts/create-dmg.sh "$FEED_DIR/kaset-$TO_VERSION.dmg" "$TO_APP"
+
+step "Installing Kaset $FROM_VERSION from its DMG"
+install_from_dmg "$FEED_DIR/kaset-$FROM_VERSION.dmg" "$FROM_APP"
 
 step "Generating and signing the appcast"
 GENERATE_ARGS=(
@@ -226,6 +248,23 @@ if ! grep -q "sparkle:edSignature" "$APPCAST"; then
   exit 1
 fi
 echo "  Feed advertises $(grep -c '<item>' "$APPCAST") item(s)"
+
+# Without a delta this run would only re-test the full download, which the release
+# path already covers. A silent fallback would hide a broken delta, so it fails
+# here instead.
+DELTAS=$(awk '/<sparkle:deltas>/,/<\/sparkle:deltas>/' "$APPCAST")
+if [[ -z "$DELTAS" ]]; then
+  fail "The generated appcast has no sparkle:deltas, so there is nothing to test."
+  echo "  generate_appcast only diffs archives in the feed directory; both DMGs must be there." >&2
+  exit 1
+fi
+if [[ "$DELTAS" != *"sparkle:deltaFrom=\"$FROM_BUILD\""* ]]; then
+  fail "The feed has no delta from $FROM_BUILD ($FROM_VERSION)."
+  exit 1
+fi
+DELTA_BYTES=$(printf '%s' "$DELTAS" | sed -n 's/.*length="\([0-9]*\)".*/\1/p' | head -1)
+DMG_BYTES=$(stat -f%z "$FEED_DIR/kaset-$TO_VERSION.dmg")
+echo "  Delta from $FROM_BUILD is $DELTA_BYTES bytes; the DMG is $DMG_BYTES"
 
 # --- Serve the feed ---------------------------------------------------------
 
@@ -272,8 +311,21 @@ INSTALLED_VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString
 INSTALLED_BUILD=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$FROM_APP/Contents/Info.plist" 2>/dev/null || echo "?")
 
 if [[ "$INSTALLED_BUILD" == "$TO_BUILD" ]]; then
-  echo -e "\n${GREEN}PASS${NC} - Kaset updated itself from $FROM_VERSION ($FROM_BUILD) to $INSTALLED_VERSION ($INSTALLED_BUILD)"
-  exit 0
+  # The delta is a separate download, so the server log says which path ran.
+  if grep -q '\.delta' "$WORK/server.log"; then
+    echo -e "\n${GREEN}PASS${NC} - Kaset updated itself from $FROM_VERSION ($FROM_BUILD) to $INSTALLED_VERSION ($INSTALLED_BUILD) through the delta"
+    exit 0
+  fi
+
+  fail "Kaset updated itself, but it downloaded the full archive instead of the delta."
+  echo "  Sparkle prefers a delta only when it is smaller than the archive and" >&2
+  echo "  sparkle:deltaFrom matches the installed CFBundleVersion ($FROM_BUILD)." >&2
+  echo "" >&2
+  echo "Requests served:" >&2
+  grep -E 'GET ' "$WORK/server.log" | tail -20 >&2 || true
+  echo "" >&2
+  echo "Captured log: $SPARKLE_LOG" >&2
+  exit 1
 fi
 
 fail "Kaset is still $INSTALLED_VERSION ($INSTALLED_BUILD); expected $TO_VERSION ($TO_BUILD)."

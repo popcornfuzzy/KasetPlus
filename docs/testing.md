@@ -626,7 +626,7 @@ Four workflows, each with a single responsibility:
 | `tests.yml` | push/PR to `main`, nightly | Unit + UI tests; integration suites nightly |
 | `dev-build.yml` | push/PR touching Swift sources | Builds a dev DMG |
 | `release.yml` | tag push `v*` | Gated build, draft GitHub release |
-| `appcast.yml` | release published | Signs the DMG, commits `appcast.xml` |
+| `appcast.yml` | release published | Signs the DMG and its deltas, uploads them, commits `appcast.xml` |
 
 ### Unit Test Gate
 
@@ -679,15 +679,33 @@ Scripts/test-update-flow.sh          # non-zero exit, printing Sparkle's reason,
 ```
 
 It builds two versions of Kaset under a throwaway bundle identifier (`…updatetest`, so your real
-preferences and sandbox container are untouched), packages the newer one into a signed DMG, serves
-that DMG plus the generated appcast over `http://localhost`, then launches the older build with
-automatic downloads enabled and waits for it to replace itself. The entitlements and signing come
-from `Scripts/build-app.sh`, because those are what is under test; the only test-only overrides are
-`SUAutomaticallyUpdate`, a one second `SUScheduledCheckInterval`, and an ATS exception for loopback.
-The script writes `version.env` while it runs and restores it afterwards.
+preferences and sandbox container are untouched), packages **both** as signed DMGs - which is what
+makes the feed carry a delta from the old build to the new one - serves them plus the generated
+appcast over `http://localhost`, installs the older build from its own DMG (a delta is generated
+against exactly what is on disk, and that is also how a user receives it), then launches it with
+automatic downloads enabled and waits for it to replace itself. It passes only if the installed
+build reaches the new one **and** the served request was the `.delta`: a run that silently fell back
+to the full archive would only re-test the path releases already cover. The entitlements and signing
+come from `Scripts/build-app.sh`, because those are what is under test; the only test-only overrides
+are `SUAutomaticallyUpdate`, a one second `SUScheduledCheckInterval`, and an ATS exception for
+loopback. The script writes `version.env` while it runs and restores it afterwards.
 
-Expect it to launch the app briefly (with `open -g`, so it stays in the background), fetch a few
-megabytes, and take a couple of minutes - most of it building. Pass `--keep-work-dir` to keep
+The appcast job's own selection - which release is published, which asset is signed, which archives
+are staged as delta bases - lives in `Scripts/appcast-release.sh`, so it can be checked without
+publishing anything:
+
+```bash
+Scripts/appcast-release.sh --dry-run                 # what the next 'Update Appcast' run would do
+Scripts/appcast-release.sh --dry-run --tag v0.9.3    # a tag about to be pushed
+```
+
+It reads the real releases through `gh`, prints the plan (or says the release would be skipped as a
+prerelease), and downloads and writes nothing. The job runs the same script with `--download-dir`, so
+a misconfigured base set, a draft, or an asset that is named differently shows up here rather than
+after the release is public.
+
+Expect the update test to launch the app briefly (with `open -g`, so it stays in the background),
+fetch a few megabytes, and take a couple of minutes - most of it building. Pass `--keep-work-dir` to keep
 `.build/update-e2e/`, which holds the captured Sparkle log, the server log and both app bundles.
 
 If Kaset's Keychain items already exist on the machine, macOS shows a Keychain access prompt for them,
@@ -699,4 +717,5 @@ way. An update that never starts, on the other hand, means the test app is wedge
 
 Release mechanics are covered by
 [adr/0019-release-pipeline-and-appcast-publication.md](adr/0019-release-pipeline-and-appcast-publication.md),
-and the update configuration itself by [adr/0007-sparkle-auto-updates.md](adr/0007-sparkle-auto-updates.md#sandboxed-installation).
+the delta part of the feed by [adr/0052-delta-updates.md](adr/0052-delta-updates.md), and the update
+configuration itself by [adr/0007-sparkle-auto-updates.md](adr/0007-sparkle-auto-updates.md#sandboxed-installation).

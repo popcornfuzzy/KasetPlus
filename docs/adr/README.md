@@ -86,3 +86,4 @@ What becomes easier or more difficult because of this change?
 | [0048](0048-search-result-ranking.md) | Search Results Follow YouTube Music's Order | Accepted |
 | [0049](0049-window-content-sizing.md) | The Window and Its Panes Never Size Themselves from Content | Accepted |
 | [0051](0051-now-playing-card-expansion.md) | A Card Opens into a Page by Growing | Accepted |
+| [0052](0052-delta-updates.md) | Delta Updates in the Appcast Feed | Accepted |

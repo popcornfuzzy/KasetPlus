@@ -48,13 +48,17 @@ existed before this decision failed in ways that never reproduced locally:
    release. `.github/workflows/appcast.yml` runs on `release: published`, and signs the DMG that is
    actually downloadable at that moment. An update is therefore only ever advertised once its
    download URL is public. Prereleases are kept out of the stable feed, because Sparkle compares
-   `CFBundleVersion` and a prerelease is always built later than the last stable release.
+   `CFBundleVersion` and a prerelease is always built later than the last stable release. The
+   selection rules themselves live in `Scripts/appcast-release.sh`, which the job runs and whose
+   `--dry-run` prints the same plan against the real releases without downloading anything.
 
 4. **The feed is regenerated with Sparkle's own tool, seeded from the committed feed.**
    `Scripts/generate-appcast.sh` copies the repository's `appcast.xml` next to the released DMG and
    runs `generate_appcast --maximum-versions 0`, which *updates* that feed: existing items keep
    their signatures and history is preserved. The private key is passed over stdin (`--ed-key-file -`),
-   so it never reaches the filesystem or the process table.
+   so it never reaches the filesystem or the process table. The staging directory also receives the
+   last few release archives as delta bases, whose `.delta` files are uploaded before the feed is
+   committed — see [ADR-0052](0052-delta-updates.md).
 
 5. **Every claim the pipeline makes is verified before it is published.** The DMG must mount and
    contain `Kaset.app`; the generated item must carry a `sparkle:edSignature` and point at the

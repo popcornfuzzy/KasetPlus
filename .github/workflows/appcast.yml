@@ -3,6 +3,10 @@ name: Update Appcast
 # Sparkle can only use an update once its download URL is public, so the feed is
 # updated when the release is published rather than when it is built. That is also
 # what keeps the appcast from ever advertising a draft (whose asset URLs 404).
+#
+# The feed also carries delta updates: the last few release DMGs are fetched as
+# diff bases, and the .delta files that produces are uploaded to this release
+# before the feed is committed. See docs/adr/0052-delta-updates.md.
 on:
   release:
     types: [published]
@@ -37,7 +41,10 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Resolve the release to publish
+      # Which release is published, which asset is signed and which archives are
+      # diffed live in Scripts/appcast-release.sh: the job downloads what it
+      # selects, and --dry-run prints the same plan locally without downloading.
+      - name: Resolve the release to publish and its delta bases
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,59 +54,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          ARGS=(--repo "$GITHUB_REPOSITORY" --download-dir "$RUNNER_TEMP" --github-output)
           if [ -n "$RELEASE_TAG" ]; then
-            TAG="$RELEASE_TAG"
+            ARGS+=(--tag "$RELEASE_TAG")
           elif [ -n "$INPUT_TAG" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG=$(gh release view --json tagName --jq .tagName)
+            ARGS+=(--tag "$INPUT_TAG")
+          fi
+          if [ "$INCLUDE_PRERELEASE" = "true" ]; then
+            ARGS+=(--allow-prerelease)
           fi
 
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)? ]]; then
-            echo "::error::'$TAG' is not a release tag."
-            exit 1
-          fi
-
-          IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
-          if [ "$IS_DRAFT" = "true" ]; then
-            # Draft assets need authentication, so a feed entry pointing at one is
-            # a 404 for every user.
-            echo "::error::Release $TAG is still a draft; its asset URLs are not public yet."
-            exit 1
-          fi
-
-          # A prerelease is built later than the last stable release, so every
-          # stable client would be offered it.
-          IS_PRERELEASE=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
-          if [ "$IS_PRERELEASE" = "true" ] && [ "$INCLUDE_PRERELEASE" != "true" ]; then
-            echo "Release $TAG is a prerelease; leaving the stable feed alone."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Plain jq plus greps, so an empty release yields an empty variable
-          # rather than a literal "null" that would be downloaded as a file name.
-          # Prefer the asset named after this tag: earlier releases carry a stray
-          # kaset-main.dmg from the manual runs that used the branch name as the
-          # version, and picking it would sign the wrong download.
-          NAMES=$(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
-          ASSET=$(printf '%s\n' "$NAMES" | grep -Fx "kaset-$TAG.dmg" | head -1 || true)
-          if [ -z "$ASSET" ]; then
-            ASSET=$(printf '%s\n' "$NAMES" | grep -E '\.dmg$' | head -1 || true)
-          fi
-
-          if [ -z "$ASSET" ]; then
-            echo "::error::Release $TAG has no .dmg asset to sign."
-            exit 1
-          fi
-
-          {
-            echo "skip=false"
-            echo "tag=$TAG"
-            echo "asset=$ASSET"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "Updating the feed for $TAG from $ASSET"
+          Scripts/appcast-release.sh ${ARGS[@]+"${ARGS[@]}"}
 
       - name: Make Sparkle's tools available
         if: steps.release.outputs.skip != 'true'
@@ -114,18 +79,6 @@ jobs:
             swift build -c release --arch "$(uname -m)"
           fi
           Scripts/generate-appcast.sh --check
-
-      - name: Download the published DMG
-        if: steps.release.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag }}
-          ASSET: ${{ steps.release.outputs.asset }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/release"
-          gh release download "$TAG" --pattern "$ASSET" --dir "$RUNNER_TEMP/release" --clobber
-          ls -l "$RUNNER_TEMP/release"
 
       - name: Regenerate and verify the feed
         if: steps.release.outputs.skip != 'true'
@@ -144,12 +97,41 @@ jobs:
             exit 1
           fi
 
+          PREVIOUS_ARGS=()
+          for ARCHIVE in "$RUNNER_TEMP"/previous/*.dmg; do
+            [ -e "$ARCHIVE" ] || continue
+            PREVIOUS_ARGS+=(--previous-dmg "$ARCHIVE")
+          done
+
           # The feed already in the repository is the base, so existing items keep
-          # their signatures and history is never rewritten.
+          # their signatures and history is never rewritten. The deltas land in
+          # $RUNNER_TEMP/deltas for the upload step; the script fails if a delta
+          # enclosure it wrote is unsigned, missing or points at another release.
           Scripts/generate-appcast.sh \
             --tag "$TAG" \
             --dmg "$RUNNER_TEMP/release/$ASSET" \
-            --repo "$GITHUB_REPOSITORY"
+            --delta-dir "$RUNNER_TEMP/deltas" \
+            --repo "$GITHUB_REPOSITORY" \
+            ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
+
+      - name: Upload the delta updates
+        if: steps.release.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          DELTAS=("$RUNNER_TEMP"/deltas/*.delta)
+          if [ ${#DELTAS[@]} -eq 0 ]; then
+            echo "No deltas were generated; the feed advertises the full archive only."
+            exit 0
+          fi
+
+          # Before the feed is committed: an advertised delta that has not been
+          # uploaded yet is a 404 that every updating copy has to fall back from.
+          gh release upload "$TAG" "${DELTAS[@]}" --clobber
+          echo "Uploaded ${#DELTAS[@]} delta(s) to $TAG."
 
       - name: Commit the feed
         if: steps.release.outputs.skip != 'true'
