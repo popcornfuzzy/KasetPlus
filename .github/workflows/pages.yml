@@ -11,6 +11,10 @@ on:
       - ".github/workflows/pages.yml"
   # A new release moves the download button onto the new DMG, so publish again
   # the moment one is released rather than waiting for the next website change.
+  # A release event runs on the tag's ref, and the github-pages environment
+  # publishes deployments only for the refs it lists (Settings -> Environments ->
+  # github-pages -> Deployment branches and tags). It allows the main branch and
+  # the v* tags; without the tag rule this run is rejected as protected.
   release:
     types: [published]
   workflow_dispatch:
@@ -34,6 +38,11 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          # Publish the site as it stands on the default branch. A release is only
+          # the moment to point the button at the new DMG, and the tag's snapshot
+          # can predate a website fix that is already live.
+          ref: ${{ github.event.repository.default_branch }}
 
       # The button downloads the installer directly instead of sending people to
       # the release page. The link is resolved here, at publish time, so the page
