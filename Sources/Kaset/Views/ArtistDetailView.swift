@@ -138,120 +138,40 @@ struct ArtistDetailView: View {
         .allowsHitTesting(false)
     }
 
+    /// The page hands the header the facts the artist has and the actions it can take; `ArtistHeaderView`
+    /// decides how that content is laid out, at any width and with any of the lines missing.
     private func headerView(_ detail: ArtistDetail) -> some View {
         // The header carries the channel's banner, not the artist's picture: the square cut is the
         // avatar YouTube itself renders here (see `squareArtistAvatarURL`), and the banner stays the
         // fallback for a picture the square cut cannot serve.
         let avatarURL = detail.thumbnailURL?.squareArtistAvatarURL
             ?? detail.thumbnailURL?.highQualityThumbnailURL
-        return HStack(alignment: .top, spacing: 20) {
-            // Thumbnail
-            CachedAsyncImage(url: avatarURL, fallbackURL: detail.thumbnailURL) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Rectangle()
-                    .fill(.quaternary)
-                    .overlay {
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
-                    }
+        return ArtistHeaderView(
+            name: detail.name,
+            monthlyListeners: detail.monthlyListeners,
+            description: detail.description,
+            subscriberCount: detail.subscriberCount,
+            avatarURL: avatarURL,
+            thumbnailURL: detail.thumbnailURL,
+            logoImage: self.artistLogoImage,
+            logoIsMonochrome: self.artistLogoIsMonochrome,
+            isSubscribed: detail.isSubscribed,
+            canSubscribe: detail.channelId != nil,
+            isSubscribing: self.viewModel.isSubscribing,
+            canShuffle: !detail.songs.isEmpty || detail.hasMoreSongs,
+            hasMix: detail.mixPlaylistId != nil,
+            onShuffle: {
+                Task { await self.shuffleAllSongs() }
+            },
+            onMix: {
+                guard let mixPlaylistId = detail.mixPlaylistId else { return }
+                self.playMix(playlistId: mixPlaylistId, startVideoId: nil)
+            },
+            onSubscribe: {
+                HapticService.toggle()
+                Task { await self.viewModel.toggleSubscription() }
             }
-            .frame(width: 180, height: 180)
-            .clipShape(.circle)
-
-            // Info
-            VStack(alignment: .leading, spacing: 8) {
-                // The artist's own wordmark, in the artist's own colours, when Apple Music has one. The
-                // name and the logo share one fixed slot: the header crossfades between them instead of
-                // reflowing the column when the lookup lands.
-                ZStack(alignment: .leading) {
-                    Text(detail.name)
-                        .font(.title)
-                        .fontWeight(.bold)
-                        .opacity(self.artistLogoImage == nil ? 1 : 0)
-
-                    if let image = self.artistLogoImage {
-                        Image(nsImage: image)
-                            .resizable()
-                            // A coloured signature keeps its colours; a single-colour one is tinted with the
-                            // label colour, so white ink is not lost on a light page.
-                            .renderingMode(self.artistLogoIsMonochrome ? .template : .original)
-                            .interpolation(.high)
-                            .foregroundStyle(.primary)
-                            .aspectRatio(contentMode: .fit)
-                            // A box rather than a size: a wide wordmark takes the width, a square one the
-                            // height, and the artwork's own shape decides which.
-                            .frame(maxWidth: 320, maxHeight: 64, alignment: .leading)
-                            .accessibilityLabel(detail.name)
-                            .transition(.opacity)
-                    }
-                }
-                .frame(height: 64, alignment: .leading)
-                .animation(.easeInOut(duration: 0.35), value: self.artistLogoImage == nil)
-
-                // Monthly listeners under the name: the figure a visitor is curious about, and the one
-                // the search card already shows.
-                if let monthlyListeners = detail.monthlyListeners {
-                    Text("\(monthlyListeners) monthly listeners")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let description = detail.description, !description.isEmpty {
-                    Text(description)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-
-                Spacer()
-
-                HStack(spacing: 12) {
-                    // Shuffle button - shuffles all artist's songs (fetches if needed)
-                    Button {
-                        Task {
-                            await self.shuffleAllSongs()
-                        }
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .disabled(detail.songs.isEmpty && !detail.hasMoreSongs)
-
-                    // Mix button - plays personalized radio with mix of artists
-                    // Only shown if mix data is available from the API
-                    // Passing nil for startVideoId lets the API pick a random starting point on the server
-                    // in addition to client-side shuffling applied when the mix tracks are played
-                    if let mixPlaylistId = detail.mixPlaylistId {
-                        Button {
-                            self.playMix(playlistId: mixPlaylistId, startVideoId: nil)
-                        } label: {
-                            Label("Mix", systemImage: "play.circle")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                    }
-
-                    // Subscribe button
-                    if detail.channelId != nil {
-                        self.subscribeButton(detail)
-                    }
-
-                    // The subscriber count keeps one quiet home, beside the action it qualifies: under
-                    // the name it competed with the monthly listeners for the same glance.
-                    if let subscriberCount = detail.subscriberCount {
-                        Text("\(subscriberCount) subscribers")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        )
         .task(id: detail.id) {
             await self.loadArtistLogo(detail)
         }
@@ -377,52 +297,6 @@ struct ArtistDetailView: View {
             String(localized: "New Album")
         case .single:
             String(localized: "New Single")
-        }
-    }
-
-    /// The button names the action alone: the count is stated once, beside it.
-    private func subscribeButtonText(_ detail: ArtistDetail) -> String {
-        detail.isSubscribed ? String(localized: "Subscribed") : String(localized: "Subscribe")
-    }
-
-    @ViewBuilder
-    private func subscribeButton(_ detail: ArtistDetail) -> some View {
-        if detail.isSubscribed {
-            Button {
-                HapticService.toggle()
-                Task {
-                    await self.viewModel.toggleSubscription()
-                }
-            } label: {
-                if self.viewModel.isSubscribing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Text(self.subscribeButtonText(detail))
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(self.viewModel.isSubscribing)
-        } else {
-            Button {
-                HapticService.toggle()
-                Task {
-                    await self.viewModel.toggleSubscription()
-                }
-            } label: {
-                if self.viewModel.isSubscribing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Text(self.subscribeButtonText(detail))
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(self.viewModel.isSubscribing)
         }
     }
 

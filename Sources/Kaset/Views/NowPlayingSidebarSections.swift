@@ -365,23 +365,36 @@ struct NowPlayingSidebarArtwork: View {
             : String(localized: "Play the animated canvas")
     }
 
+    /// The cover, drawn as an **overlay** on a flexible color rather than as a stack sibling.
+    ///
+    /// A `.resizable()` image with `aspectRatio(contentMode: .fill)` in a stack reports its *filled*
+    /// width as the smallest the slot may be: a 16:9 cover in the column's 300pt-tall artwork slot
+    /// measured 534pt wide, and the column took that — the media, the title block and both cards were laid
+    /// out 534 wide in a 300pt column and drawn past the window's right edge ("the whole sidebar goes past
+    /// the right edge with everything with it"). An overlay is offered the slot's size and cannot give one
+    /// back, so the cover can no longer widen the column — the same rule the wash behind the artwork
+    /// follows (`NowPlayingSidebarBackground`).
     private var artwork: some View {
-        CachedAsyncImage(
-            url: self.track?.thumbnailURL?.highQualityThumbnailURL,
-            fallbackURL: self.track?.thumbnailURL,
-            identity: self.track?.videoId,
-            targetSize: CGSize(
-                width: NowPlayingSidebarLayout.artworkMaxDimension,
-                height: NowPlayingSidebarLayout.artworkMaxDimension
-            )
-        ) { image in
-            image.resizable().aspectRatio(contentMode: .fill)
-        } placeholder: {
-            ZStack {
-                Rectangle().fill(.quaternary)
-                CassetteIcon(size: 76).foregroundStyle(.secondary)
+        Color.clear
+            .overlay {
+                CachedAsyncImage(
+                    url: self.track?.thumbnailURL?.highQualityThumbnailURL,
+                    fallbackURL: self.track?.thumbnailURL,
+                    identity: self.track?.videoId,
+                    targetSize: CGSize(
+                        width: NowPlayingSidebarLayout.artworkMaxDimension,
+                        height: NowPlayingSidebarLayout.artworkMaxDimension
+                    )
+                ) { image in
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    ZStack {
+                        Rectangle().fill(.quaternary)
+                        CassetteIcon(size: 76).foregroundStyle(.secondary)
+                    }
+                }
             }
-        }
+            .clipped()
     }
 
     private var accessibilityArtworkLabel: String {

@@ -584,10 +584,17 @@ struct NowPlayingSidebarView: View {
                 .padding(.leading, 8)
             }
         }
-        // The slot is the media's own height, and a video taller than it (a clamped portrait
-        // behind a square artwork) is clipped rather than shrunk: clipping leaves the WebView's
-        // frame alone, so the surface is the same size in both states.
+        // The slot is the column's width and the media's own height, and a video taller than it (a
+        // clamped portrait behind a square artwork) is clipped rather than shrunk: clipping leaves the
+        // WebView's frame alone, so the surface is the same size in both states.
+        //
+        // The width is stated, not left to `maxWidth: .infinity`: this is a child of the overview's
+        // `VStack`, so anything the media asks to be *wider* than the column — a cover whose filled width
+        // is larger than its slot, a video surface, the placeholder — would take the whole column with it
+        // (the title block and the cards are laid out at the stack's width) and be drawn past the window's
+        // right edge. See `NowPlayingSidebarArtwork.artwork`.
         .frame(
+            width: self.mediaWidth,
             height: self.playerService.isSidebarVideoShowing ? self.sidebarVideoHeight : self.artworkHeight,
             alignment: .bottomLeading
         )
