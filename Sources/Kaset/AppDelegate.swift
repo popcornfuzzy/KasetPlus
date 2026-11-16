@@ -221,6 +221,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.toolbarStyle = .unified
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        // Hidden from the start, before the window is ever shown.
+        //
+        // The page's name is a toolbar item beside its back control, and the window's own title is drawn
+        // as a view at the toolbar row's leading edge with every item laid out after it — so a title view
+        // that survives here shifts the whole bar off the content it belongs over. Stating the visibility
+        // while the window is still being built means AppKit never has a displayed window to build one for;
+        // the shell re-states it on every install in case something else puts a title back
+        // ([ADR-0053](../../docs/adr/0053-toolbar-row-placement.md)).
+        window.titleVisibility = .hidden
         window.contentMinSize = NSSize(width: 900, height: 600)
         // The delegate hides the window on close instead of closing it; a programmatically created
         // window is released on close by default, which would leave the shell's controller without a view.

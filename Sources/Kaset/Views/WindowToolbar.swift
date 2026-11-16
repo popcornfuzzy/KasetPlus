@@ -242,6 +242,52 @@ enum WindowToolbarItem {
     static let sidebarHeader = NSToolbarItem.Identifier("Kaset.toolbar.sidebarHeader")
 }
 
+// MARK: - ToolbarRowSnapshot
+
+/// What AppKit laid the toolbar's row out as, read back from the window's own view tree.
+///
+/// None of it is stated by the app, and all of it decides where the reader's controls are: AppKit draws
+/// the window's title as a view at the row's **leading edge** and lays every item after it, so a title view
+/// that survives the title being hidden pushes the whole bar — the sidebar toggle, the tracking separators,
+/// the back control and the page's name — out of the regions they belong over. The view classes are
+/// AppKit's and have no public API, so the row is read rather than assumed, and a title view found holding
+/// it is worked around (`WindowShellController.checkTitleSlot`).
+@available(macOS 26.0, *)
+enum ToolbarRowSnapshot {
+    struct Reading {
+        /// AppKit's title view, while it is in the row.
+        var titleView: NSView?
+        /// The leading edge of the first item AppKit laid out, or `nil` before the row has a layout.
+        var firstItemX: CGFloat?
+
+        var hasTitleView: Bool {
+            self.titleView != nil
+        }
+
+        /// The width the title view is holding in the row.
+        var titleViewWidth: CGFloat? {
+            self.titleView.map { $0.convert($0.bounds, to: nil).width }
+        }
+    }
+
+    /// Reads `view` and everything under it.
+    static func read(_ view: NSView) -> Reading {
+        var reading = Reading()
+        func walk(_ view: NSView) {
+            let frame = view.convert(view.bounds, to: nil)
+            let name = NSStringFromClass(type(of: view))
+            if name.contains("ToolbarTitleView") {
+                reading.titleView = reading.titleView ?? view
+            } else if name.contains("ToolbarItemViewer") {
+                reading.firstItemX = min(reading.firstItemX ?? .greatestFiniteMagnitude, frame.minX)
+            }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(view)
+        return reading
+    }
+}
+
 // MARK: - WindowToolbarController
 
 /// The window's toolbar: an `NSToolbar` the app owns, whose delegate this is.
@@ -258,12 +304,10 @@ enum WindowToolbarItem {
 ///
 /// ## What it does not do
 ///
-/// It does not find, measure or position anything. The separators are AppKit's standard ones —
-/// `NSToolbarSidebarTrackingSeparatorItemIdentifier` and
-/// `NSToolbarInspectorTrackingSeparatorItemIdentifier`, which "automatically configure themselves to
-/// track the divider of the sidebar/inspector if one is discovered". The shell (`WindowShellController`)
-/// provides a real `sidebarWithViewController:` item and a real `inspectorWithViewController:` item, which
-/// are exactly what gets discovered. The app states only whether it has an open inspector at all.
+/// It does not find, measure or position anything. Each tracking separator is an
+/// `NSTrackingSeparatorToolbarItem` created against the shell's own split view and divider index
+/// (`trackedSplitView`), rather than a standard separator AppKit has to discover from the window. The app
+/// states only whether it has an open inspector at all.
 @available(macOS 26.0, *)
 @MainActor
 final class WindowToolbarController: NSObject, NSToolbarDelegate {
@@ -458,6 +502,16 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
             + "ids=[\(identifiers)]"
     }
 
+    /// The split view the two tracking separators are bound to.
+    ///
+    /// Left to itself AppKit aligns `.sidebarTrackingSeparator` / `.inspectorTrackingSeparator` with a
+    /// split view it *discovers* — and the app states its item list before the toolbar goes into the
+    /// window, so discovery has to catch up. Stated as `NSTrackingSeparatorToolbarItem`s instead, each
+    /// separator is told its split view and divider index when it is created, which is the API's own answer
+    /// for a window whose page is bounded by two dividers
+    /// ([ADR-0053](../../docs/adr/0053-toolbar-row-placement.md)).
+    weak var trackedSplitView: NSSplitView?
+
     /// Invoked by the toolbar's Now Playing toggle.
     ///
     /// Wired by the shell to its own `NSSplitViewController.toggleInspector(_:)`, so the item's action is
@@ -509,6 +563,19 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
         willBeInsertedIntoToolbar _: Bool
     ) -> NSToolbarItem? {
         switch identifier {
+        case .sidebarTrackingSeparator, .inspectorTrackingSeparator:
+            // The app's own item when it has a split view to track; `nil` (AppKit's standard one) when it
+            // has not, which is what a controller built without a shell gets.
+            guard let splitView = self.trackedSplitView else { return nil }
+            // The shell's three panes put the navigation sidebar's divider first, the Now Playing
+            // column's second.
+            let divider = identifier == .sidebarTrackingSeparator ? 0 : 1
+            return NSTrackingSeparatorToolbarItem(
+                identifier: identifier,
+                splitView: splitView,
+                dividerIndex: divider
+            )
+
         case WindowToolbarItem.back:
             let item = NSToolbarItem(itemIdentifier: identifier)
             item.image = NSImage(

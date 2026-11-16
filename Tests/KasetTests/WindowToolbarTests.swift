@@ -439,7 +439,8 @@ struct WindowToolbarGeometryTests {
     private func host(
         tracksColumn: Bool,
         showsAI: Bool = false,
-        hasPageControls: Bool = false
+        hasPageControls: Bool = false,
+        canGoBack: Bool = false
     ) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.windowWidth, height: 800),
@@ -480,8 +481,8 @@ struct WindowToolbarGeometryTests {
                 tracksColumn: tracksColumn,
                 showsAI: showsAI,
                 showsNowPlayingToggle: true,
-                canGoBack: false,
-                pageTitle: "Home",
+                canGoBack: canGoBack,
+                pageTitle: canGoBack ? "Album" : "Home",
                 pageControls: hasPageControls
                     ? PageToolbarContribution(id: "geometry-test", content: AnyView(Button("Search") {}))
                     : nil,
@@ -506,14 +507,24 @@ struct WindowToolbarGeometryTests {
     }
 
     /// The Now Playing toggle's frame in window coordinates, or `nil` while the toolbar has none.
-    ///
-    /// The button is matched by the label of the item the app stated for it, so the lookup does not
-    /// depend on a localized string or on a private view class.
     private func toggleFrame(in window: NSWindow) -> NSRect? {
-        guard let label = window.toolbar?.items
-            .first(where: { $0.itemIdentifier == WindowToolbarItem.nowPlaying })?
-            .label
-        else { return nil }
+        self.frame(ofItem: WindowToolbarItem.nowPlaying, in: window)
+    }
+
+    /// A toolbar item's control, in window coordinates, found by the item's own label.
+    ///
+    /// Matched by the label of the item the app stated, so the lookup does not depend on a localized
+    /// string or on a private view class.
+    private func frame(ofItem identifier: NSToolbarItem.Identifier, in window: NSWindow) -> NSRect? {
+        guard let item = window.toolbar?.items.first(where: { $0.itemIdentifier == identifier }) else {
+            return nil
+        }
+        // A hosted item (the page's name, the column's header, the page's controls) has a view of the
+        // app's own, so its frame is the item's. A system-drawn one has none and is found by its label.
+        if let hosted = item.view, hosted.window != nil {
+            return hosted.convert(hosted.bounds, to: nil)
+        }
+        let label = item.label
         guard let root = window.contentView?.superview else { return nil }
 
         var found: NSRect?
@@ -569,5 +580,256 @@ struct WindowToolbarGeometryTests {
         let toggle = try #require(self.toggleFrame(in: window), "the toolbar drew no Now Playing toggle")
         self.assertTrailing(toggle, in: window, "closed column, Ask AI and page controls")
     }
+
+    /// The reported macOS 26 defect, stated as the number it is: the back control and the page's name are
+    /// laid out **after** the window's title view, so a title view left in the row moves them — and every
+    /// item after them — towards the right-hand run. At 1240pt with the sidebar at its 200pt minimum they
+    /// lead the page's region at x=187/229. With a title view ahead of them they measured x=347/391, beside
+    /// the page's other controls.
+    @Test("A pushed page's back control and name lead the page's region, not the right-hand run")
+    func backControlLeadsThePageRegion() throws {
+        let window = self.host(tracksColumn: false, canGoBack: true)
+        defer { window.orderOut(nil) }
+
+        let back = try #require(
+            self.frame(ofItem: WindowToolbarItem.back, in: window),
+            "the toolbar drew no back control"
+        )
+        // The region starts at the sidebar's divider: a page at its 200pt minimum puts every item it
+        // leads in the first third of a 1240pt window. The number that matters is that it is not in the
+        // right-hand run — where the failure puts it.
+        #expect(
+            back.minX < Self.windowWidth / 3,
+            "the back control sits at x=\(Int(back.minX)) — laid out after the window's title view"
+        )
+
+        let title = try #require(
+            self.frame(ofItem: WindowToolbarItem.pageTitle, in: window),
+            "the toolbar drew no page name"
+        )
+        #expect(title.minX < Self.windowWidth / 2, "the page's name sits at x=\(Int(title.minX))")
+        #expect(back.maxX <= title.minX, "the name is not beside the control it belongs to")
+    }
+
+    /// The row itself: with the title hidden there must be no title view ahead of the items, and the first
+    /// item must start at the window's leading edge. This is AppKit's state, not the app's, which is why it
+    /// is read out of the window's view tree (`ToolbarRowSnapshot`) and asserted here.
+    @Test("A hidden title leaves no title view in the toolbar's row")
+    func hiddenTitleLeavesNoTitleViewInTheRow() throws {
+        let window = self.host(tracksColumn: true)
+        defer { window.orderOut(nil) }
+        let root = try #require(window.contentView?.superview)
+        let reading = ToolbarRowSnapshot.read(root)
+        #expect(
+            !reading.hasTitleView,
+            "AppKit kept a \(Int(reading.titleViewWidth ?? 0))pt title view in the row while the title is hidden"
+        )
+        let first = try #require(reading.firstItemX, "the toolbar laid no items out")
+        #expect(first < 140, "the row's first item starts at x=\(Int(first)), not at the window's leading edge")
+    }
+
+    /// What the repair in `WindowShellController.checkTitleSlot` has to see: AppKit's own title
+    /// view, found in the row it holds. With the title hidden on macOS 27 there is nothing to find — which
+    /// is why the repair is a no-op here — so the view has to be raised by showing the title.
+    @Test("The row's title view is found where AppKit draws one, and not while the title is hidden")
+    func titleViewIsFound() throws {
+        let window = self.host(tracksColumn: false, canGoBack: true)
+        defer { window.orderOut(nil) }
+        let root = try #require(window.contentView?.superview)
+
+        #expect(ToolbarRowSnapshot.read(root).titleView == nil, "a hidden title left a view to drop")
+
+        window.titleVisibility = .visible
+        self.pump()
+
+        let reading = ToolbarRowSnapshot.read(root)
+        let titleView = try #require(reading.titleView, "the row holds a title but the read did not see it")
+        #expect(titleView.convert(titleView.bounds, to: nil).width > 100, "the title view has no width to reclaim")
+    }
+
+    /// The repair's lever, measured: the page's name is drawn after the title view, so stating the title
+    /// hidden is what moves it — and the page's region with it. Touching the view itself does not: hiding
+    /// it leaves the frame the row was laid out around, and AppKit reinstates a removed one (both measured),
+    /// which is why `checkTitleSlot` re-states the visibility and rebuilds the toolbar rather than
+    /// reaching into AppKit's hierarchy.
+    @Test("Stating the title hidden is what moves the page's name back to the leading edge")
+    func hiddenTitleMovesThePageNameBack() throws {
+        let window = self.host(tracksColumn: false, canGoBack: true)
+        defer { window.orderOut(nil) }
+        let root = try #require(window.contentView?.superview)
+
+        let leading = try #require(self.frame(ofItem: WindowToolbarItem.pageTitle, in: window))
+
+        // The state the repair exists for: a title view in the row, with the page's name laid out after
+        // it — the reported "buttons and title in the wrong place".
+        window.titleVisibility = .visible
+        self.pump()
+        let shifted = try #require(self.frame(ofItem: WindowToolbarItem.pageTitle, in: window))
+        #expect(ToolbarRowSnapshot.read(root).hasTitleView)
+        #expect(
+            shifted.minX > leading.minX + 100,
+            "the name sits at x=\(Int(shifted.minX)) — the title view did not move it"
+        )
+
+        window.titleVisibility = .hidden
+        self.pump()
+
+        #expect(!ToolbarRowSnapshot.read(root).hasTitleView)
+        let moved = try #require(self.frame(ofItem: WindowToolbarItem.pageTitle, in: window))
+        #expect(
+            abs(moved.minX - leading.minX) < 20,
+            "the name is back at x=\(Int(moved.minX)), not where the app placed it (x=\(Int(leading.minX)))"
+        )
+        #expect(moved.minX < Self.windowWidth / 2)
+    }
 }
 
+// MARK: - Title slot repair
+
+/// What the repair is allowed to act on.
+///
+/// It runs a runloop turn after the install that asked for it, so by then the shell can have been handed to
+/// another window, or the window's toolbar can be something else's. Reconfiguring either would strip a
+/// toolbar from a window the app no longer draws, or fight whatever replaced the app's.
+@Suite("Toolbar title slot repair", .serialized)
+@MainActor
+struct ToolbarTitleSlotRepairTests {
+    /// The shell hosted in its own window, with the app's toolbar installed.
+    private func host() async -> (window: NSWindow, shell: WindowShellController) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.toolbarStyle = .unified
+        window.titleVisibility = .hidden
+        window.isReleasedWhenClosed = false
+        // Not on the desktop: the window only has to exist for AppKit to lay it out.
+        window.alphaValue = 0
+        window.collectionBehavior = [.transient, .ignoresCycle]
+        let shell = WindowShellController()
+        window.contentViewController = shell
+        window.orderBack(nil)
+
+        // The install is deferred by one main-actor turn, so the toolbar arrives after a layout pass.
+        try? await Task.sleep(for: .milliseconds(400))
+        window.layoutIfNeeded()
+        return (window, shell)
+    }
+
+    @Test("It acts on the window it is hosting, and not over a toolbar it does not own")
+    func actsOnlyOnItsOwnToolbar() async {
+        let (window, shell) = await self.host()
+        defer { window.orderOut(nil) }
+        #expect(
+            window.toolbar?.identifier == WindowToolbarController.toolbarIdentifier,
+            "the shell did not install the app's toolbar"
+        )
+        #expect(
+            shell.hostedWindow(window) === window,
+            "the shell would not act on the window it is hosting"
+        )
+
+        window.toolbar = NSToolbar(identifier: NSToolbar.Identifier("Kaset.tests.foreign"))
+        #expect(
+            shell.hostedWindow(window) == nil,
+            "the shell would reconfigure a toolbar that is not the app's"
+        )
+    }
+
+    @Test("A window the shell no longer hosts is not acted on")
+    func doesNotActOnAWindowItLeft() async {
+        let (window, shell) = await self.host()
+        defer { window.orderOut(nil) }
+
+        window.contentViewController = NSViewController()
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(
+            shell.hostedWindow(window) == nil,
+            "the shell would reconfigure a window it no longer hosts"
+        )
+    }
+}
+
+// MARK: - Tracking separators
+
+/// The two separators that bound the page's region.
+///
+/// Left to itself AppKit aligns the standard separator identifiers with a split view it *discovers*, and the
+/// app states its item list before the toolbar goes into the window. The app states each separator's split
+/// view and divider index instead, so the region a page's controls are laid out in is the app's statement
+/// rather than AppKit's inference — the piece of this bar that can differ between macOS versions.
+@Suite("Toolbar tracking separators")
+@MainActor
+struct WindowToolbarTrackingSeparatorTests {
+    private func controller(tracking splitView: NSSplitView?) -> WindowToolbarController {
+        let controller = WindowToolbarController()
+        controller.trackedSplitView = splitView
+        controller.apply(
+            items: WindowToolbarItems(
+                tracksColumn: true,
+                showsAI: false,
+                showsNowPlayingToggle: true,
+                canGoBack: true,
+                pageTitle: "Album",
+                pageControls: nil,
+                sidebarHeader: nil,
+                onBack: {},
+                onAI: {}
+            ),
+            onAI: {}
+        )
+        return controller
+    }
+
+    @Test("Each separator is an item bound to the shell's own divider")
+    func separatorsAreBoundToTheShellsDividers() throws {
+        let split = NSSplitViewController()
+        split.addSplitViewItem(NSSplitViewItem(viewController: NSViewController()))
+        split.addSplitViewItem(NSSplitViewItem(viewController: NSViewController()))
+        split.addSplitViewItem(NSSplitViewItem(inspectorWithViewController: NSViewController()))
+        let controller = self.controller(tracking: split.splitView)
+        let toolbar = NSToolbar(identifier: NSToolbar.Identifier("Kaset.tests.separators"))
+
+        let sidebar = try #require(
+            controller.toolbar(
+                toolbar,
+                itemForItemIdentifier: .sidebarTrackingSeparator,
+                willBeInsertedIntoToolbar: true
+            ) as? NSTrackingSeparatorToolbarItem
+        )
+        #expect(sidebar.dividerIndex == 0, "the sidebar's divider is the first")
+        #expect(sidebar.splitView === split.splitView)
+
+        let column = try #require(
+            controller.toolbar(
+                toolbar,
+                itemForItemIdentifier: .inspectorTrackingSeparator,
+                willBeInsertedIntoToolbar: true
+            ) as? NSTrackingSeparatorToolbarItem
+        )
+        #expect(column.dividerIndex == 1, "the column's divider is the second")
+        #expect(column.splitView === split.splitView)
+    }
+
+    @Test("A controller with no split view leaves the separators to AppKit")
+    func noSplitViewLeavesTheStandardSeparators() {
+        let controller = self.controller(tracking: nil)
+        let toolbar = NSToolbar(identifier: NSToolbar.Identifier("Kaset.tests.separators.none"))
+        #expect(
+            controller.toolbar(
+                toolbar,
+                itemForItemIdentifier: .sidebarTrackingSeparator,
+                willBeInsertedIntoToolbar: true
+            ) == nil
+        )
+        #expect(
+            controller.toolbar(
+                toolbar,
+                itemForItemIdentifier: .inspectorTrackingSeparator,
+                willBeInsertedIntoToolbar: true
+            ) == nil
+        )
+    }
+}

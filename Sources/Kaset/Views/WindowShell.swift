@@ -299,6 +299,8 @@ final class WindowShellController: NSSplitViewController {
     private var inspectorCollapseObservation: NSKeyValueObservation?
     /// Watches for anything putting its own toolbar in the window (see `observeToolbarTakeover`).
     private var toolbarObservation: NSKeyValueObservation?
+    /// A title view AppKit left in the row is being worked around (see `checkTitleSlot`).
+    private var pendingTitleSlotRepair: Task<Void, Never>?
 
     // MARK: - Diagnostics state
 
@@ -327,6 +329,9 @@ final class WindowShellController: NSSplitViewController {
             self?.toggleNowPlayingColumn()
         }
         self.configureSplitView()
+        // The toolbar's two tracking separators are stated against this controller's split view rather than
+        // discovered by AppKit (see `WindowToolbarController.trackedSplitView`).
+        self.toolbarController.trackedSplitView = self.splitView
     }
 
     /// Collapses or expands the Now Playing column with AppKit's own animation.
@@ -382,6 +387,8 @@ final class WindowShellController: NSSplitViewController {
 
     override func viewDidDisappear() {
         super.viewDidDisappear()
+        self.pendingTitleSlotRepair?.cancel()
+        self.pendingTitleSlotRepair = nil
         self.barBackdrop.remove()
     }
 
@@ -1293,7 +1300,98 @@ final class WindowShellController: NSSplitViewController {
             // Taking the toolbar back also takes the title back, so the one rule about the region's leading
             // slot is re-stated here rather than left to the next layout pass.
             self.applyTitleVisibility()
+            self.checkTitleSlot(in: window)
         }
+    }
+
+    /// Reads what AppKit laid the bar out as, and works the bar out of a title view still holding the row.
+    ///
+    /// Hiding the title is the whole of the placement rule ([ADR-0034](../../docs/adr/0034-shell-owned-window-title.md)):
+    /// AppKit draws the window's title as a view at the row's **leading edge** and lays every item after
+    /// it, so the title view's absence is what puts the back control and the page's name at the leading
+    /// edge of the page's region. macOS 27 removes the view when the visibility is stated; a version that
+    /// leaves it behind shifts the whole bar — the back control, the page's name and both tracking
+    /// separators — which is the reported macOS 26 defect ([ADR-0053](../../docs/adr/0053-toolbar-row-placement.md)).
+    ///
+    /// The row is read once per install and the reading is logged: `titleView=none firstItemX=92` is a bar
+    /// placed by the app's rule. A title view found holding the row is worked around in the only step that
+    /// moves it — measured on macOS 27, in a window whose title is visible:
+    ///
+    /// | statement | title view | first item |
+    /// |---|---|---|
+    /// | (none) | 160pt | x=252 |
+    /// | `titleView.isHidden = true` | 160pt | x=252 |
+    /// | `titleView.removeFromSuperview()` | 160pt | x=252 |
+    /// | `window.titleVisibility = .hidden` | none | x=92 |
+    ///
+    /// Hiding the view keeps the frame the row was laid out around, and AppKit reinstates a removed one, so
+    /// the repair re-states the visibility and, if the view survives that, re-installs the toolbar with the
+    /// title already hidden. On a version that removes the view, the read finds nothing and this is a
+    /// measured no-op: no writes, no task, no layout.
+    private func checkTitleSlot(in window: NSWindow) {
+        guard let row = self.toolbarRow(in: window) else { return }
+        let title = row.titleViewWidth.map { "\(Int($0))" } ?? "none"
+        let first = row.firstItemX.map { "\(Int($0))" } ?? "none"
+        let visibility = window.titleVisibility == .hidden ? "hidden" : "visible"
+        let message = "Toolbar row: titleView=\(title) firstItemX=\(first) titleVisibility=\(visibility)"
+        self.logger.debug("\(message, privacy: .public)")
+
+        guard window.titleVisibility == .hidden, row.hasTitleView else { return }
+        // One repair owns the row: an install during it must not start a second one.
+        guard self.pendingTitleSlotRepair == nil else { return }
+        self.logger.notice(
+            "Toolbar row: a \(Int(row.titleViewWidth ?? 0))pt title view is holding the row while the title is hidden"
+        )
+
+        self.pendingTitleSlotRepair = Task { @MainActor [weak self, weak window] in
+            guard let window else { return }
+            // Step one, public API only: a real change of value, written and reverted in one turn so the
+            // layout between them is never drawn.
+            window.titleVisibility = .visible
+            window.titleVisibility = .hidden
+            try? await Task.sleep(for: .milliseconds(60))
+
+            guard let self else { return }
+            defer { self.pendingTitleSlotRepair = nil }
+            guard !Task.isCancelled, let window = self.hostedWindow(window) else { return }
+            if self.toolbarRow(in: window)?.hasTitleView != true {
+                self.logger.notice("Toolbar row repaired: re-stating the hidden title dropped its view")
+                return
+            }
+
+            // Step two: the window is given a toolbar built while the title is already hidden — AppKit
+            // lays the row out when the toolbar arrives, so a version that decides the title slot then is
+            // handed the state the app means.
+            self.logger.notice("Toolbar row: re-installing the toolbar with the title hidden")
+            window.toolbar = nil
+            self.toolbarController.install(in: window)
+            window.titleVisibility = .hidden
+            try? await Task.sleep(for: .milliseconds(60))
+
+            guard !Task.isCancelled, let window = self.hostedWindow(window) else { return }
+            let after = self.toolbarRow(in: window)
+            let title = after?.titleViewWidth.map { "\(Int($0))" } ?? "none"
+            let first = after?.firstItemX.map { "\(Int($0))" } ?? "none"
+            self.logger.notice("Toolbar row repaired: titleView=\(title) firstItemX=\(first)")
+        }
+    }
+
+    /// The window this shell is still hosting the bar of, or `nil` when it is not.
+    ///
+    /// The repair acts a runloop turn after the install that asked for it, and in that turn the shell can be
+    /// handed to another window, or have its toolbar replaced by something else. Acting then would strip the
+    /// toolbar from a window the app no longer draws, or fight the toolbar that replaced it.
+    func hostedWindow(_ window: NSWindow?) -> NSWindow? {
+        guard let window, self.view.window === window, self.toolbarController.ownsToolbar(of: window) else {
+            return nil
+        }
+        return window
+    }
+
+    /// The toolbar row of a window this shell hosts.
+    private func toolbarRow(in window: NSWindow) -> ToolbarRowSnapshot.Reading? {
+        guard let root = window.contentView?.superview else { return nil }
+        return ToolbarRowSnapshot.read(root)
     }
 
     /// Re-takes the window's toolbar the moment anything else puts its own there.

@@ -4,7 +4,8 @@
 
 Accepted. The window's chrome is superseded by [ADR-0035](0035-standard-window-chrome.md) (opaque
 window, transparent titlebar, full-height panes, system-owned bar); the split-view shell and app-owned
-toolbar item list stand.
+toolbar item list stand. The toolbar row's leading slot and the binding of its tracking separators are
+restated in [ADR-0053](0053-toolbar-row-placement.md) for macOS 26.
 
 ## Context
 
