@@ -94,6 +94,148 @@ struct SearchViewModelTests {
         #expect(self.viewModel.selectedFilter == .all)
     }
 
+    // MARK: - Suggestions
+
+    @Test("Accepting a suggestion runs the search for its text right away")
+    func acceptingSuggestionSearchesImmediately() async throws {
+        self.viewModel.query = "beat"
+
+        self.viewModel.accept(query: "beatles help")
+
+        #expect(self.viewModel.query == "beatles help")
+        #expect(self.viewModel.isSuggestionsVisible == false)
+
+        try await self.waitForSearch()
+        #expect(self.mockClient.searchQueries == ["beatles help"])
+    }
+
+    @Test("Typing again reopens the panel after a suggestion ran")
+    func typingReopensSuggestionsAfterAccept() {
+        self.viewModel.accept(query: "beatles")
+        #expect(self.viewModel.isSuggestionsVisible == false)
+
+        self.viewModel.query = "beatles help"
+
+        #expect(self.viewModel.isSuggestionsVisible == true)
+    }
+
+    @Test("Suggestion rows start with the typed query and drop repeats")
+    func suggestionRowsStartWithTypedQuery() async throws {
+        self.mockClient.searchSuggestions = [
+            SearchSuggestion(query: "beatles"),
+            SearchSuggestion(query: "beatles help"),
+            SearchSuggestion(query: "beatles help"),
+            SearchSuggestion(query: "beatlemania"),
+        ]
+
+        self.viewModel.query = "Beatles"
+        try await self.waitForSuggestions()
+
+        #expect(self.viewModel.suggestionRows == ["Beatles", "beatles help", "beatlemania"])
+    }
+
+    @Test("Dismissing the suggestions hides the panel without clearing the query")
+    func dismissSuggestionsKeepsQuery() {
+        self.viewModel.query = "daft punk"
+
+        self.viewModel.dismissSuggestions()
+
+        #expect(self.viewModel.query == "daft punk")
+        #expect(self.viewModel.isSuggestionsVisible == false)
+    }
+
+    @Test("Search trims the whitespace around the query")
+    func searchTrimsWhitespace() async throws {
+        self.viewModel.query = "  daft punk  "
+        self.viewModel.search()
+
+        try await self.waitForSearch()
+        #expect(self.mockClient.searchQueries == ["daft punk"])
+    }
+
+    @Test("Search with no suggestions still offers the typed query")
+    func suggestionRowsAlwaysHoldTheQuery() {
+        self.viewModel.query = "midnights"
+
+        #expect(self.viewModel.suggestionRows == ["midnights"])
+    }
+
+    @Test("Refining the query keeps the results already on screen")
+    func refiningQueryKeepsResults() async throws {
+        self.mockClient.searchResponse = TestFixtures.makeSearchResponse(
+            songCount: 3,
+            albumCount: 0,
+            artistCount: 0,
+            playlistCount: 0
+        )
+
+        self.viewModel.query = "daft"
+        self.viewModel.search()
+        try await self.waitForLoaded()
+        #expect(self.viewModel.results.allItems.count == 3)
+
+        self.viewModel.query = "daft punk"
+
+        #expect(self.viewModel.results.allItems.count == 3)
+        #expect(self.viewModel.loadingState == .loaded)
+    }
+
+    @Test("A new search keeps the old results until the response lands")
+    func searchingKeepsOldResultsWhileLoading() async throws {
+        self.mockClient.searchResponse = TestFixtures.makeSearchResponse(
+            songCount: 2,
+            albumCount: 0,
+            artistCount: 0,
+            playlistCount: 0
+        )
+
+        self.viewModel.query = "daft"
+        self.viewModel.search()
+        try await self.waitForLoaded()
+
+        self.viewModel.query = "daft punk"
+        self.viewModel.search()
+
+        #expect(self.viewModel.loadingState == .loading)
+        #expect(self.viewModel.results.allItems.count == 2)
+    }
+
+    @Test("A whitespace-only query opens no panel")
+    func whitespaceQueryHidesPanel() {
+        self.viewModel.query = "   "
+
+        #expect(self.viewModel.isSuggestionsVisible == false)
+        #expect(self.viewModel.suggestionRows.isEmpty)
+    }
+
+    // MARK: - Helpers
+
+    /// Waits for the debounced suggestion fetch the mock answers instantly once it is asked.
+    private func waitForSuggestions() async throws {
+        for _ in 0 ..< 60 {
+            if self.mockClient.getSearchSuggestionsCalled, self.viewModel.suggestionRows.count > 1 {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Waits for a search task to reach the mock, which answers without a network hop.
+    private func waitForSearch() async throws {
+        for _ in 0 ..< 60 {
+            if self.mockClient.searchCalled { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// Waits for a search the mock answers instantly to publish its results.
+    private func waitForLoaded() async throws {
+        for _ in 0 ..< 60 {
+            if self.viewModel.loadingState == .loaded { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     @Test("Can set filter to podcasts")
     func canSetFilterToPodcasts() {
         self.viewModel.selectedFilter = .podcasts

@@ -906,9 +906,13 @@ The app uses Apple's **Liquid Glass** design language introduced in macOS 26.
 | `Sidebar` | AppKit's `sidebarWithViewController:` material (no hand-rolled effect view) |
 | `FullscreenPodcastView` top bar | `GlassEffectContainer` + `.glassEffect(.regular.interactive(), in: .circle)` (close, transcript toggle) and `.capsule` (volume) |
 | `QueueView` / `LyricsView` | `.glassEffectTransition(.materialize)` |
-| Search field | `.glassEffect(.regular, in: .capsule)` |
-| Search suggestions | `.glassEffect(.regular, in: .rect(cornerRadius: 8))` |
+
 | Playlist/album header action row | `.buttonStyle(.glassProminent)` (Play) and `.buttonStyle(.glass)` (Shuffle, the secondary actions); the overflow "…" control is drawn by the row — `.buttonStyle(.plain)` + `.menuIndicator(.hidden)` + `.glassEffect(.regular.interactive(), in: .capsule)` on a labelled `Image` whose `.contentShape(.rect)` is what makes the whole 46 × 26 pt capsule clickable rather than just the glyph — because no menu or button style gives a `Menu` that look. See [ADR-0033](adr/0033-playlist-header-action-row.md) |
+
+Search is the one place that opts out: its field and the completions under it are a single flat card
+— a `controlBackgroundColor` fill, a hairline and a 14 pt corner — so the list reads as part of the
+field rather than a second floating layer. The card grows downward as an overlay, leaving the page's
+layout alone. See [ADR-0054](adr/0054-search-suggestion-list.md).
 
 ### Glass Effect Best Practices
 

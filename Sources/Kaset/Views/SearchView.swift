@@ -17,8 +17,8 @@ struct SearchView: View {
 
     @FocusState private var isSearchFieldFocused: Bool
 
-    /// Index of currently selected suggestion for keyboard navigation.
-    @State private var selectedSuggestionIndex: Int = -1
+    /// The suggestion row the pointer or the arrow keys are on; `-1` is the field itself.
+    @State private var highlightedSuggestionIndex: Int = -1
 
     /// Id of the result row the arrow keys are currently on, once they have moved into the results.
     @State private var selectedResultID: String?
@@ -37,14 +37,21 @@ struct SearchView: View {
 
     var body: some View {
         PageNavigationStack(id: "search", path: self.$navigationPath) {
-            VStack(spacing: 0) {
-                // Search bar
-                self.searchBar
+            ZStack(alignment: .top) {
+                VStack(spacing: 0) {
+                    // The bar's footprint. The card itself is a sibling of the page, below, so its fill
+                    // is never clipped to the bar's bounds.
+                    self.searchBarSpace
 
-                Divider()
+                    Divider()
 
-                // Content
-                self.contentView
+                    // Content
+                    self.contentView
+                }
+
+                self.searchSurface
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
             }
             .pageTitle(id: "search", title: String(localized: "Search"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
@@ -67,18 +74,29 @@ struct SearchView: View {
 
     // MARK: - Search Bar
 
-    private var searchBar: some View {
-        VStack(spacing: 12) {
-            ZStack(alignment: .top) {
-                // Search field
-                self.searchField
+    /// The bar's geometry: one card holds the field row and, while it is open, the list under it.
+    private enum SearchBarMetrics {
+        static let fieldHeight: CGFloat = 40
+        static let cornerRadius: CGFloat = 14
+    }
 
-                // Suggestions dropdown
-                if self.viewModel.showSuggestions {
-                    self.suggestionsDropdown
-                        .padding(.top, 44) // Below search field
-                }
-            }
+    /// Whether the completion list is on screen: the field is being edited and the query has not
+    /// been run or dismissed since the last edit.
+    private var showsSuggestionList: Bool {
+        self.isSearchFieldFocused && self.viewModel.isSuggestionsVisible
+    }
+
+    /// Whether a search is in flight; the field's leading slot shows its progress.
+    private var isSearching: Bool {
+        self.viewModel.loadingState == .loading
+    }
+
+    /// The bar's place in the page: the field's height, and the chips once there are results. The
+    /// surface is drawn over it, so opening the completions never moves anything below.
+    private var searchBarSpace: some View {
+        VStack(spacing: 12) {
+            Color.clear
+                .frame(height: SearchBarMetrics.fieldHeight)
 
             // Filter chips
             if !self.viewModel.results.isEmpty {
@@ -88,46 +106,86 @@ struct SearchView: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
         .onChange(of: self.viewModel.query) { _, _ in
-            self.selectedSuggestionIndex = -1
+            // The result cursor belongs to the text it was walked through.
             self.selectedResultID = nil
-            self.viewModel.fetchSuggestions()
         }
-        .onChange(of: self.viewModel.suggestions) { _, _ in
-            self.selectedSuggestionIndex = -1
+        .onChange(of: self.viewModel.suggestionRows) { _, _ in
+            self.highlightedSuggestionIndex = -1
         }
         .onChange(of: self.viewModel.selectedFilter) { _, _ in
             self.selectedResultID = nil
         }
     }
 
+    /// The field and its completions as one surface: a single card that is the search field while
+    /// closed and the field plus its list while open, so the suggestions cannot read as a second
+    /// floating panel. Flat on purpose — a solid control surface and a hairline, not glass.
+    private var searchSurface: some View {
+        VStack(spacing: 0) {
+            self.searchField
+
+            if self.showsSuggestionList {
+                Rectangle()
+                    .fill(.primary.opacity(0.07))
+                    .frame(height: 1)
+                    .transition(.opacity)
+
+                SearchSuggestionList(
+                    rows: self.viewModel.suggestionRows,
+                    highlightedIndex: self.highlightedSuggestionIndex,
+                    onHighlight: { self.highlightedSuggestionIndex = $0 },
+                    onRun: { self.runSearch($0) }
+                )
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: SearchBarMetrics.cornerRadius, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        }
+        .clipShape(.rect(cornerRadius: SearchBarMetrics.cornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: SearchBarMetrics.cornerRadius, style: .continuous)
+                .strokeBorder(.primary.opacity(0.08), lineWidth: 1)
+        }
+        // Only while the card is open: a closed field is part of the page, an open one floats over it.
+        .shadow(color: .black.opacity(self.showsSuggestionList ? 0.18 : 0), radius: 18, x: 0, y: 8)
+        .animation(AppAnimation.snappy, value: self.showsSuggestionList)
+    }
+
     private var searchField: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            // The leading slot doubles as the search's progress: it swaps in place, so a search
+            // starting never pushes the text around.
+            ZStack {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .opacity(self.isSearching ? 0 : 1)
+
+                if self.isSearching {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+            .frame(width: 16, height: 16)
+            .animation(AppAnimation.quick, value: self.isSearching)
 
             TextField(String(localized: "Search songs, albums, artists..."), text: self.$viewModel.query)
                 .textFieldStyle(.plain)
+                .font(.system(size: 14))
                 .focused(self.$isSearchFieldFocused)
+                .accessibilityIdentifier(AccessibilityID.Search.searchField)
                 .onSubmit {
                     HapticService.success()
-                    if self.selectedSuggestionIndex >= 0,
-                       self.selectedSuggestionIndex < self.viewModel.suggestions.count
-                    {
-                        let suggestion = self.viewModel.suggestions[self.selectedSuggestionIndex]
-                        self.searchHistory.record(suggestion.query)
-                        self.viewModel.selectSuggestion(suggestion)
-                    } else if let item = self.selectedResult {
-                        self.handleItemTap(item)
-                    } else {
-                        self.searchHistory.record(self.viewModel.query)
-                        self.viewModel.search()
-                    }
+                    self.submitFromField()
                 }
                 .onKeyPress(.downArrow) {
-                    if self.viewModel.showSuggestions {
-                        self.selectedSuggestionIndex = min(
-                            self.selectedSuggestionIndex + 1,
-                            self.viewModel.suggestions.count - 1
+                    if self.showsSuggestionList {
+                        self.highlightedSuggestionIndex = min(
+                            self.highlightedSuggestionIndex + 1,
+                            self.viewModel.suggestionRows.count - 1
                         )
                         return .handled
                     }
@@ -136,78 +194,53 @@ struct SearchView: View {
                     return .handled
                 }
                 .onKeyPress(.upArrow) {
-                    if self.viewModel.showSuggestions {
-                        self.selectedSuggestionIndex = max(self.selectedSuggestionIndex - 1, -1)
+                    if self.showsSuggestionList {
+                        self.highlightedSuggestionIndex = max(self.highlightedSuggestionIndex - 1, -1)
                         return .handled
                     }
                     guard self.selectedResultID != nil else { return .ignored }
                     self.moveResultSelection(by: -1)
                     return .handled
                 }
+                .onKeyPress(.tab) {
+                    // Completion, not a search: the field takes the rest of the row and the list
+                    // stays open for the next word.
+                    guard self.showsSuggestionList else { return .ignored }
+                    let rows = self.viewModel.suggestionRows
+                    guard rows.count > 1 else { return .ignored }
+                    self.viewModel.query = rows[min(max(self.highlightedSuggestionIndex, 1), rows.count - 1)]
+                    self.highlightedSuggestionIndex = -1
+                    return .handled
+                }
                 .onKeyPress(.escape) {
-                    if self.viewModel.showSuggestions {
-                        self.viewModel.clearSuggestions()
+                    if self.showsSuggestionList {
+                        self.viewModel.dismissSuggestions()
+                        self.highlightedSuggestionIndex = -1
                         return .handled
                     }
-                    return .ignored
+                    guard !self.viewModel.query.isEmpty else { return .ignored }
+                    self.viewModel.clear()
+                    return .handled
                 }
 
             if !self.viewModel.query.isEmpty {
                 Button {
                     self.viewModel.clear()
+                    self.highlightedSuggestionIndex = -1
+                    self.isSearchFieldFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 .accessibilityLabel(String(localized: "Clear search"))
+                .accessibilityIdentifier(AccessibilityID.Search.clearButton)
+                .help(String(localized: "Clear search"))
             }
         }
-        .padding(10)
-        .glassEffect(.regular, in: .capsule)
-    }
-
-    private var suggestionsDropdown: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(self.viewModel.suggestions.prefix(7).enumerated()), id: \.element.id) { index, suggestion in
-                self.suggestionRow(suggestion, index: index)
-                if index < min(self.viewModel.suggestions.count, 7) - 1 {
-                    Divider()
-                        .padding(.leading, 40)
-                }
-            }
-        }
-        .glassEffect(.regular, in: .rect(cornerRadius: 8))
-        .glassEffectTransition(.materialize)
-        .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
-    }
-
-    private func suggestionRow(_ suggestion: SearchSuggestion, index: Int) -> some View {
-        Button {
-            self.searchHistory.record(suggestion.query)
-            self.viewModel.selectSuggestion(suggestion)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-
-                Text(suggestion.query)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Image(systemName: "arrow.up.left")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(index == self.selectedSuggestionIndex ? Color.accentColor.opacity(0.15) : Color.clear)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .frame(height: SearchBarMetrics.fieldHeight)
     }
 
     private var filterChips: some View {
@@ -241,7 +274,10 @@ struct SearchView: View {
 
     @ViewBuilder
     private var contentView: some View {
-        if !self.networkMonitor.isConnected, !self.viewModel.loadingState.hasContent {
+        if !self.networkMonitor.isConnected,
+           self.viewModel.results.isEmpty,
+           !self.viewModel.loadingState.hasContent
+        {
             ErrorView(
                 title: String(localized: "No Connection"),
                 message: String(localized: "Please check your internet connection and try again.")
@@ -252,17 +288,23 @@ struct SearchView: View {
             switch self.viewModel.loadingState {
             case .idle:
                 self.emptyStateView
-            case .loading, .loadingMore:
-                LoadingView(String(localized: "Searching..."))
-            case .loaded:
-                if self.viewModel.filteredItems.isEmpty {
-                    self.noResultsView
-                } else {
-                    self.resultsView
-                }
             case let .error(error):
                 ErrorView(error: error) {
                     self.viewModel.search()
+                }
+            case .loading, .loadingMore, .loaded:
+                // One branch for every state that can hold rows, so a refinement and a pagination
+                // update the list in place instead of rebuilding it (and losing its scroll).
+                if !self.viewModel.results.isEmpty {
+                    if self.viewModel.filteredItems.isEmpty, self.viewModel.loadingState == .loaded {
+                        self.noResultsView
+                    } else {
+                        self.resultsView
+                    }
+                } else if self.viewModel.loadingState == .loaded {
+                    self.noResultsView
+                } else {
+                    LoadingView(String(localized: "Searching..."))
                 }
             }
         }
@@ -368,9 +410,7 @@ struct SearchView: View {
     }
 
     private func runRecentSearch(_ query: String) {
-        self.viewModel.query = query
-        self.searchHistory.record(query)
-        self.viewModel.search()
+        self.runSearch(query)
     }
 
     /// A shelf of what the reader played last, so the page can be useful before a query is typed.
@@ -866,6 +906,39 @@ struct SearchView: View {
         case .podcastShow:
             break
         }
+    }
+
+    /// Runs what the field is showing: the highlighted suggestion when the arrow keys picked one,
+    /// the highlighted result when the keys walked into the list, otherwise the text itself.
+    private func submitFromField() {
+        if self.showsSuggestionList,
+           self.viewModel.suggestionRows.indices.contains(self.highlightedSuggestionIndex)
+        {
+            self.runSearch(self.viewModel.suggestionRows[self.highlightedSuggestionIndex])
+            return
+        }
+
+        if let item = self.selectedResult {
+            self.handleItemTap(item)
+            return
+        }
+
+        self.runSearch(self.viewModel.query)
+    }
+
+    /// Records and runs a query, from the field, a suggestion, or the recent-searches shelf.
+    ///
+    /// The view model puts the text in the field, closes the panel and starts the search in one step;
+    /// the view only keeps the history entry and the pointer state around it.
+    private func runSearch(_ query: String) {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+
+        self.searchHistory.record(term)
+        self.highlightedSuggestionIndex = -1
+        self.selectedResultID = nil
+        self.viewModel.accept(query: term)
+        self.isSearchFieldFocused = true
     }
 
     private func handleItemTap(_ item: SearchResultItem) {

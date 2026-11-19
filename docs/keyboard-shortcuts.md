@@ -30,8 +30,12 @@ player was clicked last (see [ADR-0026](adr/0026-fullscreen-key-routing.md)).
 | Shortcut | Action                                                        |
 | -------- | ------------------------------------------------------------- |
 | `↑` `↓`  | Move through the suggestions, then through the results        |
-| `Return` | Search, or open the highlighted result                        |
-| `Escape` | Close the suggestions                                          |
+| `Return` | Search, or run the highlighted suggestion or result           |
+| `Tab`    | Complete the field with the highlighted suggestion            |
+| `Escape` | Close the suggestions; with them closed, clear the field      |
+
+Clicking a suggestion runs it: the text goes into the field and the search starts at once. The panel's
+first row is always the text in the field, so Return has something to run before the provider answers.
 
 Once the arrow keys have walked down into the results, the highlighted row is what `Return` opens
 (playing a song, or pushing an album, artist, playlist or podcast). Walking back to the top hands the
