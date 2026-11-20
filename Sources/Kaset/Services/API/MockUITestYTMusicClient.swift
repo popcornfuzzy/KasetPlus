@@ -298,6 +298,12 @@ final class MockUITestYTMusicClient: YTMusicClientProtocol {
         return PlaylistTracksResponse(detail: detail, continuationToken: nil)
     }
 
+    /// No album pages in UI tests: album resolution finds nothing, which keeps the fixtures' tracks on
+    /// the album the fixture gave them.
+    func getAlbumPage(albumId: String) async throws -> PlaylistDetail {
+        throw YTMusicError.parseError(message: "No album pages in UI tests: \(albumId)")
+    }
+
     func getPlaylistContinuation() async throws -> PlaylistContinuationResponse? {
         nil
     }

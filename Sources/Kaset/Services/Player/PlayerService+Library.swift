@@ -265,6 +265,55 @@ extension PlayerService {
         }
     }
 
+    /// Replaces an album that is the track's own single with the album the track is really on.
+    ///
+    /// YouTube Music names a release it only carries as a single after the track it leads: playing
+    /// "Flowers" reports the album as "Flowers", and that page holds that one song, while the track is
+    /// also on `Endless Summer Vacation`. The now-playing title and the song menus open whatever album
+    /// the track carries, so the single stood in for the album and its page opened with one row.
+    ///
+    /// The album is found among the artist's albums and only kept when its page lists the song among
+    /// more than that one song (see ``TrackAlbumResolver``), so a title-track's own album survives and an
+    /// album the app cannot prove is never invented. When nothing proves it, the reported album stands.
+    func resolveAlbumIfNeeded(videoId: String) {
+        guard self.currentEpisode == nil,
+              let track = self.currentTrack,
+              track.videoId == videoId,
+              let album = track.album,
+              TrackAlbumResolver.needsResolution(albumTitle: album.title, trackTitle: track.title),
+              self.albumResolvedVideoId != videoId,
+              let client = self.ytMusicClient
+        else { return }
+
+        self.albumResolvedVideoId = videoId
+        let title = track.title
+        let artist = track.artistsDisplay
+
+        Task { @MainActor [weak self] in
+            let resolved = await TrackAlbumResolver.resolve(
+                trackTitle: title,
+                artist: artist,
+                searchAlbums: { try await client.searchAlbums(query: $0).albums },
+                albumPage: { try await client.getAlbumPage(albumId: $0) }
+            )
+            guard let resolved,
+                  let self,
+                  let current = self.currentTrack,
+                  current.videoId == videoId
+            else { return }
+
+            self.logger.info(
+                "Album resolved for \(videoId, privacy: .public): '\(resolved.title, privacy: .public)'"
+            )
+            self.currentTrack = current.withAlbum(resolved)
+            // The queue row opens the same album from its menus, so it carries the answer too.
+            if let index = self.queue.firstIndex(where: { $0.videoId == videoId }) {
+                self.queue[index] = self.queue[index].withAlbum(resolved)
+                self.saveQueueForPersistence()
+            }
+        }
+    }
+
     /// Fetches full song metadata including feedbackTokens from the API.
     func fetchSongMetadata(videoId: String) async {
         guard let client = ytMusicClient else {
@@ -362,6 +411,9 @@ extension PlayerService {
                 }
 
                 self.logger.info("Updated track metadata - inLibrary: \(self.currentTrackInLibrary), hasTokens: \(self.currentTrackFeedbackTokens != nil)")
+
+                // The record can name the track's own single as its album (see `resolveAlbumIfNeeded`).
+                self.resolveAlbumIfNeeded(videoId: videoId)
 
                 // Also update the corresponding song in the queue with enriched metadata
                 // This ensures the queue displays complete info without separate API calls

@@ -796,6 +796,20 @@ final class YTMusicClient: YTMusicClientProtocol {
         return response
     }
 
+    /// Fetches an album page: its title, credits and tracks.
+    ///
+    /// Reads the page without storing a continuation token: this is used from the background (see
+    /// `TrackAlbumResolver`), and writing that state would hand the playlist page on screen another
+    /// list's pagination.
+    func getAlbumPage(albumId: String) async throws -> PlaylistDetail {
+        self.logger.info("Fetching album page: \(albumId)")
+
+        let data = try await request("browse", body: ["browseId": albumId], ttl: APICache.TTL.playlist)
+        let detail = PlaylistParser.parsePlaylistWithContinuation(data, playlistId: albumId).detail
+        self.logger.info("Parsed album '\(detail.title)' with \(detail.tracks.count) tracks")
+        return detail
+    }
+
     /// Fetches all tracks for a playlist using the queue endpoint.
     /// This returns all tracks in a single request without pagination.
     /// More reliable for radio playlists (RDCLAK prefix) where continuation doesn't work correctly.

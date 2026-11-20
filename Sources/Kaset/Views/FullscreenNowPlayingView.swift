@@ -1015,6 +1015,10 @@ private struct FullscreenSyncedLyricsView: View {
     /// The line being sung: what the rows' emphasis and liveness are keyed to, and the only row
     /// drawn bright. It moves when a line's own content opens (see `KaraokeFillModel.lineChanges`).
     @State private var currentLineIndex: Int?
+    /// Every row being sung at the current position: usually just the highlight, and more when a
+    /// provider overlaps two lines in time, so both are drawn bright and filling at once
+    /// (`KaraokeFillModel.activeLineIndices`).
+    @State private var activeLineIndices: [Int]
     /// The line the sheet is travelling to — the line being sung, or the one after it once its first
     /// word is `KaraokeTiming.scrollLeadMs` away (`KaraokeFillModel.scrollIndex`).
     @State private var scrollLineId: UUID?
@@ -1043,6 +1047,9 @@ private struct FullscreenSyncedLyricsView: View {
 
         let highlightIndex = KaraokeFillModel.highlightIndex(in: changes, at: Double(currentTimeMs))
         _currentLineIndex = State(initialValue: highlightIndex)
+        _activeLineIndices = State(
+            initialValue: KaraokeFillModel.activeLineIndices(in: changes, at: Double(currentTimeMs))
+        )
 
         let scrollIndex = KaraokeFillModel.scrollIndex(in: changes, at: Double(currentTimeMs))
         _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
@@ -1198,7 +1205,7 @@ private struct FullscreenSyncedLyricsView: View {
     private func plan(forLineAt index: Int) -> KaraokeRowPlan {
         KaraokeFrameBudget.plan(
             isLive: self.isLive(lineIndex: index),
-            isCurrent: index == self.currentLineIndex,
+            isCurrent: index == self.currentLineIndex || self.activeLineIndices.contains(index),
             isCovered: self.isCovered,
             reduceMotion: self.reduceMotion,
             isPlaying: self.isPlaying
@@ -1245,7 +1252,11 @@ private struct FullscreenSyncedLyricsView: View {
         }
     }
     private func currentStatus(for lineIndex: Int) -> SyncedLyrics.LineStatus {
-        KaraokeFillModel.status(forLineAt: lineIndex, highlightIndex: self.currentLineIndex)
+        KaraokeFillModel.status(
+            forLineAt: lineIndex,
+            highlightIndex: self.currentLineIndex,
+            activeIndices: self.activeLineIndices
+        )
     }
     /// Whether this row draws from the live display clock: the line being sung, the line
     /// after it (so a line is never first seen part-way through its own first word), and
@@ -1257,7 +1268,8 @@ private struct FullscreenSyncedLyricsView: View {
             lineIndex: lineIndex,
             currentLineIndex: self.currentLineIndex,
             line: line,
-            clockMs: self.clock.displayPositionMs
+            clockMs: self.clock.displayPositionMs,
+            activeIndices: self.activeLineIndices
         )
     }
     private func scale(for status: SyncedLyrics.LineStatus, lineId: UUID) -> CGFloat { if self.hoveredLineId == lineId, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
@@ -1315,6 +1327,7 @@ private struct FullscreenSyncedLyricsView: View {
 
     /// Moves the highlight onto the line being sung (see `KaraokeFillModel.lineChanges`).
     private func updateHighlight(at positionMs: Double) {
+        self.activeLineIndices = KaraokeFillModel.activeLineIndices(in: self.changes, at: positionMs)
         guard let index = KaraokeFillModel.highlightIndex(in: self.changes, at: positionMs) else { return }
         self.currentLineIndex = index
     }

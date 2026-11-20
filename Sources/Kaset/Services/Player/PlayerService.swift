@@ -286,6 +286,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// One request per track: the observation pipeline reports the same track over and over.
     @ObservationIgnored var songMetadataRequestedVideoId: String?
 
+    /// The video whose album has been corrected (see ``resolveAlbumIfNeeded(videoId:)``). One lookup
+    /// per track: the answer cannot change while that track is the one playing.
+    @ObservationIgnored var albumResolvedVideoId: String?
+
     /// Whether the user has successfully interacted at least once this session.
     /// After first successful playback, we can auto-play without showing the popup.
     private(set) var hasUserInteractedThisSession: Bool = false

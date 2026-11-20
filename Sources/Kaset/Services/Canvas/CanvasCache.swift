@@ -34,6 +34,14 @@ actor CanvasCache {
     private static let foundTTL: TimeInterval = 60 * 60 * 24 // 24 hours
     private static let notFoundTTL: TimeInterval = 60 * 60 * 6 // 6 hours
 
+    /// Bumped when a provider's answers change, so entries written by an earlier
+    /// build are not served again. `v2` invalidated the lookups that held Apple
+    /// Music's old artist-level artwork, which painted the newest album's canvas over
+    /// songs from other albums; `v3` invalidated the ones written while the album was
+    /// searched by a name YouTube no longer reports correctly, which cached misses for
+    /// tracks whose album Apple does have.
+    private static let keyVersion = "v3"
+
     private let fileManager = FileManager.default
     private let directoryURL: URL
     private var memory: [String: StoredEntry] = [:]
@@ -43,6 +51,7 @@ actor CanvasCache {
     init(directory: URL? = nil) {
         self.directoryURL = directory ?? Self.defaultDirectory()
         try? self.fileManager.createDirectory(at: self.directoryURL, withIntermediateDirectories: true)
+        Self.removeStaleEntries(in: self.directoryURL, fileManager: self.fileManager)
     }
 
     /// Returns the cached lookup for a video ID, or nil when nothing is cached.
@@ -101,7 +110,19 @@ actor CanvasCache {
     }
 
     private static func key(for videoId: String) -> String {
-        "lookup-" + safeFileName(for: videoId)
+        Self.keyPrefix + safeFileName(for: videoId)
+    }
+
+    private static var keyPrefix: String {
+        "lookup-\(Self.keyVersion)-"
+    }
+
+    /// Drops lookups written under an earlier key version; nothing reads them again.
+    private static func removeStaleEntries(in directoryURL: URL, fileManager: FileManager) {
+        let files = (try? fileManager.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        for file in files where file.hasPrefix("lookup-") && !file.hasPrefix(Self.keyPrefix) {
+            try? fileManager.removeItem(at: directoryURL.appendingPathComponent(file))
+        }
     }
 
     /// Sanitizes a video ID for use as a file name.

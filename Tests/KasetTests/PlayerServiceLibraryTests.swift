@@ -534,6 +534,44 @@ struct PlayerServiceLibraryTests {
         #expect(self.playerService.currentTrack?.artists.map(\.id) == ["UCone", "UCtwo"])
     }
 
+    @Test("fetchSongMetadata opens the album the song is on, not the single named after it")
+    func fetchSongMetadataResolvesTheAlbumHoldingTheSong() async {
+        // YouTube Music reports "Flowers" as its own album; the track is also on the album, and the
+        // now-playing title opens whatever album the track carries, so the single was opening with
+        // one row. The artist's albums are searched and the one whose page lists the song is used.
+        let videoId = "flowers-video"
+        let miley = Artist(id: "UCmiley", name: "Miley Cyrus")
+        let single = Album(id: "MPREb_single", title: "Flowers", artists: [miley], thumbnailURL: nil, year: "2023", trackCount: 1)
+        let album = Album(id: "MPREb_album", title: "Endless Summer Vacation", artists: [miley], thumbnailURL: nil, year: "2023", trackCount: 13)
+
+        self.playerService.currentTrack = Song(id: videoId, title: "Flowers", artists: [miley], album: single, videoId: videoId)
+        self.mockClient.songResponses[videoId] = Song(id: videoId, title: "Flowers", artists: [miley], album: single, videoId: videoId)
+        self.mockClient.searchResponse = SearchResponse(songs: [], albums: [single, album], artists: [], playlists: [], continuationToken: nil)
+        self.mockClient.albumPages["MPREb_single"] = Self.albumPage(id: "MPREb_single", title: "Flowers", artist: miley, tracks: ["Flowers"])
+        self.mockClient.albumPages["MPREb_album"] = Self.albumPage(id: "MPREb_album", title: "Endless Summer Vacation", artist: miley, tracks: ["Flowers", "Jaded"])
+
+        await self.playerService.fetchSongMetadata(videoId: videoId)
+
+        await waitUntil("the album to be resolved") { self.playerService.currentTrack?.album?.id == "MPREb_album" }
+        #expect(self.playerService.currentTrack?.album?.title == "Endless Summer Vacation")
+    }
+
+    @Test("fetchSongMetadata keeps a reported album that is not the track's own title")
+    func fetchSongMetadataKeepsARealAlbum() async {
+        let videoId = "album-video"
+        let artist = Artist(id: "UCartist", name: "Miley Cyrus")
+        let album = Album(id: "MPREb_album", title: "Endless Summer Vacation", artists: [artist], thumbnailURL: nil, year: "2023", trackCount: 13)
+
+        self.playerService.currentTrack = Song(id: videoId, title: "Jaded", artists: [artist], album: album, videoId: videoId)
+        self.mockClient.songResponses[videoId] = Song(id: videoId, title: "Jaded", artists: [artist], album: album, videoId: videoId)
+
+        await self.playerService.fetchSongMetadata(videoId: videoId)
+        try? await Task.sleep(for: .milliseconds(100))
+
+        #expect(self.mockClient.searchQueries.isEmpty)
+        #expect(self.playerService.currentTrack?.album?.id == "MPREb_album")
+    }
+
     @Test("fetchSongMetadata keeps the artwork URL already on screen")
     func fetchSongMetadataKeepsDisplayedArtwork() async {
         // The API returns the same picture under a rotated size/signature URL. Replacing the
@@ -570,6 +608,16 @@ struct PlayerServiceLibraryTests {
         await self.playerService.fetchSongMetadata(videoId: videoId)
 
         #expect(self.playerService.currentTrack?.thumbnailURL?.absoluteString == "https://example.com/fetched-art.jpg")
+    }
+
+    private static func albumPage(id: String, title: String, artist: Artist, tracks: [String]) -> PlaylistDetail {
+        PlaylistDetail(
+            playlist: Playlist(id: id, title: title, description: nil, thumbnailURL: nil, trackCount: tracks.count, author: nil),
+            tracks: tracks.enumerated().map { index, trackTitle in
+                Song(id: "\(id)-\(index)", title: trackTitle, artists: [artist], videoId: "\(id)-\(index)")
+            },
+            artists: [artist]
+        )
     }
 
     // MARK: - Track Change Tests

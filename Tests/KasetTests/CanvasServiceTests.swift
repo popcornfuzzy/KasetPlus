@@ -388,6 +388,23 @@ struct CanvasVideoFileCacheTests {
         #expect(await cache.localFileURL(for: remoteURL) == cachedFile)
     }
 
+    /// The Apple Music fix (album-level, verified artwork) only takes effect once the
+    /// lookups that held the old artist-level artwork are out of the cache.
+    @Test("lookups written under an earlier key version are removed")
+    func staleLookupKeyVersionsAreRemoved() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kaset-canvas-lookup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let staleFile = directory.appendingPathComponent("lookup-video-stale.json")
+        try Data("{}".utf8).write(to: staleFile)
+
+        _ = CanvasCache(directory: directory)
+
+        #expect(FileManager.default.fileExists(atPath: staleFile.path) == false)
+    }
+
     @Test("legacy extension-less cache entries are discarded")
     func legacyEntriesAreDiscarded() throws {
         let directory = FileManager.default.temporaryDirectory

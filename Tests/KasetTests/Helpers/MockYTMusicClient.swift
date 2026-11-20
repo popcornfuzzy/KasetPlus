@@ -627,6 +627,17 @@ final class MockYTMusicClient: YTMusicClientProtocol {
         )
     }
 
+    /// Album pages read by `TrackAlbumResolver`, keyed by album page ID.
+    var albumPages: [String: PlaylistDetail] = [:]
+
+    func getAlbumPage(albumId: String) async throws -> PlaylistDetail {
+        if let error = self.shouldThrowError { throw error }
+        guard let page = self.albumPages[albumId] else {
+            throw YTMusicError.parseError(message: "Album not found: \(albumId)")
+        }
+        return page
+    }
+
     func getPlaylistContinuation() async throws -> PlaylistContinuationResponse? {
         self.getPlaylistContinuationCalled = true
         self.getPlaylistContinuationCallCount += 1

@@ -89,3 +89,5 @@ What becomes easier or more difficult because of this change?
 | [0052](0052-delta-updates.md) | Delta Updates in the Appcast Feed | Accepted |
 | [0054](0054-search-suggestion-list.md) | The Search Suggestion List | Accepted |
 | [0055](0055-page-push-pop-slide.md) | The Page Push/Pop Slide (and the Bar That Left the Pages) | Accepted |
+| [0056](0056-overlapping-word-timed-lines.md) | Overlapping Word-by-Word Lines | Accepted |
+| [0057](0057-album-a-now-playing-track-opens.md) | The Album a Now-Playing Track Opens | Accepted |

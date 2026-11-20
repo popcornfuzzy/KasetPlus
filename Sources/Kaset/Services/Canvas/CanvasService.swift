@@ -61,9 +61,9 @@ final class CanvasService {
         videoFileCache: CanvasVideoFileCache = .shared,
         isEnabled: @escaping () -> Bool = { SettingsManager.shared.animatedCanvasEnabled }
     ) {
-        // Order is the preference order, so Tidal must stay first: it is the
-        // album-level source and matches the fullscreen artwork far more often than
-        // Apple Music's artist-level motion artwork.
+        // Order is the preference order, so Tidal must stay first: its album video
+        // covers match the fullscreen artwork far more often than Apple Music's
+        // HLS album motion artwork.
         self.providers = providers ?? [TidalCanvasProvider(), AppleMusicCanvasProvider()]
         self.lookupCache = lookupCache
         self.videoFileCache = videoFileCache

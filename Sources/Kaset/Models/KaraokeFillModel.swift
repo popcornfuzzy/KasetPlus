@@ -185,6 +185,12 @@ struct KaraokeLineChange: Equatable, Sendable {
     let batonMs: Double
     /// When the sheet starts travelling to it.
     let scrollStartMs: Double
+    /// When the line stops being sung: its own content has settled, or — for a row with
+    /// nothing to sing — the moment the next row takes the baton.
+    ///
+    /// Two windows that overlap are two lines being sung at once, which is what the sheet
+    /// draws when a provider writes two voices over each other (`activeLineIndices`).
+    let endMs: Double
 }
 
 // MARK: - KaraokeFillModel
@@ -414,7 +420,8 @@ enum KaraokeFillModel {
     /// exactly the length of time it is being sung — it does not start to dim while its last word is
     /// still filling, and the line coming in is not bright before anything on it is sung.
     ///
-    /// **One line at a time, deliberately.** The line coming in used to take the emphasis a hand-off
+    /// **One line at a time, deliberately — except where two lines genuinely overlap** (see
+    /// below). The line coming in used to take the emphasis a hand-off
     /// lead early, while the line above kept it until its content settled, so for half a second two
     /// rows of a single column were both at full size and full brightness. On a sheet read one line at
     /// a time that is not a hand-off, it is two lines at once: the eye cannot tell which one is being
@@ -434,9 +441,18 @@ enum KaraokeFillModel {
     /// Batons never move backwards: a line cannot take the baton before the line above it did, which
     /// is what keeps the answer for any position — the *last* change that has happened — well
     /// defined even when a provider overlaps two lines.
+    ///
+    /// **Overlapping lines are not a hand-off.** A provider may put two lines on the same stretch
+    /// of time — a duet's voices over each other, or a paragraph whose last words run past the next
+    /// paragraph's start — and there the later line takes the baton while the earlier one is still
+    /// being sung. The earlier row keeps its emphasis for as long as its own content sounds
+    /// (`activeLineIndices`), so the sheet fills both instead of dimming a line that is plainly
+    /// still moving. Everywhere else one row is bright at a time.
     static func lineChanges(in lyrics: SyncedLyrics, timing: KaraokeTiming = .standard) -> [KaraokeLineChange] {
-        var changes: [KaraokeLineChange] = []
-        changes.reserveCapacity(lyrics.lines.count)
+        var batons: [Double] = []
+        var scrollStarts: [Double] = []
+        batons.reserveCapacity(lyrics.lines.count)
+        scrollStarts.reserveCapacity(lyrics.lines.count)
         var lastBaton = -Double.infinity
 
         for (index, line) in lyrics.lines.enumerated() {
@@ -448,21 +464,44 @@ enum KaraokeFillModel {
             baton = max(baton, lastBaton)
             lastBaton = baton
 
-            changes.append(
-                KaraokeLineChange(
-                    lineIndex: index,
-                    batonMs: baton,
-                    scrollStartMs: isSilent ? baton : baton - timing.scrollLeadMs
-                )
+            batons.append(baton)
+            scrollStarts.append(isSilent ? baton : baton - timing.scrollLeadMs)
+        }
+
+        // A row is being sung until its own content settles; a row with nothing to sing is
+        // silence until the next row takes the baton, which needs the schedule above complete.
+        return lyrics.lines.indices.map { index in
+            let isSilent = SyncedLyrics.isSilent(lyrics.lines[index])
+            let endMs: Double = if isSilent {
+                index + 1 < batons.count ? batons[index + 1] : .infinity
+            } else {
+                max(batons[index], self.settleBoundaryMs(for: lyrics.lines[index], timing: timing))
+            }
+            return KaraokeLineChange(
+                lineIndex: index,
+                batonMs: batons[index],
+                scrollStartMs: scrollStarts[index],
+                endMs: endMs
             )
         }
-        return changes
     }
 
     /// The line being sung at a playback position: the last change whose baton has passed. `nil`
     /// before the first line begins, and for a sheet with nothing in it.
     static func highlightIndex(in changes: [KaraokeLineChange], at timeMs: Double) -> Int? {
         changes.last { $0.batonMs <= timeMs }?.lineIndex
+    }
+
+    /// The lines being sung at a playback position: every line whose own content has opened and
+    /// has not yet settled.
+    ///
+    /// Usually one. It is more than one when a provider overlaps two lines in time — a duet's two
+    /// voices over each other, or a paragraph whose last words run past the next paragraph's start
+    /// — and the sheet then draws every one of them bright and filling, rather than dimming a row
+    /// that is still being sung. A row with nothing to sing is silence, and its window ends when
+    /// the next row takes the baton.
+    static func activeLineIndices(in changes: [KaraokeLineChange], at timeMs: Double) -> [Int] {
+        changes.filter { $0.batonMs <= timeMs && timeMs < $0.endMs }.map(\.lineIndex)
     }
 
     /// As `highlightIndex(in:changes:)`, for a caller holding the sheet rather than its changes.
@@ -496,17 +535,20 @@ enum KaraokeFillModel {
         self.scrollIndex(in: self.lineChanges(in: lyrics, timing: timing), at: Double(timeMs))
     }
 
-    /// The next moment the sheet's state changes, after a playback position: the next travel or the
-    /// next baton, whichever comes first.
+    /// The next moment the sheet's state changes, after a playback position: the next travel, the
+    /// next baton, or the next line that stops sounding, whichever comes first.
     ///
     /// This is what lets a change land on time instead of on the next playback sample. The lyrics
     /// poll reports at 10 Hz, and a line change is a moment inside one of those windows: read from
     /// the samples alone, a fast line's first word is already part-filled when its row becomes the
-    /// current one. `nil` when nothing is left to happen.
+    /// current one, and an overlapping row stays bright a sample after it has settled. `nil` when
+    /// nothing is left to happen.
     static func nextChangeMs(in changes: [KaraokeLineChange], after timeMs: Double) -> Double? {
         var next: Double?
         for change in changes {
-            for moment in [change.scrollStartMs, change.batonMs] where moment > timeMs {
+            for moment in [change.scrollStartMs, change.batonMs, change.endMs]
+                where moment.isFinite && moment > timeMs
+            {
                 next = min(next ?? moment, moment)
             }
         }
@@ -548,15 +590,20 @@ enum KaraokeFillModel {
 
     /// The visual state of a lyric row.
     ///
-    /// Exactly one row is current: the line `highlightIndex` names. Every other row is on one side
-    /// of it — dim, small and receded if it has been sung, just as it was when it was upcoming.
+    /// The row the highlight names is current, and so is every other row still being sung
+    /// (`activeIndices`) — a sheet with two overlapping word-timed lines fills both of them. A row
+    /// above the highlight that is no longer sounding is `.previous`, and anything below is
+    /// `.upcoming`: dim, small and receded on either side of the music.
+    ///
     /// Nothing here knows about the scroll (`scrollIndex`), which is why the sheet can be moving
     /// towards a line that is still drawn as upcoming: the row is in place before it is sung, and
     /// the moment it is sung the baton passes onto a row that is already where it belongs.
     static func status(
         forLineAt index: Int,
-        highlightIndex: Int?
+        highlightIndex: Int?,
+        activeIndices: [Int] = []
     ) -> SyncedLyrics.LineStatus {
+        if activeIndices.contains(index) { return .current }
         guard let highlightIndex else { return .upcoming }
         if index < highlightIndex { return .previous }
         if index == highlightIndex { return .current }
@@ -565,9 +612,10 @@ enum KaraokeFillModel {
 
     /// Whether a lyric row should run on the display clock.
     ///
-    /// Three rows run: the line being sung, the line after it once its own content is about
-    /// to move (so its fill and swell are already moving when the highlight arrives), and the
-    /// line that has just finished, until the clock is past `settleBoundaryMs`.
+    /// Every row still being sung runs (`activeIndices` — usually one, more when a provider
+    /// overlaps two lines), the line after the newest one once its own content is about to move
+    /// (so its fill and swell are already moving when the highlight arrives), and the line that
+    /// has just finished, until the clock is past `settleBoundaryMs`.
     ///
     /// The line after the current one waiting for its own first ramp is the difference between
     /// a sheet that redraws three rows and one that redraws two: before that instant the row's
@@ -594,8 +642,12 @@ enum KaraokeFillModel {
         currentLineIndex: Int?,
         line: SyncedLyricLine?,
         clockMs: Double,
-        timing: KaraokeTiming = .standard
+        timing: KaraokeTiming = .standard,
+        activeIndices: [Int] = []
     ) -> Bool {
+        // A line that is still sounding is on the clock wherever it sits relative to the
+        // highlight: an overlapping line above it keeps filling until its own content settles.
+        if activeIndices.contains(lineIndex) { return true }
         guard let currentLineIndex else { return false }
         if lineIndex == currentLineIndex { return true }
         guard let line else { return false }

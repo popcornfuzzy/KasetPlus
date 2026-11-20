@@ -110,6 +110,28 @@ extension Song {
     func paired(with song: Song) -> Song {
         self.paired(with: SongCounterpart(song: song))
     }
+
+    /// A copy carrying `album` as its release.
+    ///
+    /// Used when the album a track reported is corrected, e.g. a single YouTube Music names after the
+    /// track (see `TrackAlbumResolver`).
+    func withAlbum(_ album: Album?) -> Song {
+        Song(
+            id: self.id,
+            title: self.title,
+            artists: self.artists,
+            album: album,
+            duration: self.duration,
+            thumbnailURL: self.thumbnailURL,
+            videoId: self.videoId,
+            hasVideo: self.hasVideo,
+            musicVideoType: self.musicVideoType,
+            counterpart: self.counterpart,
+            likeStatus: self.likeStatus,
+            isInLibrary: self.isInLibrary,
+            feedbackTokens: self.feedbackTokens
+        )
+    }
 }
 
 // MARK: - SongCounterpart

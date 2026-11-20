@@ -71,8 +71,8 @@ struct KaraokeTiming: Equatable, Sendable {
     ///
     /// It is deliberately **not** the lead on the emphasis. The line being sung keeps the
     /// highlight until the next line's first content opens, which is the moment the baton passes:
-    /// one bright line is always the line being read, and it never starts to leave while it is
-    /// still filling.
+    /// the line being read keeps the highlight, and it never starts to leave while it is still
+    /// filling.
     var scrollLeadMs: Double = 500
 
     /// How long the sheet takes to travel from one line to the next, in milliseconds.

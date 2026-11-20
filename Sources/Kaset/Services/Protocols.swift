@@ -171,6 +171,13 @@ protocol YTMusicClientProtocol: Sendable {
     /// Fetches playlist details including tracks with pagination support.
     func getPlaylist(id: String) async throws -> PlaylistTracksResponse
 
+    /// Fetches an album page: its title, credits and tracks.
+    ///
+    /// A read on its own: unlike ``getPlaylist(id:)`` it leaves the open playlist page's pagination
+    /// state alone, so a background lookup can read an album while a playlist is on screen.
+    /// - Parameter albumId: An album page ID (`MPREb_…` / `OLAK…`).
+    func getAlbumPage(albumId: String) async throws -> PlaylistDetail
+
     /// Fetches all tracks for a playlist using the queue endpoint (no pagination needed).
     /// This returns all tracks in a single request, which is more reliable for radio playlists.
     func getPlaylistAllTracks(playlistId: String) async throws -> [Song]

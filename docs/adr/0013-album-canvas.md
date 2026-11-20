@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Kaset's fullscreen now-playing view shows the YouTube Music album artwork as a static image. Streaming services such as Apple Music and Tidal ship *animated* artwork ("canvas"): Tidal provides album video covers as square MP4s, and Apple Music provides artist motion artwork as HLS streams. This feature lets the fullscreen view upgrade the static album art into a looping animated canvas when one exists.
+Kaset's fullscreen now-playing view shows the YouTube Music album artwork as a static image. Streaming services such as Apple Music and Tidal ship *animated* artwork ("canvas"): Tidal provides album video covers as square MP4s, and Apple Music provides album motion artwork as HLS streams. This feature lets the fullscreen view upgrade the static album art into a looping animated canvas when one exists.
 
 Constraints:
 
@@ -46,7 +46,13 @@ Introduce `CanvasProvider` (`Sendable`) with `func fetchCanvas(for info: CanvasS
 
   Attempt 5 exists because Tidal attaches a video cover to the *album release*, not to the track. "Good Days" by SZA is the canonical case: the single of that name carries no cover, and the song's other release (`SOS Deluxe: LANA`) carries none either, but the `SOS` album does. When the reported album is absent, the deluxe edition, or the single, **nothing** in the track's metadata names `SOS`, so no query built from the known metadata can ever reach it. The album therefore has to be discovered and then verified against its track list. That verification is what keeps the stage safe: an artist's *other* canvased albums can never be shown, because a canvas only wins when the album genuinely contains the requested track. Candidate albums are checked in preference order (the caller's album, then a release titled after the song, then search order) and capped at three album-items requests so a miss cannot fan out without bound.
 
-- **`AppleMusicCanvasProvider`** — discovers the web-player JWT at runtime by scraping the `music.apple.com` web player scripts (validating `iss`/`exp` on the decoded payload), then searches the AMP catalog for the artist and fetches `extend=editorialVideo,editorialArtwork` motion URLs (HLS).
+- **`AppleMusicCanvasProvider`** — discovers the web-player JWT at runtime by scraping the `music.apple.com` web player scripts (validating `iss`/`exp` on the decoded payload), then finds the track's **album** in the AMP catalog and fetches its `extend=editorialVideo,editorialArtwork` motion URL (HLS).
+
+  The lookup is album-level and verified. The album is discovered from Apple's record of the **song** (`search?types=songs`): the result names the album, and its web URL links it (`…/album/<slug>/<albumId>?i=<songId>`). Every matching song result's album is tried in order, so a single that carries no motion artwork falls through to the album the same track also appears on, and an album is accepted only when its `include=tracks` listing contains the song.
+
+  Album *search* is deliberately not the discovery route. It ranks differently per storefront and can miss the album entirely — `Drake Jimmy Cooks` in the Austrian storefront returns Drake singles, not `Honestly, Nevermind` — which is why that path is now only a fallback for the reported album's own page. YouTube Music cannot name the album either: it reports a single as the album when the track leads one (`Flowers` → the `Flowers` single, `Single • 2023`, 1 song), so a canvas keyed on that name would look for an album Apple calls `Endless Summer Vacation` and find nothing. This is also why the sidebar's title opened a single page: that is genuinely what YouTube reports for those tracks. The sidebar now resolves such a track's album before it opens it (ADR-0057).
+
+  The two catalogs disagree about collaborations in exactly the places this matching runs. Apple's album `artistName` names the release's **lead** artist ("Drake" for `Honestly, Nevermind`), so the artist check passes on any shared credit rather than demanding every track credit; requiring all of them rejected every collaboration. Apple also appends the feature to its own track name ("Jimmy Cooks (feat. 21 Savage)" for the track YouTube Music calls "Jimmy Cooks"), so the track-list comparison ignores a `feat`/`ft`/`featuring` credit — and only that, because a word like "with" is part of a title. The album's track list is what proves the song either way. Apple's artist resource also carries an `editorialVideo`, but that is the artist's current spotlight — normally the newest release — and reading it showed a new album's canvas for old songs that are not on that album, so the artist stage is gone. A candidate album that fails verification is skipped rather than guessed at, and no canvas is better than the wrong one.
 
 `CanvasService` consults providers **in preference order, one at a time**, and returns the first canvas found. Tidal is primary (`providers[0]`) and Apple Music is the fallback, so a track resolves to Tidal's album-level canvas whenever one exists.
 
@@ -93,7 +99,7 @@ The canvas is gated on `playerService.showFullscreenNowPlaying` rather than on t
 
 - **External dependency** — canvas availability depends on Tidal/Apple Music API behavior and uptime; matching heuristics are best-effort.
 - **First-play latency** — a direct MP4 is downloaded before it is shown, so the crossfade can trail the lookup by a second or two on slow connections (falls back to streaming on download failure).
-- **Apple Music is artist-level, not album-level** — its motion artwork is keyed by artist; Tidal remains the album-level source.
+- **Apple Music coverage is narrower than its artist artwork** — its motion artwork exists per album, and it is only used when the album's track list proves the song is on it, so a track whose album Apple does not carry (or spells differently) simply keeps its still artwork.
 
 ### Neutral
 

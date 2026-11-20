@@ -45,6 +45,214 @@ struct AppleMusicCanvasProviderTests {
         #expect(AppleMusicCanvasProvider.extractEditorialVideoURL(from: [:]) == nil)
     }
 
+    // MARK: - Album selection
+
+    @Test("albumSearchResults reads the catalog search shape")
+    func parsesAlbumSearchResults() {
+        let json: [String: Any] = [
+            "results": ["albums": ["data": [
+                ["id": "123", "attributes": ["name": "Old Album", "artistName": "The Artist"]],
+                ["id": "456", "attributes": ["name": "Unknown Artist Album"]],
+                ["attributes": ["name": "No ID"]],
+            ]]],
+        ]
+        let results = AppleMusicCanvasProvider.albumSearchResults(from: json)
+        #expect(results.map(\.id) == ["123", "456"])
+        #expect(results.first?.artistName == "The Artist")
+        #expect(results.last?.artistName == "")
+        #expect(AppleMusicCanvasProvider.albumSearchResults(from: [:]).isEmpty)
+    }
+
+    /// Regression: the newest album's canvas was painted over old songs that are not
+    /// on it, because the provider read the *artist* resource's motion artwork.
+    @Test("only the reported album and a release titled after the song are candidates")
+    func candidatesExcludeOtherAlbums() {
+        let results = [
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "newest", name: "Newest Album", artistName: "The Artist"),
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "old", name: "Old Album", artistName: "The Artist"),
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "single", name: "Old Song", artistName: "The Artist"),
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "other", name: "Old Album", artistName: "Someone Else"),
+        ]
+        let candidates = AppleMusicCanvasProvider.albumCandidates(
+            from: results,
+            song: "Old Song",
+            artist: "The Artist",
+            album: "Old Album"
+        )
+        #expect(candidates.map(\.id) == ["old", "single"])
+    }
+
+    @Test("the reported album ranks ahead of a release titled after the song")
+    func reportedAlbumRanksFirst() {
+        let results = [
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "single", name: "Old Song", artistName: "The Artist"),
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "old", name: "Old Album", artistName: "The Artist"),
+        ]
+        let candidates = AppleMusicCanvasProvider.albumCandidates(
+            from: results,
+            song: "Old Song",
+            artist: "The Artist",
+            album: "Old Album"
+        )
+        #expect(candidates.map(\.id) == ["old", "single"])
+    }
+
+    @Test("a single's `- Single` / `- EP` title suffix is tolerated, nothing else is")
+    func singleSuffixIsTolerated() {
+        #expect(AppleMusicCanvasProvider.albumRank("Good Days - Single", song: "Good Days", album: "") == 1)
+        #expect(AppleMusicCanvasProvider.albumRank("Good Days - EP", song: "Good Days", album: "") == 1)
+        #expect(AppleMusicCanvasProvider.albumRank("SOS Deluxe: LANA", song: "Good Days", album: "SOS") == nil)
+        #expect(AppleMusicCanvasProvider.albumRank("Greatest Hits", song: "Good Days", album: "SOS") == nil)
+    }
+
+    // MARK: - Song record
+
+    @Test("songSearchResults reads the catalog search shape")
+    func parsesSongSearchResults() {
+        let json: [String: Any] = [
+            "results": ["songs": ["data": [
+                ["id": "1674691586", "attributes": [
+                    "name": "Flowers",
+                    "artistName": "Miley Cyrus",
+                    "url": "https://music.apple.com/at/album/flowers/1674691585?i=1674691586",
+                ]],
+                ["attributes": ["name": "No ID"]],
+            ]]],
+        ]
+        let results = AppleMusicCanvasProvider.songSearchResults(from: json)
+        #expect(results.count == 1)
+        #expect(results.first?.artistName == "Miley Cyrus")
+        #expect(AppleMusicCanvasProvider.albumId(fromSongURL: results.first?.url) == "1674691585")
+        #expect(AppleMusicCanvasProvider.songSearchResults(from: [:]).isEmpty)
+    }
+
+    @Test("albumId reads the album id out of a song URL")
+    func albumIdFromSongURL() {
+        #expect(
+            AppleMusicCanvasProvider.albumId(
+                fromSongURL: URL(string: "https://music.apple.com/at/album/flowers/1674691585?i=1674691586")
+            ) == "1674691585"
+        )
+        #expect(AppleMusicCanvasProvider.albumId(fromSongURL: URL(string: "https://music.apple.com/at/song/123")) == nil)
+        #expect(AppleMusicCanvasProvider.albumId(fromSongURL: nil) == nil)
+    }
+
+    /// The album is discovered from Apple's record of the *song*, whose URL links the
+    /// album. Album search is storefront-dependent ("Drake Jimmy Cooks" in the
+    /// Austrian storefront returns unrelated singles instead of the album) and YouTube
+    /// reports a single as the album, so neither can name it.
+    @Test("every album the song record names is a candidate, in search order")
+    func albumIdsFromSongRecords() {
+        let songs = [
+            AppleMusicCanvasProvider.SongSearchResult(
+                id: "1630221907",
+                name: "Jimmy Cooks (feat. 21 Savage)",
+                artistName: "Drake",
+                url: URL(string: "https://music.apple.com/at/album/jimmy-cooks-feat-21-savage/1630221591?i=1630221907")
+            ),
+            AppleMusicCanvasProvider.SongSearchResult(
+                id: "1630231297",
+                name: "Jimmy Cooks (feat. 21 Savage)",
+                artistName: "Drake",
+                url: URL(string: "https://music.apple.com/at/album/jimmy-cooks-feat-21-savage/1630230040?i=1630231297")
+            ),
+            AppleMusicCanvasProvider.SongSearchResult(
+                id: "99",
+                name: "Jimmy Cooks (Mixed)",
+                artistName: "Apple Music Resident DJ",
+                url: URL(string: "https://music.apple.com/at/album/rap-vol-2/1680967836")
+            ),
+        ]
+        #expect(
+            AppleMusicCanvasProvider.albumIds(from: songs, song: "Jimmy Cooks", artist: "Drake, 21 Savage")
+                == ["1630221591", "1630230040"]
+        )
+    }
+
+    @Test("the album comes from the song record, not from the reported album name")
+    func albumComesFromSongRecord() {
+        let songs = [
+            AppleMusicCanvasProvider.SongSearchResult(
+                id: "1674691586",
+                name: "Flowers",
+                artistName: "Miley Cyrus",
+                url: URL(string: "https://music.apple.com/at/album/flowers/1674691585?i=1674691586")
+            ),
+        ]
+        // YouTube reports "Flowers" — the single — as the album; Apple's record links
+        // the album the track is actually on.
+        #expect(
+            AppleMusicCanvasProvider.albumIds(from: songs, song: "Flowers", artist: "Miley Cyrus")
+                == ["1674691585"]
+        )
+    }
+
+    @Test("artist matching accepts any shared credit")
+    func artistMatching() {
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "The Artist", returned: "The Artist"))
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "Drake, 21 Savage", returned: "Drake & 21 Savage"))
+        // The album names the release's lead artist only.
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "Drake, 21 Savage", returned: "Drake"))
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "Drake, 21 Savage", returned: "21 Savage"))
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "The Artist", returned: "Someone Else") == false)
+        // No artist constraint was asked for.
+        #expect(AppleMusicCanvasProvider.artistMatches(validation: "", returned: "Anyone"))
+    }
+
+    /// Regression: every collaboration was dropped, because its track credits name
+    /// more artists than the album those credits belong to.
+    @Test("a collaboration matches the album credited to its lead artist")
+    func collaborationMatchesLeadArtist() {
+        let results = [
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "newest", name: "For All The Dogs", artistName: "Drake"),
+            AppleMusicCanvasProvider.AlbumSearchResult(id: "album", name: "Honestly, Nevermind", artistName: "Drake"),
+        ]
+        let candidates = AppleMusicCanvasProvider.albumCandidates(
+            from: results,
+            song: "Jimmy Cooks",
+            artist: "Drake, 21 Savage",
+            album: "Honestly, Nevermind"
+        )
+        #expect(candidates.map(\.id) == ["album"])
+    }
+
+    // MARK: - Album verification
+
+    @Test("artwork is refused unless the album's track list holds the song")
+    func artworkRequiresTheSongOnTheAlbum() {
+        let album = Self.makeAlbumResource(name: "Old Album", tracks: ["Another Song", "Old Song"])
+        let artwork = AppleMusicCanvasProvider.artwork(fromAlbum: album, song: "Old Song")
+        #expect(artwork?.albumName == "Old Album")
+        #expect(artwork?.videoURL.absoluteString == "https://example.com/old.m3u8")
+
+        #expect(AppleMusicCanvasProvider.artwork(fromAlbum: album, song: "New Song") == nil)
+        #expect(AppleMusicCanvasProvider.artwork(fromAlbum: album, song: "   ") == nil)
+    }
+
+    /// Regression: Apple's own track listing carries the featured credit
+    /// ("Jimmy Cooks (feat. 21 Savage)"), so requiring the bare title rejected every
+    /// collaboration even after the artist check was relaxed.
+    @Test("a feature-decorated track title still verifies")
+    func featureDecoratedTrackTitleVerifies() {
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks (feat. 21 Savage)", "Jimmy Cooks"))
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks", "Jimmy Cooks (feat. 21 Savage)"))
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks feat. 21 Savage", "Jimmy Cooks"))
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks", "Jimmy Cooks"))
+        // A word inside a title is not a credit.
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Dance With Me", "Dance") == false)
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks (feat. 21 Savage)", "Jimmy Cooks 2") == false)
+        #expect(AppleMusicCanvasProvider.trackTitleMatches("Jimmy Cooks", "   ") == false)
+
+        let album = Self.makeAlbumResource(name: "Honestly, Nevermind", tracks: ["Jimmy Cooks (feat. 21 Savage)"])
+        #expect(AppleMusicCanvasProvider.artwork(fromAlbum: album, song: "Jimmy Cooks") != nil)
+    }
+
+    @Test("artwork is nil when the album carries no motion video")
+    func artworkRequiresMotionVideo() {
+        let album = Self.makeAlbumResource(name: "Old Album", tracks: ["Old Song"], video: nil)
+        #expect(AppleMusicCanvasProvider.artwork(fromAlbum: album, song: "Old Song") == nil)
+    }
+
     // MARK: - Token handling
 
     @Test("decodeBase64URL handles the JWT-safe alphabet")
@@ -92,6 +300,24 @@ struct AppleMusicCanvasProviderTests {
     }
 
     // MARK: - Helpers
+
+    /// An album resource shaped like `GET /v1/catalog/{storefront}/albums/{id}` with
+    /// `extend=editorialVideo` and `include=tracks`.
+    private static func makeAlbumResource(
+        name: String,
+        tracks: [String],
+        video: String? = "https://example.com/old.m3u8"
+    ) -> [String: Any] {
+        var attributes: [String: Any] = ["name": name, "artistName": "The Artist"]
+        if let video {
+            attributes["editorialVideo"] = ["motionDetailSquare": ["video": video]]
+        }
+        return [
+            "id": "old",
+            "attributes": attributes,
+            "relationships": ["tracks": ["data": tracks.map { ["attributes": ["name": $0]] }]],
+        ]
+    }
 
     /// Builds a header.payload.signature JWT from a JSON payload string.
     private static func makeToken(payload: String) -> String {

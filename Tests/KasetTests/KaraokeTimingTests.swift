@@ -502,6 +502,79 @@ struct KaraokeFillModelTests {
         #expect(!KaraokeFillModel.isLiveRow(lineIndex: 0, currentLineIndex: 1, line: undated, clockMs: 1_280))
     }
 
+    @Test("Two word-timed lines that overlap are both being sung at once")
+    func overlappingLinesAreBothCurrent() {
+        // A provider can put two lines on the same stretch of time: a duet's voices over each
+        // other, or a paragraph whose words run past the next one's start. Both rows are then
+        // bright and filling — the sheet is not a hand-off there.
+        let first = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 3_000,
+            text: "hold on",
+            words: [TimedWord(timeInMs: 0, word: "hold"), TimedWord(timeInMs: 2_500, word: " on")]
+        )
+        let second = SyncedLyricLine(
+            timeInMs: 2_000,
+            duration: 2_000,
+            text: "over you",
+            words: [TimedWord(timeInMs: 2_000, word: "over"), TimedWord(timeInMs: 3_500, word: " you")]
+        )
+        let lyrics = SyncedLyrics(lines: [first, second], source: "OverlapTest")
+        let changes = KaraokeFillModel.lineChanges(in: lyrics)
+
+        // Both windows are open while the two lines sound together: the highlight is the newer
+        // line, and the older one is still `current` rather than dimmed.
+        #expect(KaraokeFillModel.activeLineIndices(in: changes, at: 2_500) == [0, 1])
+        #expect(KaraokeFillModel.highlightIndex(in: changes, at: 2_500) == 1)
+        #expect(KaraokeFillModel.status(forLineAt: 0, highlightIndex: 1, activeIndices: [0, 1]) == .current)
+        #expect(KaraokeFillModel.status(forLineAt: 1, highlightIndex: 1, activeIndices: [0, 1]) == .current)
+
+        // The older line stops sounding at its own end, 3000 ms, while the newer one still runs;
+        // only then does its row become `previous`.
+        #expect(KaraokeFillModel.activeLineIndices(in: changes, at: 2_999) == [0, 1])
+        #expect(KaraokeFillModel.activeLineIndices(in: changes, at: 3_000) == [1])
+        #expect(KaraokeFillModel.status(forLineAt: 0, highlightIndex: 1, activeIndices: [1]) == .previous)
+
+        // And every row being sung runs on the display clock, wherever it sits relative to the
+        // highlight — otherwise the older line's wipe would freeze while it is still filling.
+        #expect(KaraokeFillModel.isLiveRow(
+            lineIndex: 0,
+            currentLineIndex: 1,
+            line: first,
+            clockMs: 2_500,
+            activeIndices: [0, 1]
+        ))
+        #expect(!KaraokeFillModel.isLiveRow(
+            lineIndex: 0,
+            currentLineIndex: 1,
+            line: first,
+            clockMs: 3_000,
+            activeIndices: [1]
+        ))
+
+        // The schedule wakes at the moment the older line settles too, so its dim lands on time
+        // instead of on the next 10 Hz sample.
+        #expect(KaraokeFillModel.nextChangeMs(in: changes, after: 2_999) == 3_000)
+    }
+
+    @Test("A row with nothing to sing joins the current rows only when the sound stops")
+    func aSilentRowIsNotBeingSung() {
+        let sung = SyncedLyricLine(
+            timeInMs: 0,
+            duration: 2_000,
+            text: "one two",
+            words: [TimedWord(timeInMs: 0, word: "one"), TimedWord(timeInMs: 1_600, word: " two")],
+            backgroundWords: [TimedWord(timeInMs: 2_100, word: " oh", isBackground: true)]
+        )
+        let pause = SyncedLyricLine(timeInMs: 2_000, duration: 2_000, text: "", words: nil)
+        let changes = KaraokeFillModel.lineChanges(in: SyncedLyrics(lines: [sung, pause], source: "OverlapTest"))
+
+        // The backing phrase outlasts the line's declared end, and the pause row waits for it:
+        // silence is not sung, so it is not current while the line above is still sounding.
+        #expect(KaraokeFillModel.activeLineIndices(in: changes, at: 2_149) == [0])
+        #expect(KaraokeFillModel.activeLineIndices(in: changes, at: 2_150) == [1])
+    }
+
     @Test("A pause waits for a backing vocal that is still sounding, a sung line does not")
     func aPauseWaitsForABackingVocal() {
         // A backing phrase whose onset lies past the line's own end: Apple Music writes these
@@ -675,10 +748,12 @@ struct KaraokeFillModelTests {
             visited.append(due)
             position = due
         }
-        #expect(visited.count == 8)
-        #expect(Set(visited).count == 8)
+        #expect(visited.count == 12)
+        #expect(Set(visited).count == 12)
         #expect(visited == visited.sorted())
-        #expect(changes.allSatisfy { visited.contains($0.batonMs) && visited.contains($0.scrollStartMs) })
+        #expect(changes.allSatisfy {
+            visited.contains($0.batonMs) && visited.contains($0.scrollStartMs) && visited.contains($0.endMs)
+        })
     }
 
     @Test("A finished line runs on until the later of its end and its last fill")
