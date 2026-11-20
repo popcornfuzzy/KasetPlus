@@ -203,6 +203,47 @@ enum SongActionsHelper {
         }
     }
 
+    /// Adds a song to the library **without starting it**.
+    ///
+    /// The library is written through the song's own `feedbackTokens`, so nothing has to play: a menu
+    /// action on a queue row must never move the playhead, which is what the toggle above did when the
+    /// row named a song that was not the one playing.
+    ///
+    /// The row usually carries the tokens already — its queue entry came from a page that read them.
+    /// When it does not, the record is asked for, the same `next` endpoint `PlayerService` uses.
+    static func addSongToLibrary(
+        _ song: Song,
+        client: any YTMusicClientProtocol,
+        libraryViewModel: LibraryViewModel?
+    ) {
+        Task {
+            do {
+                let record = song.feedbackTokens?.add == nil
+                    ? try await client.getSong(videoId: song.videoId)
+                    : song
+
+                guard record.isInLibrary != true else {
+                    ToastCenter.shared.show(String(localized: "Already in Library"))
+                    return
+                }
+                guard let token = record.feedbackTokens?.add else {
+                    DiagnosticsLogger.api.info("No add-to-library token for \(song.videoId, privacy: .public)")
+                    ToastCenter.shared.show(String(localized: "Couldn't add to Library"), isError: true)
+                    return
+                }
+
+                try await client.editSongLibraryStatus(feedbackTokens: [token])
+                self.invalidateLibraryResponseCaches()
+                libraryViewModel?.markNeedsReloadOnActivation()
+                DiagnosticsLogger.api.info("Added song to library: \(song.title)")
+                ToastCenter.shared.show(String(localized: "Added to Library"))
+            } catch {
+                DiagnosticsLogger.api.error("Failed to add song to library: \(Self.writeFailure(error), privacy: .public)")
+                ToastCenter.shared.show(String(localized: "Couldn't add to Library"), isError: true)
+            }
+        }
+    }
+
     /// Adds a playlist to the library, reporting whether the write landed. The caller's control shows
     /// what the server holds, so a failure must reach it instead of being swallowed here.
     @discardableResult

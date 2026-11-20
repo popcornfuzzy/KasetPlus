@@ -1039,7 +1039,9 @@ struct NowPlayingSidebarView: View {
             // The page is the column's one page with no `NowPlayingSidebarLayout.padding` around it, and
             // the width it hands the queue is the width it was given: both are stated where they are
             // decided, on `NowPlayingSidebarQueuePage`.
-            NowPlayingSidebarQueuePage()
+            // The rows' menus name artist and album pages, which this column's queue has no stack of
+            // its own to open them in: the route is the column's, the same one its credits hand on.
+            NowPlayingSidebarQueuePage(onOpen: self.onOpen)
         }
     }
 

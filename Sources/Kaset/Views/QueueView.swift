@@ -7,7 +7,14 @@ import SwiftUI
 struct QueueView: View {
     @Environment(PlayerService.self) private var playerService
     @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
+    @Environment(SongLikeStatusManager.self) private var likeStatusManager: SongLikeStatusManager?
     @Environment(\.showCommandBar) private var showCommandBar
+
+    /// Opens a page a row's menu names — Go to Artist, Go to Album.
+    ///
+    /// The panel floats beside the page rather than inside its navigation stack, so its rows have no
+    /// `NavigationLink` to resolve against: the route goes to the window.
+    var onOpen: (DetailNavigationRoute) -> Void = { _ in }
 
     /// Whether the user has manually scrolled (pauses auto-scroll).
     @State private var userIsScrolling = false
@@ -150,6 +157,8 @@ struct QueueView: View {
                             playerService: self.playerService,
                             client: self.libraryViewModel?.client,
                             libraryViewModel: self.libraryViewModel,
+                            likeStatusManager: self.likeStatusManager,
+                            onOpen: self.onOpen,
                             onRemove: {
                                 self.playerService.removeFromQueue(videoIds: Set([entry.song.videoId]))
                             },
@@ -305,11 +314,17 @@ private struct QueueRowView: View, Equatable {
     let playerService: PlayerService
     let client: (any YTMusicClientProtocol)?
     let libraryViewModel: LibraryViewModel?
+    /// Read by the row's menu, never by the row itself (see `QueueRowMenuContent`).
+    let likeStatusManager: SongLikeStatusManager?
+    /// Opens a page the row's menu names — the panel is not inside a page's navigation stack.
+    let onOpen: (DetailNavigationRoute) -> Void
 
     let onRemove: () -> Void
     let onTap: () -> Void
 
     @State private var isHovering = false
+    /// Whether this row's Add to Playlist popover is open (see `QueueRowMenuContent`).
+    @State private var isShowingAddToPlaylist = false
 
     /// Compares only what the row draws. The closures and service references are excluded, which is
     /// sound because the menu reads live state and the actions are stateless.
@@ -402,10 +417,23 @@ private struct QueueRowView: View, Equatable {
                 song: self.song,
                 isCurrentTrack: self.isCurrentTrack,
                 playerService: self.playerService,
+                likeStatusManager: self.likeStatusManager,
                 client: self.client,
                 libraryViewModel: self.libraryViewModel,
+                onOpen: self.onOpen,
+                onPlay: self.onTap,
+                onAddToPlaylist: { self.isShowingAddToPlaylist = true },
                 onRemove: self.onRemove
             )
+        }
+        .popover(isPresented: self.$isShowingAddToPlaylist, arrowEdge: .top) {
+            if let client = self.client {
+                AddToPlaylistPopoverContent(
+                    song: self.song,
+                    client: client,
+                    libraryViewModel: self.libraryViewModel
+                )
+            }
         }
     }
 
@@ -457,37 +485,109 @@ private struct QueueEntry: Identifiable {
 
 /// The queue row's context menu, as its own view so the player lookups happen when the menu is
 /// presented rather than in every row's body.
+///
+/// The rows carry the same actions as every other song in the app (`PlaylistTrackMenuContent`), plus
+/// the queue's own removal: a queue row used to offer four of them.
 @available(macOS 26.0, *)
 private struct QueueRowMenuContent: View {
     let song: Song
     let isCurrentTrack: Bool
     let playerService: PlayerService
+    let likeStatusManager: SongLikeStatusManager?
     let client: (any YTMusicClientProtocol)?
     let libraryViewModel: LibraryViewModel?
+    let onOpen: (DetailNavigationRoute) -> Void
+    let onPlay: () -> Void
+    /// Opens the Add to Playlist popover, which the row presents.
+    let onAddToPlaylist: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
+        Button {
+            self.onPlay()
+        } label: {
+            Label("Play", systemImage: "play.fill")
+        }
+
+        if let likeStatusManager = self.likeStatusManager {
+            Divider()
+
+            LikeDislikeContextMenu(song: self.song, likeStatusManager: likeStatusManager)
+        }
+
+        Divider()
+
         StartRadioContextMenu.menuItem(for: self.song, playerService: self.playerService)
 
         Divider()
 
+        // The library write goes through the song's own tokens: Add to Library on a queue row must
+        // never start the song (`SongActionsHelper.addToLibrary` plays it first).
+        if let client = self.client {
+            Button {
+                SongActionsHelper.addSongToLibrary(
+                    self.song,
+                    client: client,
+                    libraryViewModel: self.libraryViewModel
+                )
+            } label: {
+                Label("Add to Library", systemImage: "plus.circle")
+            }
+
+            Divider()
+        }
+
         ShareContextMenu.menuItem(for: self.song)
 
-        if let client = self.client {
+        Divider()
+
+        AddToQueueContextMenu(song: self.song, playerService: self.playerService)
+
+        if self.client != nil {
             Divider()
 
-            AddToPlaylistContextMenu(
-                song: self.song,
-                client: client,
-                libraryViewModel: self.libraryViewModel
-            )
+            // The popover lists the library's playlists — a menu built here could only show the ones
+            // this view already held, which is why it used to offer nothing but Create Playlist.
+            Button {
+                self.onAddToPlaylist()
+            } label: {
+                Label("Add to Playlist", systemImage: "text.badge.plus")
+            }
         }
 
         if !self.isCurrentTrack {
+            Divider()
+
             Button(role: .destructive) {
                 self.onRemove()
             } label: {
                 Label("Remove from Queue", systemImage: "minus.circle")
+            }
+        }
+
+        if let artist = self.song.artists.first(where: { $0.hasNavigableId }) {
+            Divider()
+
+            Button {
+                self.onOpen(.artist(artist))
+            } label: {
+                Label("Go to Artist", systemImage: "person")
+            }
+        }
+
+        if let album = self.song.album, album.hasNavigableId {
+            Button {
+                let playlist = Playlist(
+                    id: album.id,
+                    title: album.title,
+                    description: nil,
+                    thumbnailURL: album.thumbnailURL ?? self.song.thumbnailURL,
+                    trackCount: album.trackCount,
+                    author: album.artistsDisplay
+                )
+                self.onOpen(.album(playlist))
+            } label: {
+                Label("Go to Album", systemImage: "square.stack")
             }
         }
     }

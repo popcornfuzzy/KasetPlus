@@ -5,6 +5,8 @@ import SwiftUI
 @available(macOS 26.0, *)
 struct QueueSidePanelView: View {
     @Environment(PlayerService.self) private var playerService
+    @Environment(SongLikeStatusManager.self) private var likeStatusManager: SongLikeStatusManager?
+    @Environment(LibraryViewModel.self) private var libraryViewModel: LibraryViewModel?
 
     /// Fixed panel width, or `nil` for a panel that fills whatever width it is given.
     ///
@@ -22,6 +24,17 @@ struct QueueSidePanelView: View {
     /// Now Playing sidebar turns it off, because there the queue's rows sit directly on the sidebar
     /// rather than on a panel floating over the window.
     var usesMaterialBackground: Bool = true
+
+    /// Opens a page a row's menu names — Go to Artist, Go to Album.
+    ///
+    /// The rows are an AppKit table, and the panel is not inside a page's `NavigationStack`, so a
+    /// `NavigationLink` here has nothing to resolve against: the route goes to the window, the way the
+    /// Now Playing column's credits do.
+    var onOpen: (DetailNavigationRoute) -> Void = { _ in }
+
+    /// The row Add to Playlist is open for, if any. The popover is SwiftUI's, anchored to that row's own
+    /// rect — a row's menu hands back where it sits, because the menu itself is AppKit's.
+    @State private var addToPlaylistRequest: QueueAddToPlaylistRequest?
 
     var body: some View {
         // Use regular material: GlassEffectContainer breaks NSTableView drag-and-drop
@@ -88,8 +101,33 @@ struct QueueSidePanelView: View {
                         Task {
                             await self.playerService.playWithRadio(song: song)
                         }
+                    },
+                    playerService: self.playerService,
+                    client: self.libraryViewModel?.client ?? self.playerService.ytMusicClient,
+                    likeStatusManager: self.likeStatusManager,
+                    libraryViewModel: self.libraryViewModel,
+                    onOpen: self.onOpen,
+                    popoverIsOpen: self.addToPlaylistRequest != nil,
+                    onAddToPlaylist: { song, anchor in
+                        self.addToPlaylistRequest = QueueAddToPlaylistRequest(song: song, anchor: anchor)
                     }
                 )
+                // The same content every other song's Add to Playlist opens — the library's playlists,
+                // the ones already holding the song, and the composer — anchored to the row the menu
+                // was opened on rather than to the list.
+                .popover(
+                    item: self.$addToPlaylistRequest,
+                    attachmentAnchor: .rect(.rect(self.addToPlaylistRequest?.anchor ?? .zero)),
+                    arrowEdge: .trailing
+                ) { request in
+                    if let client = self.libraryViewModel?.client ?? self.playerService.ytMusicClient {
+                        AddToPlaylistPopoverContent(
+                            song: request.song,
+                            client: client,
+                            libraryViewModel: self.libraryViewModel
+                        )
+                    }
+                }
                 .accessibilityIdentifier(AccessibilityID.Queue.scrollView)
             }
 
@@ -140,6 +178,17 @@ struct QueueTableState {
     let manualQueueCount: Int
 }
 
+/// What a queue row's Add to Playlist opens, and where.
+///
+/// The anchor is the clicked row's rect in the panel's own space, so the popover opens beside that row
+/// instead of wherever the list happens to be.
+@available(macOS 26.0, *)
+struct QueueAddToPlaylistRequest: Identifiable {
+    var id: String { self.song.videoId }
+    let song: Song
+    let anchor: CGRect
+}
+
 // MARK: - QueueListControllerRepresentable
 
 @available(macOS 26.0, *)
@@ -162,6 +211,17 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
     let onRemove: (String) -> Void
     let onClearHandQueued: () -> Void
     let onStartRadio: (Song) -> Void
+    /// The services the row's menu acts through. `nil` leaves the items that need them out of the menu.
+    let playerService: PlayerService?
+    let client: (any YTMusicClientProtocol)?
+    let likeStatusManager: SongLikeStatusManager?
+    let libraryViewModel: LibraryViewModel?
+    /// Opens a page the row's menu names.
+    let onOpen: (DetailNavigationRoute) -> Void
+    /// Whether the panel's Add to Playlist popover is on screen, so the queue holds still while it is.
+    let popoverIsOpen: Bool
+    /// Opens that popover for a row: the row's song, and the row's rect to anchor to.
+    let onAddToPlaylist: (Song, CGRect) -> Void
 
     func makeNSViewController(context: Context) -> QueueListViewController {
         let viewController = QueueListViewController()
@@ -182,6 +242,7 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             manualQueueCount: self.manualQueueCount
         )
         coordinator.isPlaying = self.isPlaying
+        coordinator.setAddToPlaylistPopoverOpen(self.popoverIsOpen)
         coordinator.reloadIfNeeded(in: viewController.tableView)
         // Update current track highlighting and waveform animation
         if let tableView = viewController.tableView {
@@ -210,7 +271,13 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             onReorder: self.onReorder,
             onRemove: self.onRemove,
             onClearHandQueued: self.onClearHandQueued,
-            onStartRadio: self.onStartRadio
+            onStartRadio: self.onStartRadio,
+            playerService: self.playerService,
+            client: self.client,
+            likeStatusManager: self.likeStatusManager,
+            libraryViewModel: self.libraryViewModel,
+            onOpen: self.onOpen,
+            onAddToPlaylist: self.onAddToPlaylist
         )
     }
 
@@ -358,6 +425,19 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         let onRemove: (String) -> Void
         let onClearHandQueued: () -> Void
         let onStartRadio: (Song) -> Void
+        /// The services the row's menu acts through; a menu never offers an action it cannot run.
+        let playerService: PlayerService?
+        let client: (any YTMusicClientProtocol)?
+        let likeStatusManager: SongLikeStatusManager?
+        let libraryViewModel: LibraryViewModel?
+        /// Opens a page the row's menu names — the panel has no navigation stack of its own.
+        let onOpen: (DetailNavigationRoute) -> Void
+        /// Opens the panel's Add to Playlist popover for a row: that row's song, and its rect.
+        let onAddToPlaylist: (Song, CGRect) -> Void
+        /// Whether that popover is on screen. While it is, the queue holds still.
+        private var isAddToPlaylistPopoverOpen = false
+        /// The table row the menu was opened on, which the popover anchors to.
+        private var addToPlaylistRow: Int?
         weak var viewController: QueueListViewController?
         /// The table's rows, captions included.
         private(set) var rows: [Row] = []
@@ -376,7 +456,11 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
 
         init(queue: [Song], currentIndex: Int, manualQueueCount: Int = 0, isPlaying: Bool,
              onSelect: @escaping (Int) -> Void, onReorder: @escaping (Int, Int) -> QueueTableState?, onRemove: @escaping (String) -> Void,
-             onClearHandQueued: @escaping () -> Void = {}, onStartRadio: @escaping (Song) -> Void)
+             onClearHandQueued: @escaping () -> Void = {}, onStartRadio: @escaping (Song) -> Void,
+             playerService: PlayerService? = nil, client: (any YTMusicClientProtocol)? = nil,
+             likeStatusManager: SongLikeStatusManager? = nil, libraryViewModel: LibraryViewModel? = nil,
+             onOpen: @escaping (DetailNavigationRoute) -> Void = { _ in },
+             onAddToPlaylist: @escaping (Song, CGRect) -> Void = { _, _ in })
         {
             self.queue = queue
             self.currentIndex = currentIndex
@@ -387,6 +471,12 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             self.onRemove = onRemove
             self.onClearHandQueued = onClearHandQueued
             self.onStartRadio = onStartRadio
+            self.playerService = playerService
+            self.client = client
+            self.likeStatusManager = likeStatusManager
+            self.libraryViewModel = libraryViewModel
+            self.onOpen = onOpen
+            self.onAddToPlaylist = onAddToPlaylist
             super.init()
             self.rebuildRows()
         }
@@ -419,6 +509,11 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             else { return }
 
             let currentChanged = self.previousCurrentIndex != self.currentIndex
+
+            // The queue holds still while the Add to Playlist popover is open, and the change is left
+            // unrecorded so it catches up when the popover closes.
+            guard !self.isAddToPlaylistPopoverOpen else { return }
+
             self.previousCurrentIndex = self.currentIndex
 
             if !self.hasPerformedInitialScroll {
@@ -778,39 +873,212 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
         /// Playing sidebar by hand.
         func menu(forRow row: Int) -> NSMenu? {
             guard let index = self.queueIndex(forTableRow: row), let song = queue[safe: index] else { return nil }
+            self.addToPlaylistRow = row
+
+            // One entry per group of items, the way every other song menu in the app is arranged. A
+            // group with nothing to show is dropped, so the menu never opens with a rule or draws two
+            // of them in a row; the groups are joined by one separator each below.
+            var sections: [[NSMenuItem]] = []
+
+            sections.append([
+                self.makeMenuItem(
+                    String(localized: "Play"),
+                    systemImage: "play.fill",
+                    action: #selector(Coordinator.contextMenuPlay(_:)),
+                    representedObject: index
+                ),
+            ])
+
+            var rating: [NSMenuItem] = []
+            if let likeStatusManager = self.likeStatusManager {
+                if likeStatusManager.isLiked(song) {
+                    rating.append(self.makeMenuItem(
+                        String(localized: "Unlike"),
+                        systemImage: "hand.thumbsup.fill",
+                        action: #selector(Coordinator.contextMenuUnlike(_:)),
+                        representedObject: song
+                    ))
+                } else {
+                    rating.append(self.makeMenuItem(
+                        String(localized: "Like"),
+                        systemImage: "hand.thumbsup",
+                        action: #selector(Coordinator.contextMenuLike(_:)),
+                        representedObject: song
+                    ))
+                    if likeStatusManager.isDisliked(song) {
+                        rating.append(self.makeMenuItem(
+                            String(localized: "Remove Dislike"),
+                            systemImage: "hand.thumbsdown.fill",
+                            action: #selector(Coordinator.contextMenuUndislike(_:)),
+                            representedObject: song
+                        ))
+                    } else {
+                        rating.append(self.makeMenuItem(
+                            String(localized: "Dislike"),
+                            systemImage: "hand.thumbsdown",
+                            action: #selector(Coordinator.contextMenuDislike(_:)),
+                            representedObject: song
+                        ))
+                    }
+                }
+            }
+            sections.append(rating)
+
+            sections.append([
+                self.makeMenuItem(
+                    String(localized: "Start Radio"),
+                    systemImage: StartRadioContextMenu.systemImage,
+                    action: #selector(Coordinator.contextMenuStartRadio(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            // An item whose service the panel was never given is left out rather than shown dead.
+            sections.append(self.client == nil ? [] : [
+                self.makeMenuItem(
+                    String(localized: "Add to Library"),
+                    systemImage: "plus.circle",
+                    action: #selector(Coordinator.contextMenuAddToLibrary(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            sections.append(song.shareURL == nil ? [] : [
+                self.makeMenuItem(
+                    String(localized: "Share"),
+                    systemImage: "square.and.arrow.up",
+                    action: #selector(Coordinator.contextMenuShare(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            sections.append(self.playerService == nil ? [] : [
+                self.makeMenuItem(
+                    String(localized: "Play Next"),
+                    systemImage: "text.insert",
+                    action: #selector(Coordinator.contextMenuPlayNext(_:)),
+                    representedObject: song
+                ),
+                self.makeMenuItem(
+                    String(localized: "Add to Queue"),
+                    systemImage: "text.append",
+                    action: #selector(Coordinator.contextMenuAddToQueue(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            // Add to Playlist opens the popover every other song's menu opens, rather than a submenu
+            // built here: a menu is assembled before the library has answered, so the submenu could
+            // only ever offer the playlists this panel happened to hold — on a fresh launch, none.
+            sections.append(self.client == nil ? [] : [
+                self.makeMenuItem(
+                    String(localized: "Add to Playlist"),
+                    systemImage: "text.badge.plus",
+                    action: #selector(Coordinator.contextMenuAddToPlaylist(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            // The playing row cannot leave the queue, so its menu offers no removal.
+            sections.append(index == self.currentIndex ? [] : [
+                self.makeMenuItem(
+                    String(localized: "Remove from Queue"),
+                    systemImage: "minus.circle",
+                    action: #selector(Coordinator.contextMenuRemove(_:)),
+                    representedObject: song
+                ),
+            ])
+
+            var pages: [NSMenuItem] = []
+            if let artist = song.artists.first(where: { $0.hasNavigableId }) {
+                pages.append(self.makeMenuItem(
+                    String(localized: "Go to Artist"),
+                    systemImage: "person",
+                    action: #selector(Coordinator.contextMenuGoToArtist(_:)),
+                    representedObject: artist
+                ))
+            }
+            if let album = song.album, album.hasNavigableId {
+                let playlist = Playlist(
+                    id: album.id,
+                    title: album.title,
+                    description: nil,
+                    thumbnailURL: album.thumbnailURL ?? song.thumbnailURL,
+                    trackCount: album.trackCount,
+                    author: album.artistsDisplay
+                )
+                pages.append(self.makeMenuItem(
+                    String(localized: "Go to Album"),
+                    systemImage: "square.stack",
+                    action: #selector(Coordinator.contextMenuGoToAlbum(_:)),
+                    representedObject: playlist
+                ))
+            }
+            sections.append(pages)
+
             let menu = NSMenu()
-
-            let startRadioItem = NSMenuItem(title: "Start Radio", action: #selector(Coordinator.contextMenuStartRadio(_:)), keyEquivalent: "")
-            startRadioItem.target = self
-            startRadioItem.representedObject = song
-            startRadioItem.image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: nil)
-            menu.addItem(startRadioItem)
-
-            menu.addItem(NSMenuItem.separator())
-
-            if song.shareURL != nil {
-                let shareItem = NSMenuItem(title: "Share", action: #selector(Coordinator.contextMenuShare(_:)), keyEquivalent: "")
-                shareItem.target = self
-                shareItem.representedObject = song
-                shareItem.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: nil)
-                menu.addItem(shareItem)
-                menu.addItem(NSMenuItem.separator())
+            for section in sections where !section.isEmpty {
+                if !menu.items.isEmpty {
+                    menu.addItem(.separator())
+                }
+                section.forEach(menu.addItem)
             }
-
-            if index != self.currentIndex {
-                let removeItem = NSMenuItem(title: "Remove from Queue", action: #selector(Coordinator.contextMenuRemove(_:)), keyEquivalent: "")
-                removeItem.target = self
-                removeItem.representedObject = song
-                removeItem.image = NSImage(systemSymbolName: "minus.circle", accessibilityDescription: nil)
-                menu.addItem(removeItem)
-            }
-
             return menu
+        }
+
+        /// An item for this coordinator, with the song (or the target it names) carried on it.
+        private func makeMenuItem(
+            _ title: String,
+            systemImage: String,
+            action: Selector?,
+            representedObject: Any? = nil
+        ) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = representedObject
+            item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
+            return item
+        }
+
+        @objc private func contextMenuPlay(_ sender: NSMenuItem) {
+            guard let index = sender.representedObject as? Int, self.queue.indices.contains(index) else { return }
+            self.onSelect(index)
+        }
+
+        @objc private func contextMenuLike(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let likeStatusManager = self.likeStatusManager else { return }
+            SongActionsHelper.likeSong(song, likeStatusManager: likeStatusManager)
+        }
+
+        @objc private func contextMenuUnlike(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let likeStatusManager = self.likeStatusManager else { return }
+            SongActionsHelper.unlikeSong(song, likeStatusManager: likeStatusManager)
+        }
+
+        @objc private func contextMenuDislike(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let likeStatusManager = self.likeStatusManager else { return }
+            SongActionsHelper.dislikeSong(song, likeStatusManager: likeStatusManager)
+        }
+
+        @objc private func contextMenuUndislike(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let likeStatusManager = self.likeStatusManager else { return }
+            SongActionsHelper.undislikeSong(song, likeStatusManager: likeStatusManager)
         }
 
         @objc private func contextMenuStartRadio(_ sender: NSMenuItem) {
             guard let song = sender.representedObject as? Song else { return }
             self.onStartRadio(song)
+        }
+
+        @objc private func contextMenuAddToLibrary(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let client = self.client else { return }
+            // Never `SongActionsHelper.addToLibrary`: that plays the song first, and a library write
+            // from a queue row must leave the playhead where it is.
+            SongActionsHelper.addSongToLibrary(
+                song,
+                client: client,
+                libraryViewModel: self.libraryViewModel
+            )
         }
 
         @objc private func contextMenuShare(_ sender: NSMenuItem) {
@@ -820,9 +1088,77 @@ struct QueueListControllerRepresentable: NSViewControllerRepresentable {
             }
         }
 
+        @objc private func contextMenuPlayNext(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let playerService = self.playerService else { return }
+            SongActionsHelper.addToQueueNext(song, playerService: playerService)
+        }
+
+        @objc private func contextMenuAddToQueue(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song, let playerService = self.playerService else { return }
+            SongActionsHelper.addToQueueLast(song, playerService: playerService)
+        }
+
+        @objc private func contextMenuAddToPlaylist(_ sender: NSMenuItem) {
+            guard let song = sender.representedObject as? Song else { return }
+            // The row's own song, and the row's own rect: the popover is that row's, not the playing one's.
+            self.onAddToPlaylist(song, self.addToPlaylistAnchor(forRow: self.addToPlaylistRow))
+        }
+
+        /// The clicked row's rect in the panel's own space, which is the frame the popover attaches to.
+        private func addToPlaylistAnchor(forRow row: Int?) -> CGRect {
+            guard let row,
+                  let tableView = self.viewController?.tableView,
+                  row < tableView.numberOfRows,
+                  let visible = tableView.enclosingScrollView?.contentView.bounds
+            else { return .zero }
+
+            // `NSTableView` is flipped, so a row's rect already counts down from the document's top; the
+            // list can be taller than the panel, so it is measured against the part that is on screen.
+            let rect = tableView.rect(ofRow: row)
+            guard !rect.isEmpty else { return .zero }
+            return CGRect(
+                x: rect.minX - visible.minX,
+                y: rect.minY - visible.minY,
+                width: rect.width,
+                height: rect.height
+            )
+        }
+
+        /// The panel tells the queue when its Add to Playlist popover opens and closes.
+        ///
+        /// The countdown that slides the playing row back is stopped rather than left running — it would
+        /// move the row the popover was opened on — and it starts again from the close.
+        func setAddToPlaylistPopoverOpen(_ isOpen: Bool) {
+            guard isOpen != self.isAddToPlaylistPopoverOpen else { return }
+            self.isAddToPlaylistPopoverOpen = isOpen
+
+            if isOpen {
+                self.resumeAutoScrollTimer?.invalidate()
+                self.resumeAutoScrollTimer = nil
+                return
+            }
+
+            if let tableView = self.viewController?.tableView {
+                self.syncAutoScroll(in: tableView)
+            }
+            if self.isUserScrolling {
+                self.registerUserScrollInteraction()
+            }
+        }
+
         @objc private func contextMenuRemove(_ sender: NSMenuItem) {
             guard let song = sender.representedObject as? Song else { return }
             self.onRemove(song.videoId)
+        }
+
+        @objc private func contextMenuGoToArtist(_ sender: NSMenuItem) {
+            guard let artist = sender.representedObject as? Artist else { return }
+            self.onOpen(.artist(artist))
+        }
+
+        @objc private func contextMenuGoToAlbum(_ sender: NSMenuItem) {
+            guard let playlist = sender.representedObject as? Playlist else { return }
+            self.onOpen(.album(playlist))
         }
     }
 }

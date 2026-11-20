@@ -516,11 +516,15 @@ struct NowPlayingSidebarUpNext: View {
 /// (`NowPlayingSidebarQueuePageTests`).
 @available(macOS 26.0, *)
 struct NowPlayingSidebarQueuePage: View {
+    /// Opens a page a queue row's menu names — see `QueueSidePanelView.onOpen`.
+    var onOpen: (DetailNavigationRoute) -> Void = { _ in }
+
     var body: some View {
         QueueSidePanelView(
             width: nil,
             showsHeader: false,
-            usesMaterialBackground: false
+            usesMaterialBackground: false,
+            onOpen: self.onOpen
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier(AccessibilityID.NowPlayingSidebar.queuePage)

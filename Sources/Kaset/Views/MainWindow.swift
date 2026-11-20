@@ -751,9 +751,9 @@ struct MainWindow: View {
                         LyricsView(client: client)
                     } else if self.playerService.showQueue {
                         if self.playerService.queueDisplayMode == .sidepanel {
-                            QueueSidePanelView()
+                            QueueSidePanelView(onOpen: { route in self.openFromNowPlayingSidebar(route) })
                         } else {
-                            QueueView()
+                            QueueView(onOpen: { route in self.openFromNowPlayingSidebar(route) })
                         }
                     }
                 }

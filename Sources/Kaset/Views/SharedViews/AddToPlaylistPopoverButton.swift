@@ -285,10 +285,15 @@ struct AddToPlaylistPopoverContent: View {
             .frame(width: 340)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14))
         }
+        // Everything here answers for one song, and the resolved memberships outrank the API's own
+        // answer in `containsVideo(for:)`: handed a different song (the player bar's popover follows
+        // the track), the previous song's must go before the new one is read.
         .task(id: self.song.videoId) {
-            if self.createTitle.isEmpty {
-                self.createTitle = self.song.title
-            }
+            self.resolvedMembershipByPlaylistId.removeAll()
+            self.probingMembershipPlaylistIds.removeAll()
+            self.mutatingIds.removeAll()
+            self.entries = []
+            self.createTitle = self.song.title
             await self.loadEntries()
         }
         .onChange(of: self.libraryPlaylistOrder) { _, _ in
