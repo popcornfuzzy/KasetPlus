@@ -37,14 +37,9 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .pageTitle(id: "home", title: String(localized: "Home"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-            // The bar is attached *inside* the stack, to the page the stack shows.
-            //
-            // Applied outside it, the bar belongs to the stack's container instead: it survives a push,
-            // and the pushed page — every destination has a bar of its own — then draws a second one
-            // directly above it. Measured in a reproduction: with the inset inside the stack a push
-            // renders one bar, with it outside, two. See `PlayerBar`.
+            // The pane draws the bar itself (`PlayerBar`); the page reserves the band it sits in.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                PlayerBar()
+                PlayerBar.reservedBand
             }
         }
         // The feed is the account's, so the page tells its model which account it is showing. The model

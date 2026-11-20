@@ -138,6 +138,10 @@ struct WindowShell: NSViewControllerRepresentable {
     let content: AnyView
     let inspector: AnyView
 
+    /// The player bar, hosted **beside** the page rather than by it (see `PagePaneController`), so a
+    /// page's push/pop slide cannot move it. Built where the environment it needs is in scope.
+    var bar: AnyView = AnyView(EmptyView())
+
     let layout: WindowShellLayout
 
     /// Whether the Now Playing sidebar is open. The app's page state is the source of truth, so the pane
@@ -162,6 +166,7 @@ struct WindowShell: NSViewControllerRepresentable {
         controller.apply(
             sidebar: self.sidebar,
             content: self.content,
+            bar: self.bar,
             inspector: self.inspector,
             layout: self.layout,
             state: WindowShellState(
@@ -179,6 +184,7 @@ struct WindowShell: NSViewControllerRepresentable {
         controller.apply(
             sidebar: self.sidebar,
             content: self.content,
+            bar: self.bar,
             inspector: self.inspector,
             layout: self.layout,
             state: WindowShellState(
@@ -230,6 +236,56 @@ struct ShellPane<Content: View>: View {
     }
 }
 
+// MARK: - PagePaneController
+
+/// The content pane: the page, with the player bar fixed under it.
+///
+/// The bar is a **sibling** of the page's hosting view, not a part of it, and that is what keeps it still:
+/// a `CATransition` moves the layer it is added to, so a bar drawn by the page slid away with it on every
+/// push and pop (`PageSlideTransition`). The page is drawn behind the bar's band, so its own background is
+/// still what the bar's glass sits on, and each page reserves that band with `PlayerBar.reservedBand`.
+@available(macOS 26.0, *)
+@MainActor
+final class PagePaneController: NSViewController {
+    private let page: NSViewController
+    private let bar: NSViewController
+
+    init(page: NSViewController, bar: NSViewController) {
+        self.page = page
+        self.bar = bar
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        nil
+    }
+
+    override func loadView() {
+        let container = NSView()
+        self.view = container
+        self.addChild(self.page)
+        self.addChild(self.bar)
+
+        let pageView = self.page.view
+        let barView = self.bar.view
+        for view in [pageView, barView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            pageView.topAnchor.constraint(equalTo: container.topAnchor),
+            pageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pageView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            barView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            barView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            barView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            barView.heightAnchor.constraint(equalToConstant: PlayerBar.bandHeight),
+        ])
+    }
+}
+
 // MARK: - WindowShellController
 
 /// The three-pane split controller behind `WindowShell`, and the owner of the window's toolbar.
@@ -243,6 +299,14 @@ final class WindowShellController: NSSplitViewController {
     let sidebarController = WindowShellController.makePaneController()
     let contentController = WindowShellController.makePaneController()
     let inspectorController = WindowShellController.makePaneController()
+
+    /// The player bar, hosted outside the page (see `PagePaneController`). Never measured for an intrinsic
+    /// size: its band is the fixed one the page reserves, not whatever its contents would like.
+    private let barController: NSHostingController<AnyView> = {
+        let controller = NSHostingController(rootView: AnyView(EmptyView()))
+        controller.sizingOptions = []
+        return controller
+    }()
 
     /// A pane's width is the split view item's (`minimumThickness`/`maximumThickness`, the autosaved
     /// divider), never its content's. Left to itself a pane's hosting controller derives a minimum and an
@@ -262,6 +326,9 @@ final class WindowShellController: NSSplitViewController {
     private let barBackdrop = WindowBarBackdropController()
 
     private let logger = DiagnosticsLogger.ui
+
+    /// The content item's view: the page, with the bar's band under it.
+    private lazy var contentPane = PagePaneController(page: self.contentController, bar: self.barController)
 
     private var sidebarItem: NSSplitViewItem?
     private var contentItem: NSSplitViewItem?
@@ -397,6 +464,9 @@ final class WindowShellController: NSSplitViewController {
     func apply(
         sidebar: AnyView,
         content: AnyView,
+        // Defaulted for the harnesses that build the shell without a bar: the bar is the app's page
+        // chrome, not part of the shell's own layout.
+        bar: AnyView = AnyView(EmptyView()),
         inspector: AnyView,
         layout: WindowShellLayout,
         state: WindowShellState,
@@ -407,6 +477,7 @@ final class WindowShellController: NSSplitViewController {
         // The panes are replaced every pass; SwiftUI diffs them.
         self.sidebarController.rootView = sidebar
         self.contentController.rootView = content
+        self.barController.rootView = bar
         self.inspectorController.rootView = inspector
 
         self.onInspectorCollapsedChange = onInspectorCollapsedChange
@@ -475,7 +546,7 @@ final class WindowShellController: NSSplitViewController {
         // missing when the window was briefly made standard.
         sidebarItem.allowsFullHeightLayout = true
 
-        let contentItem = NSSplitViewItem(viewController: self.contentController)
+        let contentItem = NSSplitViewItem(viewController: self.contentPane)
         contentItem.canCollapse = false
         // The lowest holding priority: a window resize gives its space to the page, not to a sidebar.
         contentItem.holdingPriority = NSLayoutConstraint.Priority(249)

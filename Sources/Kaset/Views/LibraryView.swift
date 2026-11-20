@@ -145,10 +145,8 @@ struct LibraryView: View {
                     client: self.viewModel.client
                 )
             }
-            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
-            // a second bar under the destination's own. See `PlayerBar`.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                PlayerBar()
+                PlayerBar.reservedBand
             }
         }
         .environment(self.viewModel)

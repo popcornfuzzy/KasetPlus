@@ -1210,36 +1210,32 @@ GlassEffectContainer(spacing: 0) {
 
 ### PlayerBar Integration
 
-The `PlayerBar` is added to **every navigable view** via `safeAreaInset`, and the inset belongs *inside*
-the page's `NavigationStack` — on the page the stack shows, not on the stack itself:
+The `PlayerBar` is drawn **once**, by the window's content pane, and every page only reserves its band:
 
 ```swift
-// In HomeView, LibraryView, SearchView, PlaylistDetailView
-NavigationStack(path: $path) {
-    content
-        .safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar() }
-}
+// PagePaneController (the content split item's view controller)
+pageView  // the page's NSHostingView, filling the pane
+barView   // PlayerBar's NSHostingView, pinned to the bottom, height PlayerBar.bandHeight
+
+// In HomeView, LibraryView, SearchView, PlaylistDetailView, …
+.safeAreaInset(edge: .bottom, spacing: 0) { PlayerBar.reservedBand }
 ```
 
-**Why not in MainWindow?**
-- The shell's content pane shows whichever page the sidebar selects; the pages are what own a stack each
-- Views pushed onto a `NavigationStack` don't inherit the parent's `safeAreaInset`
-- Each view must explicitly include the `PlayerBar`
+**Why the bar is not the page's** ([ADR-0055](adr/0055-page-push-pop-slide.md)). It used to be: every page
+attached its own with `safeAreaInset`, inside its stack, because an inset on the stack outlives a push and
+every destination page brought a bar of its own — the "two bars stacked one above the other" report,
+measured as `green@568 … red@620` for the inset on the stack against `green@568` for the inset on the
+root page. A page's bar is part of the page, though, so when the page gained the system's push/pop slide it
+slid away with it — reported as "it works but the playerbar is in the animation". A `CATransition` moves the
+whole layer, so the bar cannot be pinned inside one: it had to leave the page.
 
-**Why inside the stack, and not on it.** An inset applied to the stack belongs to the stack's
-*container*, so it outlives a push — and every destination page (`PlaylistDetailView`,
-`ArtistDetailView`, `TopSongsView`, …) brings a bar of its own, which then draws a **second** bar
-directly above it. That is the "the player bar duplicated, two on top of each other" report, and it
-appeared on any push from any page that hosted a stack: Home→album, History→artist, Library→playlist,
-Podcasts→show. Inside the stack the bar goes away with the page that owns it.
+The bar is a **sibling** of the page's hosting view, so the transition never covers it. The page still
+fills the pane behind the bar, which keeps its own background — an artist page's accent gradient included —
+under the bar's glass, and each page's inset still belongs *inside* its stack, so a pushed page reserves the
+band too. The band is `PlayerBar.bandHeight` (52pt capsule + 12pt under it), stated in one place.
 
-Measured, both ways, in a reproduction of exactly this arrangement (root bar red, destination bar green,
-layer tree drawn to a bitmap and the bar bands counted):
-
-| Inset | After a push |
-|-------|--------------|
-| on the `NavigationStack` | `green@568 … red@620` — **two bars**, stacked |
-| on the stack's root page | `green@568` — one bar |
+The bar's SwiftUI is a new root, so it inherits nothing from the window: `MainWindow` states the objects it
+reads (`PlayerService`, `WebKitManager`, `LibraryViewModel`, `CastService`) where it builds it.
 
 ### Sidebar
 

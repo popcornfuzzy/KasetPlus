@@ -39,10 +39,8 @@ struct PodcastsView: View {
             // second `PodcastShow` destination on this stack, and opening a show then re-entered layout
             // and froze the app (ADR-0023).
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-            // Inside the stack, not outside it: an inset on the stack itself outlives a push and stacks
-            // a second bar under the destination's own (`PodcastShowView`, `AllEpisodesView`).
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                PlayerBar()
+                PlayerBar.reservedBand
             }
         }
         .onAppear {
@@ -261,7 +259,7 @@ struct PodcastShowView: View {
             .accentBackground(from: self.viewModel.show.thumbnailURL)
             .pageTitle(id: "podcast-\(self.show.id)", title: self.viewModel.show.title)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                PlayerBar()
+                PlayerBar.reservedBand
             }
             .task {
                 await self.viewModel.load()
@@ -795,7 +793,7 @@ struct AllEpisodesView: View {
         .accentBackground(from: self.show.thumbnailURL)
         .pageTitle(id: "all-episodes-\(self.show.id)", title: String(localized: "All Episodes"))
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            PlayerBar()
+            PlayerBar.reservedBand
         }
         .onScrollPhaseChange { _, newPhase, _ in
             let scrolling = newPhase != .idle

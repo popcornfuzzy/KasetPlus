@@ -55,10 +55,8 @@ struct SearchView: View {
             }
             .pageTitle(id: "search", title: String(localized: "Search"))
             .navigationDestinations(client: self.viewModel.client, artistPath: self.$navigationPath)
-            // Inside the stack, not outside it, so the bar goes away with the page that owns it instead
-            // of stacking onto the pushed page's own. See `PlayerBar`.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                PlayerBar()
+                PlayerBar.reservedBand
             }
         }
         .onAppear {

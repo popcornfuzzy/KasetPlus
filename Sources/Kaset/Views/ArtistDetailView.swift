@@ -36,9 +36,7 @@ struct ArtistDetailView: View {
         .accentBackground(from: self.viewModel.artistDetail?.thumbnailURL?.highQualityThumbnailURL)
         .pageTitle(id: "artist-\(self.artist.id)", title: self.artist.name)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.viewModel.loadingState {} else {
-                PlayerBar()
-            }
+            PlayerBar.reservedBand
         }
         .task {
             if self.viewModel.loadingState == .idle {

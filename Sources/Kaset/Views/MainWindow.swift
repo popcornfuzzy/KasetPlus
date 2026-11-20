@@ -50,6 +50,7 @@ struct MainWindow: View {
     @Environment(WebKitManager.self) private var webKitManager
     @Environment(AccountService.self) private var accountService
     @Environment(SongLikeStatusManager.self) private var likeStatusManager
+    @Environment(CastService.self) private var castService: CastService?
     @Environment(\.showCommandBar) private var showCommandBar
     @Environment(\.showWhatsNew) private var showWhatsNew
 
@@ -557,6 +558,16 @@ struct MainWindow: View {
             sidebar: AnyView(self.sidebarPane),
             content: AnyView(self.contentPane),
             inspector: AnyView(self.inspectorPane),
+            // The bar is the pane's, not the page's: inside the page it moved with the page on every
+            // push and pop. Its environment is stated here because a hosting view of its own is a new
+            // SwiftUI root and inherits none of the window's.
+            bar: AnyView(
+                PlayerBar()
+                    .environment(self.playerService)
+                    .environment(self.webKitManager)
+                    .environment(self.libraryViewModel)
+                    .environment(self.castService)
+            ),
             layout: self.shellLayout,
             showsInspector: self.playerService.isNowPlayingSidebarVisible,
             seedInspectorWidth: self.seedInspectorWidth,

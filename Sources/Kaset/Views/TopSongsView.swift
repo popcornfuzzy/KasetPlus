@@ -38,9 +38,7 @@ struct TopSongsView: View {
         }
         .pageTitle(id: "topsongs-\(self.viewModel.destination.artistId)", title: String(localized: "Top songs"))
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.viewModel.loadingState {} else {
-                PlayerBar()
-            }
+            PlayerBar.reservedBand
         }
         .task {
             if self.viewModel.loadingState == .idle {

@@ -5,17 +5,30 @@ import SwiftUI
 
 /// Player bar shown at the bottom of the content area, styled like Apple Music with Liquid Glass.
 ///
-/// Every page attaches its own, with `safeAreaInset(edge: .bottom)`, and that inset belongs **inside** the
-/// page's `NavigationStack` — applied to the stack itself it belongs to the stack's container instead, so
-/// it outlives a push while the destination page brings a bar of its own, and the reader sees two bars
-/// stacked one above the other. Measured in a reproduction of the two arrangements: with the inset inside
-/// the stack a push renders one bar, with it outside, two.
+/// The bar is drawn **once**, by the window's content pane (`PagePaneController`), and no longer by the
+/// pages. A page's own bar is part of the page, so it moved with the page on every push and pop — the
+/// reader's report was that the player bar was in the slide (`PageSlideTransition`). The pane hosts it as a
+/// sibling of the page's hosting view, and each page reserves its band here, inside its own stack, so the
+/// page's content still ends above the bar whether it is the root or a pushed page.
 @available(macOS 26.0, *)
 struct PlayerBar: View {
     private static let brandAccent = PackageResourceLookup.brandAccent
 
     /// The bar's height, and the height of the capsule its glass — and its loading wash — are drawn in.
     private static let height: CGFloat = 52
+    /// The space the bar keeps under that capsule.
+    private static let bottomPadding: CGFloat = 12
+
+    /// The band the bar occupies at the bottom of the content pane: the capsule and the space under it.
+    ///
+    /// The pane hosts the bar in exactly this band, and every page reserves it with ``reservedBand`` — so
+    /// the two are one number rather than two that have to be kept in step.
+    static let bandHeight: CGFloat = PlayerBar.height + PlayerBar.bottomPadding
+
+    /// What a page leaves at its bottom for the bar: the band the pane draws it in.
+    static var reservedBand: some View {
+        Color.clear.frame(height: Self.bandHeight)
+    }
 
     @Environment(PlayerService.self) private var playerService
     @Environment(WebKitManager.self) private var webKitManager
@@ -125,7 +138,7 @@ struct PlayerBar: View {
             .animation(AppAnimation.standard, value: self.playerService.playerBarLoading)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 12)
+        .padding(.bottom, Self.bottomPadding)
         .background {
             // Keyboard shortcuts for media controls.
             //

@@ -226,9 +226,7 @@ struct PlaylistDetailView: View {
             )
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.viewModel.loadingState {} else {
-                PlayerBar()
-            }
+            PlayerBar.reservedBand
         }
         // Keyed by the active account: the tracks here are that account's list (Liked Music is the
         // account's liked songs, a playlist is the account's copy), so switching channels has to

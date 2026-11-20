@@ -24,9 +24,7 @@ struct ArtistDiscographyView: View {
         }
         .pageTitle(id: "discography-\(self.viewModel.destination.artistName)-\(self.viewModel.destination.sectionTitle)", title: self.viewModel.destination.sectionTitle)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.viewModel.loadingState {} else {
-                PlayerBar()
-            }
+            PlayerBar.reservedBand
         }
         .task {
             if self.viewModel.loadingState == .idle {

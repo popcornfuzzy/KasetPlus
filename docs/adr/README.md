@@ -87,3 +87,5 @@ What becomes easier or more difficult because of this change?
 | [0049](0049-window-content-sizing.md) | The Window and Its Panes Never Size Themselves from Content | Accepted |
 | [0051](0051-now-playing-card-expansion.md) | A Card Opens into a Page by Growing | Accepted |
 | [0052](0052-delta-updates.md) | Delta Updates in the Appcast Feed | Accepted |
+| [0054](0054-search-suggestion-list.md) | The Search Suggestion List | Accepted |
+| [0055](0055-page-push-pop-slide.md) | The Page Push/Pop Slide (and the Bar That Left the Pages) | Accepted |

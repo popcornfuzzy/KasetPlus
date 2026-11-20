@@ -26,9 +26,7 @@ struct MoodCategoryDetailView: View {
         }
         .pageTitle(id: "mood-\(self.viewModel.category.browseId)", title: self.viewModel.category.title)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if case .error = self.viewModel.loadingState {} else {
-                PlayerBar()
-            }
+            PlayerBar.reservedBand
         }
         .onAppear {
             if self.viewModel.loadingState == .idle {
