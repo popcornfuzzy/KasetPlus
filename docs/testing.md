@@ -20,6 +20,12 @@ a test that needs a gate or a fix:
 - **An environment-dependent suite paying its real-world timeout in a plain run.**
   `CanvasVideoViewTests` drives real AVFoundation; when the decode pipeline does not start, each test
   waits out its 60s readiness deadline. It is behind the same opt-in gate as the on-device model suite.
+- **A test that inherited the machine's display settings.** `PageSlideTransitionTests` checked the page
+  slide while `PageSlideTransition.perform` read Reduce Motion from `NSWorkspace`, and GitHub's macOS
+  runner image turns Reduce Motion on — so the slide was correctly suppressed there and every test of it
+  failed on CI (v0.9.3's release, both attempts) while passing locally. The setting is now an input: the
+  view reads the SwiftUI environment's value, and `perform` and the stack take a stated one, so the tests
+  say what the setting is instead of inheriting the machine's.
 - **A benchmark measuring the machine and calling it a regression.** `KaraokeLyricsPerformanceTests`
   times real frame rasterization against an absolute 12 ms budget. Run beside two thousand other tests
   on a busy laptop, the same duet row that costs 8 ms on a quiet runner cost 16 ms and failed a run in

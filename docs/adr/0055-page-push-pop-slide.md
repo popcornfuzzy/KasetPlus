@@ -34,8 +34,12 @@ layer receives it, which way it goes, and when it must not run at all.
   the window's back control. A deeper path is a push (`.fromRight`: the new page enters from the trailing
   edge, the old one leaves towards the leading edge) and a shallower one is a pop (`.fromLeft`). A change
   at the same depth adds nothing.
-- **Reduce Motion.** Nothing is added while `AccessibilityMotion.shared.reduceMotion` is on: the page
-  swaps with no motion, which is what that setting asks for.
+- **Reduce Motion.** `PageNavigationStack` reads `@Environment(\.accessibilityReduceMotion)` — the value
+  every other animated view in the app reads — and hands it to the slide. Nothing is added while it is
+  on: the page swaps with no motion, which is what that setting asks for. Neither the transition's
+  `perform` nor the stack defaults that value from the process, and both can be given one: SwiftUI's key
+  is read-only, so a test states the setting instead of inheriting it. Why is in the last consequence
+  below.
 - **The swap underneath.** The app's own mutations — the toolbar's back control and the Now Playing
   column's credit routes, which are `PageNavigationModel.goBack()` / `open(_:)` — run in a transaction with
   `disablesAnimations` set, so the stack does not also animate the swap a layer transition is already
@@ -86,13 +90,24 @@ So the bar left the pages:
   survives a push, where before the bar was rebuilt with the page. That is the behaviour Music has.
 - **The window has one bar to reason about.** The "two bars stacked" failure mode the per-page arrangement
   existed to avoid cannot recur: there is no per-page bar left to duplicate.
+- **Reduce Motion is stated, never inherited.** The first build defaulted `perform`'s argument to
+  `AccessibilityMotion.shared.reduceMotion`. GitHub's macOS runner image sets
+  `defaults write com.apple.universalAccess reduceMotion -bool true`
+  (`actions/runner-images`, `images/macos/scripts/build/configure-system.sh`), so on CI the slide was
+  correctly suppressed and every test of it failed — both attempts of the v0.9.3 release — while the same
+  tests passed on a developer's machine. The setting is now the environment's, passed by the view that
+  owns the slide; `perform` takes it as a required argument and the stack takes an optional stated value
+  (`reduceMotion:`), so every test states it and none depends on the machine's display settings — the
+  rule in `docs/testing.md`, and the injection `CanvasService(isEnabled:)` already uses for the same
+  reason.
 
 ## Verification
 
 - `swift test --filter PageSlideTransitionTests`: the transition's type, subtype and duration, the layer it
-  is added to, same-depth and Reduce-Motion suppression, and a real `PageNavigationStack` push/pop driven
+  is added to, same-depth and Reduce-Motion suppression, a real `PageNavigationStack` push/pop driven
   through `PageNavigationModel` asserted on the hosting view's own layer (`CATransition` is filed under
-  Core Animation's key `transition`, not the key it was added with — measured).
+  Core Animation's key `transition`, not the key it was added with — measured), and that the stack's
+  environment is what suppresses it — the test states the value instead of reading the machine's.
 - `swift test --filter ContentPaneBarTests`: the bar's hosting view is in the pane beside the page, not a
   descendant of it, and its frame is the reserved band.
 - The running app: `Page slide: push depth=0->1 host=NSHostingView<AnyView> w=767 layer=yes`, then the

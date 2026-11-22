@@ -11,6 +11,11 @@ import Testing
 /// show. What can be stated is everything that decides what the reader sees — which layer it lands on,
 /// which way it goes, and when it is not added at all — and the layer is the one that matters: a slide
 /// wired to a layer that is not the page's is a page that still swaps in place.
+///
+/// Reduce Motion is stated by every test here, never inherited. GitHub's macOS runner image turns it on
+/// (`defaults write com.apple.universalAccess reduceMotion -bool true`), so a slide that read the process's
+/// own setting was correctly suppressed there — and every test of the slide failed on CI while passing
+/// locally.
 @MainActor
 @Suite(.serialized)
 struct PageSlideTransitionTests {
@@ -22,9 +27,10 @@ struct PageSlideTransitionTests {
     private struct Harness: View {
         let model: PageNavigationModel
         @Bindable var box: PathBox
+        let reduceMotion: Bool
 
         var body: some View {
-            PageNavigationStack(id: "slide-test", path: self.$box.path) {
+            PageNavigationStack(id: "slide-test", path: self.$box.path, reduceMotion: self.reduceMotion) {
                 Text("HOME")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .navigationDestination(for: Artist.self) { artist in
@@ -95,7 +101,7 @@ struct PageSlideTransitionTests {
         // The layer found is the pane the page is drawn into, not the page's own SwiftUI subtree.
         #expect(transition.hostDescription.contains("HostingView"), "\(transition.hostDescription)")
 
-        let push = transition.perform(from: 0, to: 1)
+        let push = transition.perform(from: 0, to: 1, reduceMotion: false)
         #expect(push?.type == .push)
         #expect(push?.subtype == .fromRight)
         #expect(push?.duration == PageSlideTransition.duration)
@@ -104,7 +110,7 @@ struct PageSlideTransitionTests {
             "the transition was added to the pane's layer"
         )
 
-        let pop = transition.perform(from: 1, to: 0)
+        let pop = transition.perform(from: 1, to: 0, reduceMotion: false)
         #expect(pop?.type == .push)
         #expect(pop?.subtype == .fromLeft)
     }
@@ -118,7 +124,7 @@ struct PageSlideTransitionTests {
                 .background(PageSlideProbe(transition: transition))
         )
 
-        #expect(transition.perform(from: 1, to: 1) == nil)
+        #expect(transition.perform(from: 1, to: 1, reduceMotion: false) == nil)
         #expect(hosting.layer?.animation(forKey: PageSlideTransition.animationKey) == nil)
     }
 
@@ -139,7 +145,7 @@ struct PageSlideTransitionTests {
     func thePageStackSlidesOnPushAndPop() {
         let model = PageNavigationModel()
         let box = PathBox()
-        let (_, hosting) = self.host(Harness(model: model, box: box))
+        let (_, hosting) = self.host(Harness(model: model, box: box, reduceMotion: false))
 
         model.open(.artist(Artist(id: "UCslideprobe", name: "Slide Probe")))
         #expect(self.waitForSlide(on: hosting.layer, subtype: .fromRight) != nil, "the push slid")
@@ -148,5 +154,17 @@ struct PageSlideTransitionTests {
         model.goBack()
         #expect(self.waitForSlide(on: hosting.layer, subtype: .fromLeft) != nil, "the pop slid")
         #expect(box.path.isEmpty)
+    }
+
+    @Test("A page that was told to reduce motion swaps with no slide")
+    func theStatedSettingSuppressesTheSlide() {
+        let model = PageNavigationModel()
+        let box = PathBox()
+        let (_, hosting) = self.host(Harness(model: model, box: box, reduceMotion: true))
+
+        model.open(.artist(Artist(id: "UCslideprobe", name: "Slide Probe")))
+        self.pump()
+        #expect(box.path.count == 1, "the page was pushed")
+        #expect(hosting.layer?.animation(forKey: PageSlideTransition.animationKey) == nil)
     }
 }

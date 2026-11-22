@@ -140,11 +140,17 @@ final class PageSlideTransition {
     /// outgoing page leaving the other way — that pair is `CATransition`'s `.push`. Nothing is added when
     /// the depth did not change, or while the reader has asked the system to reduce motion: the page then
     /// swaps with no motion, which is what that setting asks for.
+    ///
+    /// `reduceMotion` is stated by whoever calls this — `PageNavigationStack` passes its environment's
+    /// value, or the one a test states in its place — rather than defaulted to the process's own setting. A default read of `NSWorkspace` made
+    /// every test of the slide report no slide at all on GitHub's macOS runners, whose image turns Reduce
+    /// Motion on (`actions/runner-images`, `images/macos/scripts/build/configure-system.sh`), while the
+    /// same tests passed on a developer's machine.
     @discardableResult
     func perform(
         from oldDepth: Int,
         to newDepth: Int,
-        reduceMotion: Bool = AccessibilityMotion.shared.reduceMotion
+        reduceMotion: Bool
     ) -> CATransition? {
         guard !reduceMotion, oldDepth != newDepth else { return nil }
         guard let layer = self.hostLayer else {
@@ -223,16 +229,36 @@ struct PageSlideProbe: NSViewRepresentable {
 @available(macOS 26.0, *)
 struct PageNavigationStack<Content: View>: View {
     @Environment(PageNavigationModel.self) private var pageNavigation: PageNavigationModel?
+    /// The system's setting, read from the environment as every other animated view in the app reads it.
+    @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
 
     let id: String
     @Binding var path: NavigationPath
+    /// What the slide answers to, when the caller states it; `nil` reads the environment.
+    ///
+    /// `\.accessibilityReduceMotion` is read-only in SwiftUI, and a test process cannot change the system
+    /// setting the environment is filled from, so a test could otherwise only run the slide on a machine
+    /// that has Reduce Motion off. GitHub's macOS runners have it on, which is what failed v0.9.3's release:
+    /// the slide was correctly suppressed and the tests read that as "no slide". Every page leaves this
+    /// `nil`; only tests state it.
+    private let statedReduceMotion: Bool?
     /// The push/pop slide, installed on the pane's layer for each change of the path's depth.
     @State private var slide = PageSlideTransition()
     private let content: () -> Content
 
-    init(id: String, path: Binding<NavigationPath>, @ViewBuilder content: @escaping () -> Content) {
+    private var reduceMotion: Bool {
+        self.statedReduceMotion ?? self.environmentReduceMotion
+    }
+
+    init(
+        id: String,
+        path: Binding<NavigationPath>,
+        reduceMotion: Bool? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
         self.id = id
         self._path = path
+        self.statedReduceMotion = reduceMotion
         self.content = content
     }
 
@@ -257,7 +283,7 @@ struct PageNavigationStack<Content: View>: View {
         // the one place every change passes through, which is why the slide is installed here: the
         // transition has to be on the layer before the content it shows swaps.
         .onChange(of: self.path.count) { oldDepth, newDepth in
-            self.slide.perform(from: oldDepth, to: newDepth)
+            self.slide.perform(from: oldDepth, to: newDepth, reduceMotion: self.reduceMotion)
             self.publish()
         }
         .onDisappear { self.pageNavigation?.retract(id: self.id) }
