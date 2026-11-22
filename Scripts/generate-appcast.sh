@@ -336,6 +336,9 @@ DELTAS_BLOCK=$(printf '%s' "$ITEM" | awk '
 DELTA_COUNT=0
 DELTA_BYTES=0
 DELTA_FILES=()
+NEWEST_BASE_BUILD=""
+NEWEST_BASE_SHARE=0
+NEWEST_BASE_NAME=""
 
 if [[ -n "$DELTAS_BLOCK" ]]; then
   while IFS= read -r enclosure; do
@@ -364,33 +367,62 @@ if [[ -n "$DELTAS_BLOCK" ]]; then
       print_error "Delta $DELTA_NAME is $DELTA_ACTUAL bytes but the feed says $DELTA_LEN."
       exit 1
     fi
-    if [[ -n "$LENGTH" && "$LENGTH" -gt 0 \
-      && "$DELTA_ACTUAL" -gt $((LENGTH * DELTA_MAX_PERCENT / 100)) ]]; then
-      print_error "Delta $DELTA_NAME is $DELTA_ACTUAL bytes, over $DELTA_MAX_PERCENT% of the $LENGTH byte archive."
-      echo "  A patch that large means most of the bundle changed: usually a" >&2
-      echo "  non-deterministic build or moved resources rather than a code change," >&2
-      echo "  and the download would not be worth it. \`BinaryDelta --verbose\`" >&2
-      echo "  shows what moved. Set KASET_DELTA_MAX_PERCENT to accept this one." >&2
-      exit 1
-    fi
-    # --verify needs no key material, so a delta is checked on every run.
-    if [[ -n "$SIGN_UPDATE" ]]; then
-      "$SIGN_UPDATE" --verify "$ARCHIVES_DIR/$DELTA_NAME" "$DELTA_SIG" \
+
+    # --verify still needs the private key: it derives the public key it compares
+    # against, and without one it fails with "Signing key not found" on a runner
+    # that has no keychain entry. Same three cases as the archive signature below.
+    if [[ -z "$SIGN_UPDATE" ]]; then
+      print_warning "sign_update not found; the $DELTA_NAME signature is left unverified."
+    elif [[ "$KEY_AVAILABLE" -eq 1 ]]; then
+      "$SIGN_UPDATE" --ed-key-file "$KEY_FILE" --verify "$ARCHIVES_DIR/$DELTA_NAME" "$DELTA_SIG" \
+        || { print_error "The delta signature does not verify against $DELTA_NAME."; exit 1; }
+    elif [[ "$KEY_AVAILABLE" -eq 2 ]]; then
+      printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - --verify "$ARCHIVES_DIR/$DELTA_NAME" "$DELTA_SIG" \
         || { print_error "The delta signature does not verify against $DELTA_NAME."; exit 1; }
     else
-      print_warning "sign_update not found; the $DELTA_NAME signature is left unverified."
+      print_warning "No key material available; the $DELTA_NAME signature is left unverified."
     fi
 
     DELTA_FILES+=("$ARCHIVES_DIR/$DELTA_NAME")
     DELTA_COUNT=$((DELTA_COUNT + 1))
     DELTA_BYTES=$((DELTA_BYTES + DELTA_ACTUAL))
+
+    # Report each patch against the archive. Only the newest base is held to the
+    # limit below: a base from five releases back always needs a bigger patch,
+    # and Sparkle simply serves the full archive when that patch stops being the
+    # smaller download.
+    DELTA_FROM=$(printf '%s' "$enclosure" | sed -n 's/.*sparkle:deltaFrom="\([^"]*\)".*/\1/p')
+    if [[ -n "$LENGTH" && "$LENGTH" -gt 0 ]]; then
+      DELTA_SHARE=$((DELTA_ACTUAL * 100 / LENGTH))
+      print_success "Delta from build ${DELTA_FROM:-?}: $DELTA_ACTUAL bytes, ${DELTA_SHARE}% of the archive"
+      if [[ "$DELTA_FROM" =~ ^[0-9]+$ ]] \
+        && { [[ -z "$NEWEST_BASE_BUILD" ]] \
+          || [[ "$((10#$DELTA_FROM))" -gt "$((10#$NEWEST_BASE_BUILD))" ]]; }; then
+        NEWEST_BASE_BUILD="$DELTA_FROM"
+        NEWEST_BASE_SHARE="$DELTA_SHARE"
+        NEWEST_BASE_NAME="$DELTA_NAME"
+      fi
+    else
+      print_success "Delta from build ${DELTA_FROM:-?}: $DELTA_ACTUAL bytes"
+    fi
   done <<< "$DELTAS_BLOCK"
 fi
 
+# The newest base is the one most updating copies are on. If its patch costs most
+# of the archive, updates have stopped being incremental: usually a
+# non-deterministic build or a moved resource tree rather than a code change.
+if [[ -n "$NEWEST_BASE_BUILD" && "$NEWEST_BASE_SHARE" -gt "$DELTA_MAX_PERCENT" ]]; then
+  print_error "$NEWEST_BASE_NAME (from build $NEWEST_BASE_BUILD) is $NEWEST_BASE_SHARE% of the archive, over $DELTA_MAX_PERCENT%."
+  echo "  Most of the bundle changed since the previous release, so the download" >&2
+  echo "  would not be worth it. \`BinaryDelta --verbose\` shows what moved." >&2
+  echo "  Set KASET_DELTA_MAX_PERCENT to accept this release anyway." >&2
+  exit 1
+fi
+
 if [[ "$DELTA_COUNT" -gt 0 ]]; then
-  print_success "$DELTA_COUNT delta(s), $DELTA_BYTES bytes"
-  if [[ -n "$LENGTH" && "$LENGTH" -gt 0 ]]; then
-    print_success "The deltas together are $((DELTA_BYTES * 100 / LENGTH))% of the full archive"
+  print_success "$DELTA_COUNT delta(s), $DELTA_BYTES bytes across all bases"
+  if [[ -n "$NEWEST_BASE_BUILD" ]]; then
+    print_success "The newest base's patch is $NEWEST_BASE_SHARE% of the archive"
   fi
   if [[ -n "$DELTA_DIR" ]]; then
     mkdir -p "$DELTA_DIR"

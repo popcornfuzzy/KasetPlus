@@ -57,12 +57,16 @@ would take that path.
    disk, which is also how a user receives it), and passes only if the `.delta` was the request that
    was served. A silent fallback to the full archive fails the test.
 
-6. **A patch that costs most of the archive fails the run.** A delta above 50% of the full archive
-   (`KASET_DELTA_MAX_PERCENT`) is refused. At that size most of the bundle changed, which in practice
-   means non-deterministic build output, a moved or renamed resource tree, or an unintended edit to
-   every file — not a code change worth 6 MB of patch. The message points at `BinaryDelta --verbose`
+6. **A patch that costs most of the archive fails the run.** When the patch from the *newest* base —
+   the release most updating copies are on — is above 50% of the full archive
+   (`KASET_DELTA_MAX_PERCENT`), the job stops. At that size the update has stopped being incremental:
+   non-deterministic build output, a moved or renamed resource tree, or an unintended edit to every
+   file, rather than a code change worth the download. The message points at `BinaryDelta --verbose`
    to see what moved; a release that genuinely replaces most of the app raises the threshold
-   deliberately. The measured 0.9.1 → 0.9.2 patch sits at 22%, so the limit leaves room for ordinary
+   deliberately. Older bases are reported but never fatal: a base five releases back always needs a
+   fatter patch (0.8 → 0.9.3 is already 46%), and Sparkle serves the full archive as soon as a patch
+   stops being the smaller download, so failing the feed over one would block a healthy release. The
+   measured 0.9.1 → 0.9.2 patch is 22% and 0.9.2 → 0.9.3 is 19%, so the limit leaves room for ordinary
    releases without letting a bad one through.
 
 ## Consequences
