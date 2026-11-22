@@ -26,7 +26,10 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.1"),
+        // 2.9.1 fixed the clearDownloadedUpdate race that aborted the host app when a
+        // delta failed to apply; 2.10.0 fixed re-applying file-system compression for
+        // deltas on macOS 27. See docs/adr/0052-delta-updates.md.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
     ],
     targets: [
         // Wire format shared by the app and its Discord presence helper.

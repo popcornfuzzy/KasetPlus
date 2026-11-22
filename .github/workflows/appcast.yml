@@ -51,10 +51,20 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
           INCLUDE_PRERELEASE: ${{ inputs.include_prerelease }}
+          # Deltas are applied by the installed app, so only bases that bundle a
+          # Sparkle which survives a failed patch may be offered one. Sparkle 2.9.0
+          # aborts the app when a delta fails (fixed in 2.9.1) and mishandles delta
+          # compression on macOS 27 (fixed in 2.10.0), which is why the 0.9.3 feed
+          # shipped full-archive only. Raise this to the first release built with
+          # Sparkle 2.10.1; until it exists, every client keeps the full download.
+          DELTA_FROM_TAG: v0.9.4
         run: |
           set -euo pipefail
 
           ARGS=(--repo "$GITHUB_REPOSITORY" --download-dir "$RUNNER_TEMP" --github-output)
+          if [ -n "$DELTA_FROM_TAG" ]; then
+            ARGS+=(--delta-from "$DELTA_FROM_TAG")
+          fi
           if [ -n "$RELEASE_TAG" ]; then
             ARGS+=(--tag "$RELEASE_TAG")
           elif [ -n "$INPUT_TAG" ]; then

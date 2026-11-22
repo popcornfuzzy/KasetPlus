@@ -21,6 +21,7 @@
 #   --repo <owner/name>   Repository to read (default: $GITHUB_REPOSITORY, then the
 #                         checkout's origin remote)
 #   --bases <n>           Delta bases to keep (default: 5, Sparkle's --maximum-deltas)
+#   --delta-from <tag>    Only releases at or after <tag> may be delta bases
 #   --allow-prerelease    Let a prerelease into the stable feed
 #   --dry-run             Print the plan; download and write nothing
 #   --download-dir <dir>  Download into <dir>/release and <dir>/previous
@@ -44,6 +45,7 @@ print_warning() { echo -e "${YELLOW}Warning:${NC} $1" >&2; }
 TAG=""
 REPO="${GITHUB_REPOSITORY:-}"
 BASES=5
+DELTA_FROM_TAG=""
 ALLOW_PRERELEASE=0
 DRY_RUN=0
 DOWNLOAD_DIR=""
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --bases) BASES="${2:-}"; shift 2 ;;
+    --delta-from) DELTA_FROM_TAG="${2:-}"; shift 2 ;;
     --allow-prerelease) ALLOW_PRERELEASE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --download-dir) DOWNLOAD_DIR="${2:-}"; shift 2 ;;
@@ -157,11 +160,28 @@ fi
 BASE_TAGS=()
 BASE_ASSETS=()
 
-if [[ "$BASES" -gt 0 ]]; then
+# A delta is applied by the *installed* app, so its Sparkle version decides what a
+# failed patch costs. Clients before the first Sparkle 2.10.1 build abort on a
+# failed delta (2.9.0's clearDownloadedUpdate race) and mis-handle delta
+# compression on macOS 27, so they must never be offered one.
+DELTA_FROM_AT=""
+DELTA_GATE_CLOSED=0
+if [[ -n "$DELTA_FROM_TAG" ]]; then
+  DELTA_FROM_AT=$(gh release view "$DELTA_FROM_TAG" --repo "$REPO" --json publishedAt \
+    --jq .publishedAt 2>/dev/null || true)
+  if [[ -z "$DELTA_FROM_AT" ]]; then
+    # The gated release does not exist yet, so no client is known to be safe.
+    DELTA_GATE_CLOSED=1
+    echo "  No release $DELTA_FROM_TAG yet; no delta base qualifies."
+  fi
+fi
+
+if [[ "$BASES" -gt 0 && "$DELTA_GATE_CLOSED" -eq 0 ]]; then
   CANDIDATES=$(gh release list --repo "$REPO" --exclude-drafts --exclude-pre-releases --limit 30 \
     --json tagName,publishedAt \
-    | jq -r --arg target "$PUBLISHED_AT" --arg tag "$TAG" \
-      '.[] | select(.publishedAt < $target) | select(.tagName != $tag) | .tagName' \
+    | jq -r --arg target "$PUBLISHED_AT" --arg tag "$TAG" --arg cutoff "$DELTA_FROM_AT" \
+      '.[] | select(.publishedAt < $target) | select(.tagName != $tag)
+           | select($cutoff == "" or .publishedAt >= $cutoff) | .tagName' \
     | grep -E '^v[0-9]+\.[0-9]+' || true)
 
   while IFS= read -r candidate; do
@@ -192,7 +212,9 @@ if [[ ${#BASE_TAGS[@]} -gt 0 ]]; then
   done
 else
   echo "Delta bases: none, so the feed would carry the full archive only."
-  if [[ "$BASES" -gt 0 ]]; then
+  if [[ -n "$DELTA_FROM_TAG" ]]; then
+    echo "  Only releases at or after $DELTA_FROM_TAG are eligible, and none qualifies yet."
+  elif [[ "$BASES" -gt 0 ]]; then
     print_warning "No prior release qualifies as a delta base; the feed gets no deltas."
   fi
 fi

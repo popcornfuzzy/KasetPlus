@@ -69,6 +69,29 @@ would take that path.
    measured 0.9.1 → 0.9.2 patch is 22% and 0.9.2 → 0.9.3 is 19%, so the limit leaves room for ordinary
    releases without letting a bad one through.
 
+7. **Only a base that can survive a failed delta is offered one.** The patch is applied by the
+   *installed* app, so its bundled Sparkle decides what a failure costs. Sparkle 2.9.0 aborts the host
+   app when a delta fails to apply — the assertion in `SPUCoreBasedUpdateDriver.clearDownloadedUpdate`
+   that 2.9.1 fixed as a race (#2863) — and its installer mis-handles the re-applied file-system
+   compression for deltas on macOS 27, fixed in 2.10.0 (#2904). The appcast job therefore stages bases
+   only from releases published at or after `KASET_DELTA_FROM_TAG` (the first build shipping Sparkle
+   2.10.1), and `--delta-from` makes that explicit in `Scripts/appcast-release.sh`. Everything older
+   gets the full archive, which is the path it can always survive.
+
+## The 0.9.3 delta incident
+
+The first feed with deltas (0.9.3, bases 0.9.2 down to 0.7.1) crashed a 0.9.2 user on macOS 27 in the
+relaunch after the download: the patch failed to apply, `installerDidFailToApplyDeltaUpdate` called
+`clearDownloadedUpdate`, and its `assert(downloadedUpdateObject != nil)` aborted the app. Both halves
+are upstream bugs, and both are fixed (2.9.1, 2.10.0). What the project owned was shipping deltas to
+clients carrying 2.9.0 at all. The response, all of which is reflected above:
+
+- The 0.9.3 item was stripped back to its full-archive enclosure, so 0.9.x copies fall back to the DMG
+  instead of retrying a patch.
+- Sparkle was moved to 2.10.1, so the next release can apply deltas on macOS 27 without aborting.
+- Delta bases were gated on `KASET_DELTA_FROM_TAG`, because updating the framework only helps builds
+  made after it: the crash happens in the *old* app, and those copies must not be offered patches.
+
 ## Consequences
 
 ### Positive
@@ -97,3 +120,9 @@ would take that path.
   fatter patch. `BinaryDelta --verbose` still shows what changed if one looks unexpectedly large.
 - The size limit is a judgement, not a measurement: a deliberate release that touches most of the
   bundle has to raise `KASET_DELTA_MAX_PERCENT`, which is one more thing to remember at publish time.
+- Delta coverage lags: a release can only be a base once it ships a Sparkle that survives a failed
+  patch, so the first releases after a gate still download the full archive even though the feed
+  carries deltas for newer bases.
+- A failed patch is only as safe as the client's framework. The gate is the guard, and it is why the
+  fix for a delta bug cannot simply be published to everyone: the affected builds are the ones that
+  would run it.
