@@ -3,6 +3,23 @@
     <channel>
         <title>Kaset</title>
         <item>
+            <title>0.9.3</title>
+            <pubDate>Sun, 22 Nov 2026 15:23:30 +0000</pubDate>
+            <link>https://github.com/popcornfuzzy/KasetPlus/releases</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/popcornfuzzy/KasetPlus/releases/tag/v0.9.3</sparkle:fullReleaseNotesLink>
+            <sparkle:version>29</sparkle:version>
+            <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.9.3.dmg" length="13771686" type="application/octet-stream" sparkle:edSignature="AYtrtlLqJxYQFUh4tVwnDbag8nxsLaOjrEB1f9WwBgXmu1D7V5Id+U5fjnjKB2fvGHD+GXgHQy5wuJfOA2X3DQ=="/>
+            <sparkle:deltas>
+                <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/Kaset29-26.delta" sparkle:deltaFrom="26" length="2691134" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977824" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="Te9knRHBK9VOcl3xJ5PJTesw8+r7TIzbPvMe0f+7M/7k+ZCP+okDKYMWwvznGSqIX0zuD/W6A1BWivvEjM+4DA=="/>
+                <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/Kaset29-25.delta" sparkle:deltaFrom="25" length="3606738" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977824" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="0EcPzWE7YrZvuAxKkaayJ0H4xcYB8WyeyiF3dXvPIWlaxuzRZYiz4/RFZ+BMnyptmp/YO3QfCnbHfeqxL3B1DQ=="/>
+                <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/Kaset29-24.delta" sparkle:deltaFrom="24" length="3703986" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977824" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="MzNWmVDY+QWYSyYVRDNzeHoB5K8/bRY/QDZau0pglFvDrqCrbHDwajE1Hghe5kOPwW9l+ifCSJKydpB5irX0Aw=="/>
+                <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/Kaset29-14.delta" sparkle:deltaFrom="14" length="6443230" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977616" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="ZzbNBf9EgF2hNFPhd8srtXdiVah/STUx9ruH+8yiETu2eNcCZKRGnPXJ7SMR8Awp/7UFfS/hTPMm0qm0igDdAg=="/>
+                <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/Kaset29-13.delta" sparkle:deltaFrom="13" length="6809250" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="977616" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="hbyIntBan5IAaL1XYmcYcuvHB8PftnYAMOSWsBPQx7BxtFXfWg1G5UH931qFk/eGSvpgcpVAr6e2flwmQjFEAw=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>0.9.2</title>
             <pubDate>Sun, 15 Nov 2026 17:33:05 +0000</pubDate>
             <link>https://github.com/popcornfuzzy/KasetPlus/releases</link>
@@ -10,7 +27,7 @@
             <sparkle:version>26</sparkle:version>
             <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.2/kaset-v0.9.2.dmg" length="13560609" type="application/octet-stream" sparkle:edSignature="vZBN2rhFnKQ5ivcXY7CkugLB0S2Tp3xDfQtU4Ofqe7BB6mZh7mq2e7ndAbh0J7Zb1oPAuBondxUseTPWFreIAA=="/>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.9.2.dmg" length="13560609" type="application/octet-stream" sparkle:edSignature="vZBN2rhFnKQ5ivcXY7CkugLB0S2Tp3xDfQtU4Ofqe7BB6mZh7mq2e7ndAbh0J7Zb1oPAuBondxUseTPWFreIAA=="/>
         </item>
         <item>
             <title>0.9.1</title>
@@ -20,7 +37,7 @@
             <sparkle:version>25</sparkle:version>
             <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.1/kaset-v0.9.1.dmg" length="13067947" type="application/octet-stream" sparkle:edSignature="VcMCs8zq5kKxElC0F0n/m2bmBUe2Bot0KBVVTOWtbwe/lZJbYJ1rA2ddh8c9wt5Ihzmk2PQdWweUi1URrxbSAA=="/>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.9.1.dmg" length="13067947" type="application/octet-stream" sparkle:edSignature="VcMCs8zq5kKxElC0F0n/m2bmBUe2Bot0KBVVTOWtbwe/lZJbYJ1rA2ddh8c9wt5Ihzmk2PQdWweUi1URrxbSAA=="/>
         </item>
         <item>
             <title>0.9</title>
@@ -30,7 +47,7 @@
             <sparkle:version>24</sparkle:version>
             <sparkle:shortVersionString>0.9</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9/kaset-v0.9.dmg" length="12927962" type="application/octet-stream" sparkle:edSignature="4v2lLnTePIZqJj8e+6wfnu5tYN9T3VbiZYst0z27WZEXYE8bWPsEIaKdkTZ5lWV+kor6KjZ9F/iAT79IP81IDw=="/>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.9.dmg" length="12927962" type="application/octet-stream" sparkle:edSignature="4v2lLnTePIZqJj8e+6wfnu5tYN9T3VbiZYst0z27WZEXYE8bWPsEIaKdkTZ5lWV+kor6KjZ9F/iAT79IP81IDw=="/>
         </item>
         <item>
             <title>0.8</title>
@@ -40,7 +57,7 @@
             <sparkle:version>14</sparkle:version>
             <sparkle:shortVersionString>0.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.8/kaset-v0.8.dmg" length="10928933" type="application/octet-stream" sparkle:edSignature="cdHu6IxDbwKxrGTbnsXOS6iW3hC7KYuzZrgistU299FAzMPrM6a+rx5Bu5Q01yQIoKYe0KWYERVGzV4MC6EMCQ=="/>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.8.dmg" length="10928933" type="application/octet-stream" sparkle:edSignature="cdHu6IxDbwKxrGTbnsXOS6iW3hC7KYuzZrgistU299FAzMPrM6a+rx5Bu5Q01yQIoKYe0KWYERVGzV4MC6EMCQ=="/>
         </item>
         <item>
             <title>0.7.1</title>
@@ -50,7 +67,7 @@
             <sparkle:version>13</sparkle:version>
             <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.7.1/kaset-v0.7.1.dmg" length="10278674" type="application/octet-stream" sparkle:edSignature="oLchuKMTda9cNExO1a19HfDFG8J9Sxv9qn9FXHLU4xnNLqWNiJjy9E0yOKCnHwHkT/9qhvzcrzUjGfdHpD1SBw=="/>
+            <enclosure url="https://github.com/popcornfuzzy/KasetPlus/releases/download/v0.9.3/kaset-v0.7.1.dmg" length="10278674" type="application/octet-stream" sparkle:edSignature="oLchuKMTda9cNExO1a19HfDFG8J9Sxv9qn9FXHLU4xnNLqWNiJjy9E0yOKCnHwHkT/9qhvzcrzUjGfdHpD1SBw=="/>
         </item>
         <item>
             <title>0.7</title>
