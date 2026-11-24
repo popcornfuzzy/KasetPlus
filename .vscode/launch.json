@@ -39,6 +39,26 @@
             "target": "api-explorer",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release api-explorer"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:kaset}",
+            "name": "Debug KasetPresenceBridge",
+            "target": "KasetPresenceBridge",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug KasetPresenceBridge"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:kaset}",
+            "name": "Release KasetPresenceBridge",
+            "target": "KasetPresenceBridge",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release KasetPresenceBridge"
         }
     ]
 }
