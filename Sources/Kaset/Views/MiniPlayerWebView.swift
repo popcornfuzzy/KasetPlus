@@ -224,6 +224,16 @@ final class SingletonPlayerWebView {
     var coordinator: Coordinator?
     let logger = DiagnosticsLogger.player
 
+    /// A plain snapshot of `SettingsManager.safeAdBlockingEnabled` for the WebView side.
+    ///
+    /// The script-message handler runs on every `STATE_UPDATE` and only needs the value as a
+    /// snapshot. Reading the setting there is an `@Observable` access from a WebKit callout, where
+    /// nothing is observing anything — and that access crashed inside the observation runtime
+    /// (`ObservationTracking._AccessList.addAccess` copying its dictionary, releasing a dead object
+    /// and jumping to `0x0`). `setSafeAdBlockingEnabled` is the settings switch's own `onChange`
+    /// path, so it keeps this current, and `getWebView` seeds it before any page script reads it.
+    private(set) var safeAdBlockingEnabled = true
+
     /// What the page in the WebView is for. A page that is not being played from must not report, and
     /// a page loaded early must not be replaced (see ``PlayerWebViewPage``).
     private(set) var page: PlayerWebViewPage = .empty
@@ -333,6 +343,10 @@ final class SingletonPlayerWebView {
         webKitManager: WebKitManager,
         playerService: PlayerService
     ) -> WKWebView {
+        // The one place the setting is read: everything the WebView side does with it after this —
+        // the injected flags, the script-message handler — reads the snapshot, not the observable.
+        self.safeAdBlockingEnabled = SettingsManager.shared.safeAdBlockingEnabled
+
         if let existing = webView {
             return existing
         }
@@ -372,13 +386,13 @@ final class SingletonPlayerWebView {
         configuration.userContentController.addUserScript(nowPlayingMetadataScript)
 
         let adBlockingFlagScript = WKUserScript(
-            source: "window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");",
+            source: "window.__kasetSafeAdBlockingEnabled = \(self.safeAdBlockingEnabled ? "true" : "false");",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(adBlockingFlagScript)
 
-        if SettingsManager.shared.safeAdBlockingEnabled {
+        if self.safeAdBlockingEnabled {
             // Strip ad payload fields from player responses before YouTube Music consumes them.
             let adPruningScript = WKUserScript(
                 source: Self.adPruningScript,
@@ -1178,7 +1192,11 @@ final class SingletonPlayerWebView {
     }
 
     /// Updates runtime ad-blocking flag inside the persistent WebView without requiring a reload.
+    ///
+    /// This is also what keeps the snapshot the script-message handler reads (`safeAdBlockingEnabled`)
+    /// in step with the setting.
     func setSafeAdBlockingEnabled(_ enabled: Bool) {
+        self.safeAdBlockingEnabled = enabled
         self.webView?.evaluateJavaScript("window.__kasetSafeAdBlockingEnabled = \(enabled ? "true" : "false");")
     }
 
@@ -1383,7 +1401,7 @@ final class SingletonPlayerWebView {
             }
 
             if type == "AD_STATE" {
-                guard SettingsManager.shared.safeAdBlockingEnabled else { return }
+                guard SingletonPlayerWebView.shared.safeAdBlockingEnabled else { return }
                 let isAd = body["isAd"] as? Bool ?? false
                 Task { @MainActor in
                     self.playerService.updateAdPlaybackState(isAd)
@@ -1454,7 +1472,7 @@ final class SingletonPlayerWebView {
             let isAd = body["isAd"] as? Bool ?? false
             let videoWidth = (body["videoWidth"] as? Int) ?? Int((body["videoWidth"] as? Double) ?? 0)
             let videoHeight = (body["videoHeight"] as? Int) ?? Int((body["videoHeight"] as? Double) ?? 0)
-            let adBlockingEnabled = SettingsManager.shared.safeAdBlockingEnabled
+            let adBlockingEnabled = SingletonPlayerWebView.shared.safeAdBlockingEnabled
 
             // Parse like status
             let likeStatus: LikeStatus = switch likeStatusString {
@@ -1564,7 +1582,7 @@ final class SingletonPlayerWebView {
                     window.__kasetTargetPlaybackRate = \(savedRate);
                     const rateVideo = document.querySelector('video');
                     if (rateVideo) { rateVideo.playbackRate = \(savedRate); }
-                    window.__kasetSafeAdBlockingEnabled = \(SettingsManager.shared.safeAdBlockingEnabled ? "true" : "false");
+                    window.__kasetSafeAdBlockingEnabled = \(SingletonPlayerWebView.shared.safeAdBlockingEnabled ? "true" : "false");
                     // Set flag to prevent enforcement from reverting our change
                     window.__kasetIsSettingVolume = true;
 

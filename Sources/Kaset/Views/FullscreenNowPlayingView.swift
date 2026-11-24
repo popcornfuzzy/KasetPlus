@@ -1022,6 +1022,9 @@ private struct FullscreenSyncedLyricsView: View {
     /// The line the sheet is travelling to — the line being sung, or the one after it once its first
     /// word is `KaraokeTiming.scrollLeadMs` away (`KaraokeFillModel.scrollIndex`).
     @State private var scrollLineId: UUID?
+    /// The index behind `scrollLineId`, so the rows can anchor their emphasis on the line the sheet
+    /// has travelled to without resolving an id per row (`LyricLineEmphasis`).
+    @State private var scrollLineIndex: Int?
     /// Whether the player is still putting itself in position: its first paint (a whole lyric
     /// sheet) is the most expensive frame of its life, so during that window the sheet *jumps*
     /// instead of scrolling. This is about where the sheet is, never about how a line changes —
@@ -1053,6 +1056,7 @@ private struct FullscreenSyncedLyricsView: View {
 
         let scrollIndex = KaraokeFillModel.scrollIndex(in: changes, at: Double(currentTimeMs))
         _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
+        _scrollLineIndex = State(initialValue: scrollIndex)
     }
 
     var body: some View {
@@ -1066,6 +1070,19 @@ private struct FullscreenSyncedLyricsView: View {
                         // sing follows the line above it (`SyncedLyrics.isTrailingAligned(at:)`).
                         let isTrailingAligned = self.lyrics.isTrailingAligned(at: index)
                         let plan = self.plan(forLineAt: index)
+                        // Anchored on the line the sheet has travelled to, not the one still being
+                        // sung: the scale-in belongs to the scroll, the brightness waits for the
+                        // first word, and a row the model calls current keeps the full look.
+                        let focusIndex = self.scrollLineIndex ?? self.currentLineIndex
+                        let resolvedEmphasis = status == .current
+                            ? LyricLineEmphasis.current
+                            : LyricLineEmphasis.values(
+                                distance: index - (focusIndex ?? -1),
+                                surfaceBlur: 1.3,
+                                isHovered: self.hoveredLineId == line.id
+                            )
+                        // Reduce Motion keeps the brightness and drops the travel.
+                        let lineEmphasis = self.reduceMotion ? resolvedEmphasis.settled : resolvedEmphasis
                         if self.lyrics.isPauseLine(at: index) {
                             // The interlude is settled once for the row, not once per frame: only the
                             // dots' state is a function of the display position.
@@ -1080,11 +1097,11 @@ private struct FullscreenSyncedLyricsView: View {
                                 FullscreenPauseDotsLineView(
                                     dots: SyncedLyrics.PauseDots(interlude: interlude, at: Int(displayTimeMs)),
                                     status: status,
-                                    isHovered: self.hoveredLineId == line.id,
+                                    lineEmphasis: lineEmphasis,
                                     isTrailingAligned: isTrailingAligned
                                 )
                             }
-                            .animation(AppAnimation.lyricEmphasis, value: status)
+                            .animation(AppAnimation.lyricEmphasis, value: lineEmphasis)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
                             .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
@@ -1096,6 +1113,7 @@ private struct FullscreenSyncedLyricsView: View {
                                 line: line,
                                 isTrailingAligned: isTrailingAligned,
                                 status: status,
+                                lineEmphasis: lineEmphasis,
                                 isLive: plan.isLive,
                                 clock: self.clock,
                                 layoutCache: self.layoutCache,
@@ -1105,17 +1123,17 @@ private struct FullscreenSyncedLyricsView: View {
                                 richTiming: self.richTiming
                             )
                             .foregroundStyle(.white)
-                            .opacity(self.opacity(for: status, lineId: line.id))
+                            .opacity(lineEmphasis.opacity)
                             // Anchored to the edge the row sits on: an other-singer line grows
                             // and shrinks from its own side.
                             .scaleEffect(
-                                self.scale(for: status, lineId: line.id),
+                                lineEmphasis.scale,
                                 anchor: isTrailingAligned ? .trailing : .leading
                             )
                             // Distant lines recede out of focus the way Apple Music lets go
                             // of the lines around the one being sung.
-                            .blur(radius: self.blur(for: status))
-                            .animation(AppAnimation.lyricEmphasis, value: status)
+                            .blur(radius: lineEmphasis.blur)
+                            .animation(AppAnimation.lyricEmphasis, value: lineEmphasis)
                             .animation(.easeOut(duration: 0.16), value: self.hoveredLineId)
                             .frame(maxWidth: .infinity, alignment: isTrailingAligned ? .trailing : .leading)
                             .contentShape(Rectangle())
@@ -1272,12 +1290,9 @@ private struct FullscreenSyncedLyricsView: View {
             activeIndices: self.activeLineIndices
         )
     }
-    private func scale(for status: SyncedLyrics.LineStatus, lineId: UUID) -> CGFloat { if self.hoveredLineId == lineId, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
-    private func opacity(for status: SyncedLyrics.LineStatus, lineId: UUID) -> Double { if self.hoveredLineId == lineId, status != .current { return 0.78 }; return switch status { case .current: 1; case .previous: 0.35; case .upcoming: 0.55 } }
-    private func blur(for status: SyncedLyrics.LineStatus) -> CGFloat { self.reduceMotion || status == .current ? 0 : 0.6 }
     /// Moves the highlight and the scroll together, from one playback sample. The baton passes when
-    /// a line's first word starts filling; the scroll leads by `KaraokeTiming.scrollLeadMs` and
-    /// travels in `scrollDurationMs`, so the sheet is already there when it does
+    /// a line's first word starts filling; the scroll leads by `KaraokeTiming.scrollLeadMs` and takes
+    /// that whole lead to travel, so the sheet is there when it does
     /// (`SyncedLyricsDisplayView.syncCurrentLine` has the full reasoning).
     private func syncCurrentLine(at positionMs: Double, proxy: ScrollViewProxy, animate: Bool) {
         self.updateHighlight(at: positionMs)
@@ -1286,6 +1301,7 @@ private struct FullscreenSyncedLyricsView: View {
         let newId = self.lyrics.lines[scrollIndex].id
         let targetChanged = newId != self.scrollLineId
         self.scrollLineId = newId
+        self.scrollLineIndex = scrollIndex
         guard targetChanged else { return }
         guard !self.userIsScrolling else { return }
         // While the player is still opening, jump: an animated scroll competing with the
@@ -1317,10 +1333,10 @@ private struct FullscreenSyncedLyricsView: View {
         }
     }
 
-    /// The sheet's own travel: the one duration every scroll to a line uses, short enough to finish
-    /// inside `KaraokeTiming.scrollLeadMs`.
+    /// The sheet's own travel: the one move every scroll to a line uses — the lead's own span, on the
+    /// long ease-out of `AppAnimation.lyricTravel`, so the page and the rows are one gesture.
     private static func travel(using proxy: ScrollViewProxy, to id: UUID) {
-        withAnimation(.easeInOut(duration: KaraokeTiming.standard.scrollDurationMs / 1000)) {
+        withAnimation(AppAnimation.lyricTravel) {
             proxy.scrollTo(id, anchor: .center)
         }
     }
@@ -1339,6 +1355,8 @@ private struct FullscreenSyncedLineView: View {
     /// The edge this row is drawn against, resolved by the sheet like every other row's.
     let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
+    /// This row's place on the column's emphasis falloff, resolved by the sheet.
+    let lineEmphasis: LyricLineEmphasis
     let isLive: Bool
     let clock: LyricsPlaybackClock
     /// Measured line layouts, so a re-render of the sheet never measures a line again.
@@ -1416,37 +1434,26 @@ private struct FullscreenSyncedLineView: View {
                 }
             }
         }
-        .offset(y: self.drift)
+        .offset(y: self.lineEmphasis.drift)
     }
 
     private static let backgroundFontSizeRatio: CGFloat = 0.62
-
-    /// Neighbouring lines sit slightly off their slot, so a line settles into place
-    /// as it becomes the line being sung.
-    private var drift: CGFloat {
-        switch self.status {
-        case .current: 0
-        case .previous: -5
-        case .upcoming: 5
-        }
-    }
 }
 
 @available(macOS 26.0, *)
 private struct FullscreenPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
-    let isHovered: Bool
+    /// This row's place on the column's emphasis falloff, resolved by the sheet.
+    let lineEmphasis: LyricLineEmphasis
     /// The dots belong on the edge of the line above them — an interlude inside the other
     /// singer's section is a pause in *their* part.
     var isTrailingAligned: Bool = false
-    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading).padding(.vertical, 13).opacity(self.lineOpacity(for: self.status, isHovered: self.isHovered)).scaleEffect(self.lineScale(for: self.status, isHovered: self.isHovered), anchor: self.isTrailingAligned ? .trailing : .leading).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(.easeInOut(duration: 0.35), value: self.status) }
+    var body: some View { HStack(spacing: 9) { ForEach(0 ..< 3, id: \.self) { dotIndex in self.dotView(for: self.status(of: dotIndex)) } }.frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading).padding(.vertical, 13).opacity(self.lineEmphasis.opacity).scaleEffect(self.lineEmphasis.scale, anchor: self.isTrailingAligned ? .trailing : .leading).offset(y: self.lineEmphasis.drift).animation(.easeInOut(duration: 0.35), value: self.dots.statuses).animation(AppAnimation.lyricEmphasis, value: self.lineEmphasis) }
     /// The bounce is a value off the row's own display clock rather than a timeline of its own:
     /// the row is already redrawing per frame while it is the one being sung, and two clocks on
     /// one row are two chances to disagree about when that is.
     @ViewBuilder private func dotView(for dotStatus: SyncedLyrics.PauseDotStatus) -> some View { Circle().fill(Color.white).frame(width: 13, height: 13).opacity(self.dotOpacity(for: dotStatus)).offset(y: dotStatus == .active ? -5.2 * self.dots.lift : 0) }
     private func status(of index: Int) -> SyncedLyrics.PauseDotStatus { self.dots.statuses.indices.contains(index) ? self.dots.statuses[index] : .notSung }
     private func dotOpacity(for status: SyncedLyrics.PauseDotStatus) -> Double { switch status { case .notSung: 0.28; case .active: 1; case .sung: 0.65 } }
-    private func lineScale(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> CGFloat { if isHovered, status != .current { return 0.985 }; return switch status { case .current: 1; case .previous: 0.95; case .upcoming: 0.965 } }
-    private func lineOpacity(for status: SyncedLyrics.LineStatus, isHovered: Bool) -> Double { if isHovered, status != .current { return 0.78 }; return switch status { case .current: 1; case .previous: 0.35; case .upcoming: 0.55 } }
 }

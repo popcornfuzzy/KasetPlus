@@ -72,6 +72,42 @@ class LibraryViewModel { /* ... */ }
 @Environment(LibraryViewModel.self) var viewModel
 ```
 
+## ❌ A Task Created Inside an Observation Tracking Scope
+
+`withObservationTracking` records accesses through a **task-local pointer** to the scope's access
+list. A `Task {}` created while that scope is still active — in the tracked closure, in `onChange`, or
+in anything the tracked closure calls — **inherits the pointer**, and the list is gone by the time the
+task runs. Every later `@Observable` read in that task then writes through a dead pointer, and the
+crash lands on whatever the next read happens to be: `ObservationTracking._AccessList.addAccess`
+corrupting its dictionary, `swift_isUniquelyReferenced_nonNull_native` reading `0x48`, `pc = 0x0`.
+
+Two incidents (`BA87026B`, `A0F6A385`) surfaced in `SettingsManager.safeAdBlockingEnabled` inside a
+WebKit message handler and in SwiftUI's own `ScrollEnvironmentStorage` during an accessibility hit
+test from another app. Neither was the cause — both are just where the next read landed.
+
+```swift
+// ❌ BAD: the tracked closure does work, and the callback spawns a task that inherits the scope
+withObservationTracking {
+    self.pushNowPlayingMetadata(for: self.playerService?.currentTrack) // WebKit's pump, in scope
+} onChange: {
+    Task { @MainActor in self.observeNowPlayingMetadata() }
+}
+
+// ✅ GOOD: read inside the scope, act outside it, and hand off to a task that inherits nothing
+let track = self.playerService?.currentTrack
+withObservationTracking {
+    _ = self.playerService?.currentTrack
+} onChange: {
+    Task.detached { @MainActor in self.observeNowPlayingMetadata() }
+}
+self.pushNowPlayingMetadata(for: track)
+```
+
+`Task.detached` is the point, not a style choice: it is the one task initialiser that inherits
+neither the actor nor the task-local values. Anything the tracked closure calls must also stay
+side-effect free — a WebKit `evaluateJavaScript` can deliver a script message synchronously, and every
+task that handler spawns would inherit the scope too.
+
 ## ❌ `.onAppear` Instead of `.task` for Async Work
 
 ```swift

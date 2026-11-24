@@ -450,10 +450,56 @@ finished until its content lands (which a held backing word can put a few second
 
 ### Line transitions, emphasis and Reduce Motion
 
-Line emphasis moves from `.easeInOut(0.4)` to a crisp spring (`AppAnimation.lyricEmphasis`), with a small
-status-keyed drift so a line settles as it becomes current; fullscreen also blurs the lines around the
-one being sung. The emphasis leaves when the line below takes the baton, and the *scroll* has already
-arrived by then — see the last amendment for why that is two different times.
+Line emphasis is a **continuous falloff by distance** from the line the sheet is anchored on
+(`LyricLineEmphasis`), not three fixed looks. Every visible row is a point on one curve: scale loses
+2 % a step, brightness falls from `0.6` in steps of `0.11` (floored at `0.16`), the row is pushed a
+concave share of `driftReach` off its slot in the direction it lies from the anchor (see the spacing
+note below), and the fullscreen player adds a recede blur that deepens with distance. A baton pass therefore moves the **whole column** a step instead of
+only the two rows that trade places, and pointing at a row lifts it one step back towards the
+highlight.
+
+The column is **anchored on the scroll, not on the baton**. The falloff is measured from the line the
+sheet has travelled to (`scrollLineIndex`), so the arriving line takes the current line's size and
+place the moment the scroll begins — the travel leads the line by `scrollLeadMs`, and the scale-in
+belongs to that lead rather than to the first word. That makes **two active looks**: the line the
+sheet has travelled to is full size and dimmer (`0.82`, `focusedOpacity`), and the line being sung is
+full size at full opacity with its fill running. The baton still passes on the line's own first
+content, and its arrival is told by brightness alone: a row does not grow or move at that moment. The
+one row that changes shape at the baton is the one that has just finished, and only because it cannot
+leave while it is still being sung (`KaraokeFillModel.isLiveRow`).
+
+The column's **spacing is part of the change** as well. The drift is not a flat parallax: it is
+`driftReach` (`12 pt`) spent on `1 − 1 / (depth + 1)`, so the gap next to the line in focus widens
+widest and the ones beyond it taper — a change closes the air around the row that has finished and
+opens it around the row that has begun, on the animation all the other properties use. The distance
+between lines used to be a constant ladder, and a change only dimmed two rows inside it.
+
+It is spent as an **offset, never as padding**. A row whose height animates inside the lazy column
+re-lays the sheet out while its own scroll is running; and a line that stops being sung while another
+is still singing — a duet, where nothing else on the sheet is moving at that moment — hopped every
+row below it, which is the glitch reported against the first version of the breathing gaps. Offset
+keeps the change in the layer the rows are drawn in, where the column's travel cannot see it.
+
+The sheet's **travel** runs on `AppAnimation.lyricTravel`, over the whole lead (`scrollLeadMs`). It is a timing curve, not the emphasis's spring: the scroll view can lay a cubic Bézier
+over a distance and cannot lay a spring over one, and a symmetric curve over a single line's height
+reads as a constant-velocity slide with soft ends — a linear move. A long ease-out leaves at once,
+takes most of the distance in the first half and bleeds the rest off slowly, and the page lands on
+the frame the line's first word opens, with the rows.
+
+Past and future rows share the falloff and differ only in the **sign** of the drift: the fill already
+says which side of the song a row is on, so the emphasis does not say it twice, and mirroring it is
+what keeps the hand-off one move — the row that leaves and the row that arrives are neighbours on the
+same curve and always cross the change over the same distance. The emphasis leaves when the line below
+takes the baton, and the *scroll* has already arrived by then — see the last amendment for why that is
+two different times.
+
+It animates on `AppAnimation.lyricEmphasis`, one `smooth` spring whose duration **is** the scroll lead
+(`KaraokeTiming.scrollLeadMs`, `0.5 s`): zero velocity at both ends, no bounce, and a duration it
+actually finishes in. Taking the lead's own number is what makes the arriving row's move start with
+the scroll and finish on the frame its first word opens, rather than still gliding as it is sung. The change was reported as two animations
+while it was a `0.3 s` spring keyed to the row's status — a spring has no finish line, only two rows
+moved at all, and the departing row faded to a deeper dim (`0.35`) than the arriving row rose from
+(`0.55`), so its fade got there first even though both ran on the same animation.
 
 Reduce Motion (via the SwiftUI `accessibilityReduceMotion` environment, the reactive counterpart of
 the `NSWorkspace` check used elsewhere) keeps the fill — it is the information — and drops the
@@ -624,9 +670,11 @@ next one. One wake-up exists at a time, it is replaced rather than added to, and
 state from the clock — so a seek, a pause or a fresh sample that re-arms it can leave nothing behind, and
 one that does outlive its reason can only apply the state the sheet is already in.
 
-**The emphasis is one moment too.** `AppAnimation.lyricEmphasis` is a 0.3 s spring where the old value was
-0.42 s. Better Lyrics' own line scale takes 0.166 s, and a slow curve is what makes two rows look half-way
-between states at the same time. The departure is otherwise unchanged: the row keeps its identity, keeps
+**The emphasis is one moment too.** `AppAnimation.lyricEmphasis` is one 0.5 s `smooth` spring for the
+whole column, and the departing row is mirrored by the arriving one — same distance, same curve (see
+*Line transitions*). Better Lyrics' own line scale takes 0.166 s, and a slow curve applied to *two*
+rows makes the sheet look half-way between states; the falloff moves every row, so the longer curve
+reads as the column settling rather than as two rows stuck in transit. The departure is otherwise unchanged: the row keeps its identity, keeps
 its frozen raster, and leaves from a frame it had finished being sung on
 (`LyricsEmphasisAnimationTests`).
 

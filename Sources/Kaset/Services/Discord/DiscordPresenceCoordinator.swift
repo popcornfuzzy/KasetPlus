@@ -145,12 +145,21 @@ final class DiscordPresenceCoordinator {
         withObservationTracking {
             _ = self.settings.discordRichPresenceEnabled
         } onChange: {
-            Task { @MainActor [weak self] in
-                guard let self, self.isMonitoring else { return }
-                await self.applySetting()
-                self.observeSetting()
+            // Detached: `Task {}` here would inherit the task-local access list of the scope the
+            // setting was written in, and writing through it later crashes the observation runtime
+            // (see `docs/common-bug-patterns.md`). The hop is a method on the coordinator, so the
+            // work still lands on the main actor.
+            Task.detached { [weak self] in
+                await self?.settingChanged()
             }
         }
+    }
+
+    /// The work behind `observeSetting`'s callback, on the coordinator's own isolation.
+    private func settingChanged() async {
+        guard self.isMonitoring else { return }
+        await self.applySetting()
+        self.observeSetting()
     }
 
     /// Polls the moment the player changes.
@@ -162,13 +171,18 @@ final class DiscordPresenceCoordinator {
             _ = self.playerService.currentTrack
             _ = self.playerService.isPlaying
         } onChange: {
-            Task { @MainActor [weak self] in
-                guard let self, self.isMonitoring else { return }
-                self.observePlayer()
-                guard self.settings.discordRichPresenceEnabled else { return }
-                await self.pollOnce()
+            Task.detached { [weak self] in
+                await self?.playerChanged()
             }
         }
+    }
+
+    /// The work behind `observePlayer`'s callback, on the coordinator's own isolation.
+    private func playerChanged() async {
+        guard self.isMonitoring else { return }
+        self.observePlayer()
+        guard self.settings.discordRichPresenceEnabled else { return }
+        await self.pollOnce()
     }
 
     /// One poll at a time: a clock tick and an observation can land together.

@@ -684,12 +684,11 @@ struct KaraokeFillModelTests {
         #expect(KaraokeFillModel.status(forLineAt: 2, highlightIndex: 1) == .upcoming)
 
         // The scroll is the part that leads: the sheet starts travelling for the next line a scroll
-        // lead before its first word, and the travel is over before that word on the same clock.
+        // lead before its first word, and the travel takes that whole lead.
         let scrollStart = Int(baton - timing.scrollLeadMs)
         #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: scrollStart - 1) == 0)
         #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: scrollStart) == 1)
         #expect(KaraokeFillModel.scrollIndex(in: lyrics, at: Int(baton)) == 1)
-        #expect(timing.scrollDurationMs <= timing.scrollLeadMs, "the travel has to fit inside its own lead")
 
         // A row with nothing to sing takes neither early: the dots are not sung, so they take the
         // highlight when the silence begins and the sheet waits for it.

@@ -38,14 +38,23 @@ enum AppAnimation {
     /// a panel landing rather than as a card becoming the page.
     static let cardExpansion = Animation.spring(response: 0.3, dampingFraction: 0.88)
 
-    /// The baton passing from one lyric line to the next: the row coming in rises to full size and
-    /// brightness as the row leaving goes back to its place as an already-sung line.
+    /// A line change in the lyric sheet: the arriving row and every other visible row move one step
+    /// along the emphasis falloff (`LyricLineEmphasis`) as one body. `smooth` is a spring with no
+    /// bounce and zero velocity at both ends, and a duration it actually finishes in.
     ///
-    /// Short on purpose. Better Lyrics' own line scale takes `0.166 s`, and the point of the value is
-    /// that the change is *one* moment: with a slower curve the sheet shows two rows part-way through
-    /// the move at once, which on a column read one line at a time reads as mush rather than as a
-    /// hand-off. Still a spring, so a row arrives rather than snapping.
-    static let lyricEmphasis = Animation.spring(response: 0.3, dampingFraction: 0.9)
+    /// The duration **is** the scroll lead, so the move ends on the frame the line starts being sung.
+    /// See [ADR-0018](../adr/0018-karaoke-lyrics-animation.md).
+    static let lyricEmphasis = Animation.smooth(duration: Self.lyricChangeSeconds)
+
+    /// The sheet's travel to the next line: the same span, on a **timing curve** rather than a spring.
+    ///
+    /// The scroll view runs this one itself, and a cubic Bézier is what it can lay over a distance: a
+    /// long ease-out that leaves at once and bleeds the last of the move off slowly, instead of the
+    /// symmetric curve over one line's height that read as a linear slide.
+    static let lyricTravel = Animation.timingCurve(0.22, 0.9, 0.28, 1, duration: Self.lyricChangeSeconds)
+
+    /// The lead a line change gets, in seconds: the span both lyric animations take.
+    private static let lyricChangeSeconds = KaraokeTiming.standard.scrollLeadMs / 1000
 
     // MARK: - Stagger Delays
 

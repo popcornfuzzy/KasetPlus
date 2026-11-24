@@ -76,6 +76,9 @@ struct SyncedLyricsDisplayView: View {
     /// highlight because they are two different times — the sheet has to be in place *before* the
     /// line is sung, and only then does that line take the emphasis.
     @State private var scrollLineId: UUID?
+    /// The index behind `scrollLineId`, so the rows can anchor their emphasis on the line the sheet
+    /// has travelled to without resolving an id per row (`LyricLineEmphasis`).
+    @State private var scrollLineIndex: Int?
     /// Whether the panel is still putting itself in position: its first paint (a whole lyric
     /// sheet) is the most expensive frame of its life, and the sidebar is sliding in at the
     /// same time, so during that window the sheet *jumps* instead of scrolling. This is about
@@ -159,6 +162,7 @@ struct SyncedLyricsDisplayView: View {
 
         let scrollIndex = KaraokeFillModel.scrollIndex(in: changes, at: Double(currentTimeMs))
         _scrollLineId = State(initialValue: scrollIndex.map { lyrics.lines[$0].id })
+        _scrollLineIndex = State(initialValue: scrollIndex)
     }
 
     var body: some View {
@@ -170,6 +174,15 @@ struct SyncedLyricsDisplayView: View {
                     ForEach(Array(self.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         let status = self.currentStatus(for: index)
                         let plan = self.plan(forLineAt: index)
+                        // Anchored on the line the sheet has travelled to, not the one still being
+                        // sung: the scale-in belongs to the scroll, the brightness waits for the
+                        // first word, and a row the model calls current keeps the full look.
+                        let focusIndex = self.scrollLineIndex ?? self.currentLineIndex
+                        let resolvedEmphasis = status == .current
+                            ? LyricLineEmphasis.current
+                            : LyricLineEmphasis.values(distance: index - (focusIndex ?? -1))
+                        // Reduce Motion keeps the brightness and drops the travel.
+                        let lineEmphasis = self.reduceMotion ? resolvedEmphasis.settled : resolvedEmphasis
                         // A line with nothing to sing is a pause, and a pause is the dots. The
                         // test is the same one the dots themselves use, so the row that draws
                         // them and the state they are drawn from cannot disagree.
@@ -188,6 +201,7 @@ struct SyncedLyricsDisplayView: View {
                                 SyncedPauseDotsLineView(
                                     dots: SyncedLyrics.PauseDots(interlude: interlude, at: Int(displayTimeMs)),
                                     status: status,
+                                    lineEmphasis: lineEmphasis,
                                     isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                     onTap: { self.onSeek(line.timeInMs) }
                                 )
@@ -199,6 +213,7 @@ struct SyncedLyricsDisplayView: View {
                                 lineIndex: index,
                                 isTrailingAligned: self.lyrics.isTrailingAligned(at: index),
                                 status: status,
+                                lineEmphasis: lineEmphasis,
                                 isLive: plan.isLive,
                                 clock: self.clock,
                                 layoutCache: self.layoutCache,
@@ -369,9 +384,9 @@ struct SyncedLyricsDisplayView: View {
     /// sung right now, so the baton passes when its first word starts filling and the line above
     /// keeps it until then: one row is bright at a time. The **scroll** has to arrive before that,
     /// which is why it follows `scrollIndex` — the line after the current one, `scrollLeadMs`
-    /// before its first word — and travels in `scrollDurationMs`, so it is in place with the rest
-    /// of the lead to spare. Neither decision can make the other late: the sheet is already there
-    /// when the baton passes.
+    /// before its first word — and takes that whole lead to travel, landing on the frame the word
+    /// opens. Neither decision can make the other late: the sheet is already there when the baton
+    /// passes.
     private func syncCurrentLine(at positionMs: Double, proxy: ScrollViewProxy, animate: Bool) {
         self.updateHighlight(at: positionMs)
 
@@ -379,6 +394,7 @@ struct SyncedLyricsDisplayView: View {
         let id = self.lyrics.lines[scrollIndex].id
         let targetChanged = id != self.scrollLineId
         self.scrollLineId = id
+        self.scrollLineIndex = scrollIndex
         guard targetChanged, !self.userIsScrolling else { return }
         // While the panel is still opening, jump: an animated scroll competing with the
         // open animation and the sheet's first paint is what made it stutter.
@@ -413,10 +429,10 @@ struct SyncedLyricsDisplayView: View {
         }
     }
 
-    /// The sheet's own travel: the one duration every scroll to a line uses, short enough to finish
-    /// inside `KaraokeTiming.scrollLeadMs`.
+    /// The sheet's own travel: the one move every scroll to a line uses — the lead's own span, on the
+    /// long ease-out of `AppAnimation.lyricTravel`, so the page and the rows are one gesture.
     private static func travel(using proxy: ScrollViewProxy, to id: UUID) {
-        withAnimation(.easeInOut(duration: KaraokeTiming.standard.scrollDurationMs / 1000)) {
+        withAnimation(AppAnimation.lyricTravel) {
             proxy.scrollTo(id, anchor: .center)
         }
     }
@@ -613,12 +629,108 @@ struct KaraokeTimeSource<Content: View>: View {
     }
 }
 
+// MARK: - LyricLineEmphasis
+
+/// How a lyric row looks, as a continuous falloff by its distance from the line the sheet is anchored
+/// on: the line it has travelled to, or the one being sung when nothing is travelling.
+///
+/// There are **two active looks**. The line the sheet has travelled to is full size, in its slot and
+/// dimmer than a sung line (`focusedOpacity`) — the scale-in belongs to the scroll, the brightness to
+/// the first word. Past and future rows share the falloff and differ only in the **sign** of the
+/// drift, since the fill already says which side of the song a row is on.
+///
+/// See [ADR-0018](../../docs/adr/0018-karaoke-lyrics-animation.md) for why the sheet steps as a body
+/// and why the falloff is spent as an offset.
+@available(macOS 26.0, *)
+struct LyricLineEmphasis: Equatable {
+    /// The row being sung: full size, full brightness, in its slot.
+    static let current = LyricLineEmphasis(scale: 1, opacity: 1, drift: 0, blur: 0)
+
+    /// How many steps the falloff counts before it stops: a long sheet must not become a funnel.
+    private static let depthLimit = 4
+    /// How far the falloff opens the column around the line in focus, in points. Spent as an
+    /// **offset**, never as padding: a row whose height animates re-lays the sheet out under its own
+    /// scroll.
+    private static let driftReach: CGFloat = 12
+    /// Scale lost per step away from the highlight.
+    private static let scaleStep: CGFloat = 0.02
+    /// Brightness of the first row away from the highlight, and what each further step takes off.
+    private static let neighbourOpacity: Double = 0.60
+    private static let opacityStep: Double = 0.11
+    private static let minimumOpacity: Double = 0.16
+    /// Brightness of the line the sheet has travelled to but has not started singing: it is in
+    /// place at full size, waiting for its first word, and dimmer than a sung line so the reader can
+    /// still tell when the singing starts.
+    private static let focusedOpacity: Double = 0.82
+
+    var scale: CGFloat
+    var opacity: Double
+    /// Vertical offset from the row's slot: the falloff's air, widest next to the line in focus.
+    var drift: CGFloat
+    /// The fullscreen player's recede, deeper the further a row is from the highlight. The panel
+    /// keeps every row sharp.
+    var blur: CGFloat
+
+    /// The row with every movement dropped, for Reduce Motion: brightness stays, motion goes.
+    var settled: LyricLineEmphasis {
+        LyricLineEmphasis(scale: 1, opacity: self.opacity, drift: 0, blur: 0)
+    }
+
+    /// - Parameters:
+    /// - Parameters:
+    ///   - distance: signed distance from the line the sheet is anchored on, in lines — negative
+    ///     above it, positive below, `0` for the line it has travelled to.
+    ///   - surfaceBlur: this surface's recede strength, `0` for the panel.
+    ///   - isHovered: the reader is pointing at the row, which lifts it a step back towards the
+    ///     highlight.
+    ///
+    /// Reduce Motion is applied by the caller (`settled`), because it has to flatten the row the
+    /// model calls current as well, and that one does not come through here.
+    static func values(
+        distance: Int,
+        surfaceBlur: CGFloat = 0,
+        isHovered: Bool = false
+    ) -> LyricLineEmphasis {
+        guard distance != 0 else {
+            let opacity = isHovered ? min(0.92, Self.focusedOpacity + 0.08) : Self.focusedOpacity
+            return LyricLineEmphasis(scale: 1, opacity: opacity, drift: 0, blur: 0)
+        }
+
+        let depth = CGFloat(min(abs(distance), Self.depthLimit))
+        let direction: CGFloat = distance < 0 ? -1 : 1
+
+        var values = LyricLineEmphasis(
+            scale: 1 - (Self.scaleStep * depth),
+            opacity: max(Self.minimumOpacity, Self.neighbourOpacity - (Self.opacityStep * (depth - 1))),
+            // Concave on purpose: the air is spent fastest on the row next to the focus, so that gap
+            // opens widest and the ones beyond it taper. A linear step moves every gap by the same
+            // amount and reads as a rigid shift, which is why the old `1.5 pt` parallax never showed.
+            drift: direction * Self.driftReach * (1 - (1 / (depth + 1))),
+            blur: surfaceBlur * min(1, 0.45 + (0.22 * (depth - 1)))
+        )
+
+        if isHovered {
+            // A step back towards the highlight on the same properties, so pointing at a row moves
+            // it through the falloff instead of giving it a look of its own.
+            values.scale = min(0.995, values.scale + Self.scaleStep)
+            values.opacity = min(0.88, values.opacity + 0.2)
+            values.drift *= 0.5
+            values.blur = 0
+        }
+
+        return values
+    }
+}
+
 // MARK: - SyncedPauseDotsLineView
 
 @available(macOS 26.0, *)
 struct SyncedPauseDotsLineView: View {
     let dots: SyncedLyrics.PauseDots
     let status: SyncedLyrics.LineStatus
+    /// This row's place in the column's emphasis falloff, resolved by the sheet. A row drawn on its
+    /// own is the row being sung.
+    var lineEmphasis: LyricLineEmphasis = .current
     /// Whether the dots belong against the trailing edge, which is the edge of the line above
     /// them (`SyncedLyrics.isTrailingAligned(at:)`): an interlude inside the other singer's
     /// section is a pause in *their* part, and the dots are drawn where their lines are.
@@ -633,13 +745,14 @@ struct SyncedPauseDotsLineView: View {
         }
         .frame(maxWidth: .infinity, alignment: self.isTrailingAligned ? .trailing : .leading)
         .padding(.vertical, 7)
-        .opacity(self.lineOpacity(for: self.status))
+        .opacity(self.lineEmphasis.opacity)
         .scaleEffect(
-            self.lineScale(for: self.status),
+            self.lineEmphasis.scale,
             anchor: self.isTrailingAligned ? .trailing : .leading
         )
+        .offset(y: self.lineEmphasis.drift)
         .animation(.easeInOut(duration: 0.35), value: self.dots.statuses)
-        .animation(AppAnimation.lyricEmphasis, value: self.status)
+        .animation(AppAnimation.lyricEmphasis, value: self.lineEmphasis)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
@@ -673,28 +786,6 @@ struct SyncedPauseDotsLineView: View {
             0.65
         }
     }
-
-    private func lineScale(for status: SyncedLyrics.LineStatus) -> CGFloat {
-        switch status {
-        case .current:
-            1.0
-        case .previous:
-            0.95
-        case .upcoming:
-            0.965
-        }
-    }
-
-    private func lineOpacity(for status: SyncedLyrics.LineStatus) -> Double {
-        switch status {
-        case .current:
-            1.0
-        case .previous:
-            0.35
-        case .upcoming:
-            0.55
-        }
-    }
 }
 
 // MARK: - SyncedLineView
@@ -708,6 +799,9 @@ struct SyncedLineView: View {
     /// (`SyncedLyrics.isTrailingAligned(at:)`).
     let isTrailingAligned: Bool
     let status: SyncedLyrics.LineStatus
+    /// This row's place on the column's emphasis falloff, resolved by the sheet. A row drawn on its
+    /// own is the row being sung.
+    var lineEmphasis: LyricLineEmphasis = .current
     let isLive: Bool
     let clock: LyricsPlaybackClock
     /// Measured line layouts, so a re-render of the sheet never measures a line again.
@@ -742,16 +836,17 @@ struct SyncedLineView: View {
             self.content(at: displayTimeMs, layout: layout, backgroundLayout: backgroundLayout)
         }
         .frame(maxWidth: .infinity, alignment: self.alignment)
-        .opacity(self.opacity(for: self.status))
+        .opacity(self.lineEmphasis.opacity)
         // Anchored to the edge the row sits on, so an other-singer line grows and shrinks
         // from its own side rather than sliding across the panel.
-        .scaleEffect(self.scale(for: self.status), anchor: self.alignment == .trailing ? .trailing : .leading)
-        .offset(y: self.drift(for: self.status))
+        .scaleEffect(self.lineEmphasis.scale, anchor: self.alignment == .trailing ? .trailing : .leading)
+        .offset(y: self.lineEmphasis.drift)
         .padding(.vertical, 5)
-        // Always animated, including the line that is leaving. A line change is the panel's
-        // most visible piece of motion and it must never be conditional — see the panel's
-        // initializer for the bug that a conditional here caused.
-        .animation(AppAnimation.lyricEmphasis, value: self.status)
+        // Keyed to the resolved emphasis rather than to the status, so the row moves both when it
+        // takes or gives the baton and when the highlight moves anywhere else in the column. Never
+        // conditional: a line change is the panel's most visible motion — see the panel's
+        // initializer for the bug a conditional here caused.
+        .animation(AppAnimation.lyricEmphasis, value: self.lineEmphasis)
         .contentShape(Rectangle())
         .onTapGesture {
             self.onTap()
@@ -812,38 +907,4 @@ struct SyncedLineView: View {
         }
     }
 
-    private func scale(for status: SyncedLyrics.LineStatus) -> CGFloat {
-        switch status {
-        case .current:
-            1.0
-        case .previous:
-            0.95
-        case .upcoming:
-            0.965
-        }
-    }
-
-    private func opacity(for status: SyncedLyrics.LineStatus) -> Double {
-        switch status {
-        case .current:
-            1.0
-        case .previous:
-            0.35
-        case .upcoming:
-            0.55
-        }
-    }
-
-    /// Neighbouring lines sit slightly off their slot, so a line settles into place
-    /// as it becomes the line being sung.
-    private func drift(for status: SyncedLyrics.LineStatus) -> CGFloat {
-        switch status {
-        case .current:
-            0
-        case .previous:
-            -3
-        case .upcoming:
-            3
-        }
-    }
 }

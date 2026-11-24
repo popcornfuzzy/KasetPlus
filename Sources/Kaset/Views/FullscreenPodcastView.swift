@@ -46,15 +46,11 @@ struct FullscreenPodcastView: View {
     let videoPreferences: PodcastVideoPreferences
 
     private enum Layout {
-        /// Share of the width the transcript column takes while it is visible.
-        static let transcriptWidthRatio: CGFloat = 0.56
-        static let columnSpacingRatio: CGFloat = 0.03
-        static let horizontalPadding: CGFloat = 56
-        static let videoAspectRatio: CGFloat = 16.0 / 9.0
-        static let maximumContentWidth: CGFloat = 1320
         static let artworkSize: CGFloat = 52
         /// Vertical offset of the top bar, keeping the controls clear of the window traffic lights.
         static let topBarTopPadding: CGFloat = 46
+        /// Gap between the columns and the bottom edge of the window.
+        static let bottomGap: CGFloat = 28
         /// Side of the square Liquid Glass buttons that float over the video.
         static let topBarControlSize: CGFloat = 30
         /// Spacing between those buttons.
@@ -95,10 +91,12 @@ struct FullscreenPodcastView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let contentWidth = min(proxy.size.width - (Layout.horizontalPadding * 2), Layout.maximumContentWidth)
-            let columnSpacing = max(24, contentWidth * Layout.columnSpacingRatio)
-            let transcriptWidth = self.showsTranscript ? contentWidth * Layout.transcriptWidthRatio : 0
-            let mediaWidth = self.showsTranscript ? contentWidth - transcriptWidth - columnSpacing : contentWidth * 0.62
+            // The columns divide the window they are given (see `FullscreenPodcastGeometry`), so the
+            // experience fills a large window instead of sitting in a capped strip in the middle of it.
+            let geometry = FullscreenPodcastGeometry(
+                windowSize: proxy.size,
+                showsTranscript: self.showsTranscript
+            )
 
             ZStack {
                 self.backgroundLayer
@@ -110,20 +108,22 @@ struct FullscreenPodcastView: View {
                         // buttons would otherwise sit on top of them.
                         .padding(.top, Layout.topBarTopPadding)
 
-                    HStack(alignment: .center, spacing: columnSpacing) {
-                        self.mediaColumn(width: mediaWidth, availableHeight: proxy.size.height)
-                            .frame(width: mediaWidth)
+                    HStack(alignment: .center, spacing: geometry.columnSpacing) {
+                        self.mediaColumn(width: geometry.videoWidth)
 
                         if self.showsTranscript {
                             self.transcriptPanel
-                                .frame(width: transcriptWidth)
+                                .frame(width: geometry.transcriptWidth)
                                 .frame(maxHeight: .infinity)
                                 .transition(.opacity)
                         }
                     }
+                    // The pair is exactly as wide as its two columns and centres in whatever the
+                    // window has left over, so a capped transcript measure never pushes the video
+                    // against one side.
+                    .frame(width: geometry.contentWidth, alignment: .center)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding(.horizontal, Layout.horizontalPadding)
-                    .padding(.bottom, 28)
+                    .padding(.bottom, Layout.bottomGap)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
@@ -364,7 +364,7 @@ struct FullscreenPodcastView: View {
 
     // MARK: - Media column
 
-    private func mediaColumn(width: CGFloat, availableHeight: CGFloat) -> some View {
+    private func mediaColumn(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // The visual is always part of the layout: the shared WebView layer covers it with the
             // episode video when there is one, and the still artwork stands in otherwise.
@@ -383,13 +383,12 @@ struct FullscreenPodcastView: View {
             self.transportRow
         }
         .frame(width: width, alignment: .leading)
-        .frame(maxHeight: max(320, availableHeight - 120), alignment: .center)
     }
 
     /// The episode's video slot: the still artwork, plus the anchor `MainWindow` places the WebView
     /// layer on. The video is drawn over this view, never inside it.
     private func mediaVisual(width: CGFloat) -> some View {
-        let slotHeight = width / Layout.videoAspectRatio
+        let slotHeight = width / FullscreenPodcastGeometry.videoAspectRatio
 
         return CachedAsyncImage(
             url: self.artworkURL?.highQualityThumbnailURL ?? self.videoStillURL,
@@ -832,5 +831,101 @@ struct FullscreenPodcastView: View {
             self.sleepTimerRemaining = remaining
             try? await Task.sleep(for: .seconds(1))
         }
+    }
+}
+
+// MARK: - FullscreenPodcastGeometry
+
+/// How the fullscreen podcast experience divides a window between the episode video and the
+/// transcript.
+///
+/// The video is sized from the height the experience has left — the way the music player sizes its
+/// artwork — instead of from a share of the window's width. That makes the layout answer to the
+/// window rather than to a fixed number: a wide window grows the video and the transcript instead of
+/// leaving the pair in a capped strip with wide empty margins, a short one shrinks the video instead
+/// of pushing the transport row off the stage, and hiding the transcript hands its column to the
+/// video.
+struct FullscreenPodcastGeometry {
+    /// The window the experience was given.
+    var windowSize: CGSize
+    var showsTranscript: Bool
+
+    /// The window's height less the top bar above the columns and the gap under them, plus a few
+    /// points of slack so a bar that lays out a little taller than its 30pt controls never makes the
+    /// columns overflow the bottom edge.
+    static let chromeHeight: CGFloat = 112
+    /// Height of what the media column draws under the video: episode meta, the progress row, the
+    /// video toggle's row and the transport row, with the gaps between them.
+    static let mediaChromeHeight: CGFloat = 256
+    static let videoAspectRatio: CGFloat = 16.0 / 9.0
+    /// Share of the window's width the video may take while the transcript sits beside it. Past this
+    /// the transcript would lose its measure, so the video stops growing and the pair centres.
+    static let maximumVideoWidthRatio: CGFloat = 0.58
+    /// The narrowest transcript kept, so a window too short for a large video still leaves it readable.
+    static let minimumTranscriptWidth: CGFloat = 300
+    /// The widest measure the transcript takes, so a very wide window does not turn a 24pt paragraph
+    /// into one very long line.
+    static let maximumTranscriptWidth: CGFloat = 980
+    /// The smallest the video gets when the stage has no height left for it.
+    static let minimumVideoHeight: CGFloat = 160
+
+    /// Side margins, scaling with the window.
+    var horizontalPadding: CGFloat {
+        min(max(self.windowSize.width * 0.028, 24), 72)
+    }
+
+    /// Width the two columns share, once the margins have theirs.
+    var availableWidth: CGFloat {
+        max(0, self.windowSize.width - (self.horizontalPadding * 2))
+    }
+
+    /// Gap between the columns, scaling with the window.
+    var columnSpacing: CGFloat {
+        min(max(self.availableWidth * 0.025, 24), 48)
+    }
+
+    /// Vertical room the columns are given.
+    var stageHeight: CGFloat {
+        max(0, self.windowSize.height - Self.chromeHeight)
+    }
+
+    /// Width the video would take if the stage's height were the only limit on it.
+    private var heightBudget: CGFloat {
+        max(Self.minimumVideoHeight, self.stageHeight - Self.mediaChromeHeight)
+    }
+
+    /// Width of the video: the height the stage has left, capped by the window (and, while the
+    /// transcript is beside it, by the video's share of the width and by the transcript's own floor).
+    var videoWidth: CGFloat {
+        guard self.availableWidth > 0 else { return 0 }
+
+        let heightDriven = self.heightBudget * Self.videoAspectRatio
+        guard self.showsTranscript else {
+            return min(heightDriven, self.availableWidth)
+        }
+
+        let widthDriven = self.availableWidth * Self.maximumVideoWidthRatio
+        let transcriptDriven = self.availableWidth - self.columnSpacing - Self.minimumTranscriptWidth
+        return max(1, min(heightDriven, widthDriven, transcriptDriven))
+    }
+
+    /// Height of the video: its 16:9 shape at whatever width it was given.
+    var videoHeight: CGFloat {
+        self.videoWidth / Self.videoAspectRatio
+    }
+
+    /// Width the transcript gets: what the video leaves, within its own floor and measure.
+    var transcriptWidth: CGFloat {
+        guard self.showsTranscript, self.availableWidth > 0 else { return 0 }
+
+        let leftover = self.availableWidth - self.videoWidth - self.columnSpacing
+        return min(max(leftover, Self.minimumTranscriptWidth), Self.maximumTranscriptWidth)
+    }
+
+    /// Width of the whole pair, which is what the columns are centred as.
+    var contentWidth: CGFloat {
+        self.showsTranscript
+            ? self.videoWidth + self.columnSpacing + self.transcriptWidth
+            : self.videoWidth
     }
 }

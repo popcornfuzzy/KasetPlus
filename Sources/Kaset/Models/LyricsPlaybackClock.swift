@@ -73,13 +73,11 @@ struct KaraokeTiming: Equatable, Sendable {
     /// highlight until the next line's first content opens, which is the moment the baton passes:
     /// the line being read keeps the highlight, and it never starts to leave while it is still
     /// filling.
-    var scrollLeadMs: Double = 500
-
-    /// How long the sheet takes to travel from one line to the next, in milliseconds.
     ///
-    /// Shorter than `scrollLeadMs` on purpose, with the difference absorbing a late playback
-    /// sample: the travel is always over before the line it is travelling to is sung.
-    var scrollDurationMs: Double = 400
+    /// It is also the length of the line-change animation (`AppAnimation.lyricEmphasis`), so the
+    /// arriving row starts its move with the scroll and finishes it on the frame its first word
+    /// opens. The two are one number: change this and the animations follow.
+    var scrollLeadMs: Double = 500
 
     /// How far before the line after the one being sung has anything to show that it takes
     /// the display clock.

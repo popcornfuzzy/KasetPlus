@@ -50,13 +50,22 @@ final class NowPlayingManager {
     /// whatever the page writes there afterwards. `nil` (nothing playing, or only the "Loading..."
     /// placeholder) clears the entry instead of describing a song that is not the one playing.
     private func observeNowPlayingMetadata() {
+        // Read only inside the tracked closure, and push outside it. Pushing from in here ran
+        // WebKit's message pump inside the access-list scope, and every task a message handler
+        // spawned on the way inherited a pointer to that scope's list — which is gone by the time
+        // the task runs. That is the `_AccessList.addAccess` crash: see
+        // `docs/common-bug-patterns.md`.
+        let track = self.playerService?.currentTrack
         withObservationTracking {
-            self.pushNowPlayingMetadata(for: self.playerService?.currentTrack)
+            _ = self.playerService?.currentTrack
         } onChange: {
-            Task { @MainActor [weak self] in
+            // Detached on purpose: `Task {}` here would inherit the task-local access list of
+            // whatever mutated the track, and that list belongs to a scope that has returned.
+            Task.detached { @MainActor [weak self] in
                 self?.observeNowPlayingMetadata()
             }
         }
+        self.pushNowPlayingMetadata(for: track)
     }
 
     /// Re-pushes the current track.
@@ -82,7 +91,9 @@ final class NowPlayingManager {
         withObservationTracking {
             _ = self.settings.mediaControlStyle
         } onChange: {
-            Task { @MainActor [weak self] in
+            // Detached: a `Task {}` made here inherits the access list of the scope the mutation
+            // happened in, and that list does not outlive it (see `observeNowPlayingMetadata`).
+            Task.detached { @MainActor [weak self] in
                 self?.syncMediaControlSetting()
                 self?.observeSettingsChanges()
             }

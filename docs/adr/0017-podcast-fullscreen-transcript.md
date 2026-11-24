@@ -37,6 +37,28 @@ fullscreen is open swaps the experiences and the flag keeps working unchanged.
 The episode keeps `showFullscreenNowPlaying` as its single fullscreen state, so the existing
 entry points (player-bar button, keyboard shortcut) need no podcast-specific paths.
 
+### Layout: the columns divide the window
+
+The experience is a two-column surface — video and episode meta on the left, transcript on the right —
+and the columns are sized from the window rather than from fixed shares of it:
+
+- The video takes the height the stage has left once the media column's own chrome (episode meta,
+  progress row, video toggle, transport row) has its room, and its width follows from its 16:9 shape.
+  A short window therefore shrinks the video instead of pushing the transport row below the window's
+  edge, which a width-driven video could not do.
+- While the transcript is beside it the video is capped at 58% of the window, so the transcript keeps
+  a readable measure; hiding the transcript releases the cap and the video takes the room.
+- The transcript takes what the video leaves, between 300pt (below that it stops being readable) and
+  980pt (past that a 24pt paragraph becomes one very long line), and the pair is centred in whatever
+  the window has left over.
+- The side margins and the gap between the columns scale with the window (24–72pt and 24–48pt).
+
+This replaced fixed fractions (56% transcript, 3% gap, 56pt padding) under a 1320pt content cap, which
+at the app's recommended 2558×1401 window drew the experience as a 1320pt strip with ~619pt of empty
+window on either side and a 478pt-wide video in it. The arithmetic lives in
+`FullscreenPodcastGeometry`, outside the view, so `FullscreenPodcastGeometryTests` pins it — the same
+arrangement as `FullscreenArtworkGeometry` in the music player.
+
 ### Video surface: anchor-declared slot, not a second owner
 
 `FullscreenPodcastView` does **not** host the WebView. It marks the video slot with an
