@@ -218,4 +218,16 @@ enum PlayerWebViewPreload {
     static func canLoadPreload(currentVideoId: String?, page: PlayerWebViewPage) -> Bool {
         currentVideoId == nil && (page == .empty || page == .shell)
     }
+
+    /// Whether a host (`PersistentPlayerView`) may deliver the page for a track.
+    ///
+    /// The player owns the page: `play(song:)`, `play(videoId:)` and `switchPlaybackVariant` ask the
+    /// WebView for the track they chose. A host only draws that page, and may load one itself in one
+    /// case — the first host to mount after a play that had no WebView to load into yet. Hosts used to
+    /// load whenever the page was not on *their own* id, so every host that mounted or re-rendered
+    /// during a track change navigated for the same change: one skip asked the page's player three
+    /// times in eleven milliseconds, each call overwriting the id the previous had just set.
+    static func canLoadTrackPage(currentVideoId: String?, page: PlayerWebViewPage) -> Bool {
+        currentVideoId == nil && (page == .empty || page == .shell)
+    }
 }

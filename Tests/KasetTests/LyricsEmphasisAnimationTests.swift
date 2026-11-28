@@ -3,15 +3,19 @@ import SwiftUI
 import Testing
 @testable import Kaset
 
-/// The line that has just been sung must leave from a frame it has already finished being sung on,
-/// and leave smoothly.
+/// The line the sheet travels past must leave *with* the scroll — even while it is still filling — and
+/// leave smoothly.
 ///
-/// Two defects lived here. The highlight used to be taken from the **scroll** lead — the panel fed
+/// Three defects lived here. The highlight used to be taken from the **scroll** lead — the panel fed
 /// `currentLineIndex(at: timeMs + 120)` into the rows' status — so a line began to
 /// dim, shrink and recede 120 ms before its last word had finished filling: it never reached its
 /// sung state before it started to leave, which is what "it doesn't animate smoothly into the sung
 /// state" was. And the row kept redrawing that frozen frame, inside a changing scale, until a
-/// trailing window expired.
+/// trailing window expired. The third is the one this file now pins from the other side: once the
+/// highlight was taken off the scroll lead the sung row kept its full size and brightness until the
+/// baton, half a second *after* the sheet had travelled — so the sheet moved, the old line sat at full
+/// size, and then shrank on an animation of its own, which reads as an interruption. The emphasis is
+/// anchored on the scroll (`LyricLineEmphasis.emphasis`), so the departure begins with the page.
 ///
 /// Nothing offscreen can observe an implicit animation or a redraw — `ImageRenderer` draws one frame
 /// at model values and never runs a timeline — so this hosts the **real** panel in a window,
@@ -19,7 +23,8 @@ import Testing
 /// rendered pixels between them. The line that leaves is given a deliberately wide text, so its right
 /// edge is the widest ink on screen and can be followed frame by frame: a spring shows as a series of
 /// intermediate widths, a snap as one. Its last word fills late, so how far the bright part of that
-/// row reaches across it says whether the line was still being sung as it left.
+/// row reaches across it says whether the line was still being sung as it left — which, leaving with
+/// the scroll, it is.
 ///
 /// **Sampling floor.** Reading a frame out of a hosted `NSView` costs ~60 ms on this machine (AppKit's
 /// offscreen caching path, not the drawing), so the trace runs at roughly 15 Hz however tightly the
@@ -44,9 +49,15 @@ struct LyricsEmphasisAnimationTests {
     private struct TracedFrame {
         /// The playback position the panel had been handed for this frame.
         let timeMs: Int
+        /// Wall-clock milliseconds since the sheet was told to travel, or `0` before it was.
+        let elapsedMs: Double
         /// Left-most and right-most inked columns of the whole sheet.
         let minX: Int
         let maxX: Int
+        /// Brightest ink on the sheet. A row being sung is drawn at full opacity, and the falloff
+        /// takes it to `focusedOpacity`-and-below on the frame the sheet travels — so this is the
+        /// row's own fade, read in alpha.
+        let peak: Int
         /// How far the bright (sung) part of the sheet's widest row reaches across that row, 0...1.
         /// A row that is still being sung has a dim run at its right where the fill has not got to.
         let sungReach: Double
@@ -55,33 +66,33 @@ struct LyricsEmphasisAnimationTests {
     /// What a departure looked like, frame by frame.
     private struct DepartureTrace {
         let frames: [TracedFrame]
-        let flipTimeMs: Int
-        /// Right-most inked column while the wide line was still the one being sung.
+        /// When the sheet starts travelling away from the line under test.
+        let leadStartMs: Int
+        /// When the line below takes the baton.
+        let batonMs: Int
+        /// Right-most inked column before the sheet started travelling, while the line under test was
+        /// still in the anchor at its sung size.
         let fullWidth: Int
+        /// Brightest ink before the sheet started travelling: the row under test at full opacity.
+        let fullPeak: Int
         /// The first frame whose line had begun to shrink, if it began at all.
         let departureIndex: Int?
 
-        /// The frame the departure was first seen on. The previous frame is the last one the line was
-        /// still showing at its sung size, which is the frame it was still being sung on.
-        var lastFrameBeforeLeaving: TracedFrame? {
-            guard let departureIndex, departureIndex > 0 else { return nil }
-            return self.frames[departureIndex - 1]
-        }
-
-        /// Widths from the departure onwards, and the total it moved.
-        var widthsAfterDeparture: [Int] {
-            guard let departureIndex else { return [] }
-            return self.frames[departureIndex...].map(\.maxX)
+        /// The last frame of the scroll lead: recorded while the sheet was travelling, before the
+        /// baton was ever published for the line below.
+        var endOfLead: TracedFrame? {
+            self.frames.last { $0.timeMs >= self.leadStartMs }
         }
     }
 
     /// Records a frame while the run loop is pumped for `seconds`.
-    private func record(_ view: NSView, at timeMs: Int, for seconds: Double) -> [TracedFrame] {
+    private func record(_ view: NSView, at timeMs: Int, for seconds: Double, since start: Date? = nil) -> [TracedFrame] {
         var frames: [TracedFrame] = []
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.002))
-            if let frame = Self.capture(view, at: timeMs) {
+            let elapsed = start.map { Date().timeIntervalSince($0) * 1000 } ?? 0
+            if let frame = Self.capture(view, at: timeMs, elapsedMs: elapsed) {
                 frames.append(frame)
             }
         }
@@ -89,8 +100,8 @@ struct LyricsEmphasisAnimationTests {
     }
 
     /// The panel's pixels, reduced to what the departure moves: the extent of the widest row's ink,
-    /// and how much of that row is bright rather than at the dim base.
-    private static func capture(_ view: NSView, at timeMs: Int) -> TracedFrame? {
+    /// how bright the sheet is, and how much of that row is bright rather than at the dim base.
+    private static func capture(_ view: NSView, at timeMs: Int, elapsedMs: Double = 0) -> TracedFrame? {
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
         view.cacheDisplay(in: view.bounds, to: rep)
         guard let data = rep.bitmapData, rep.samplesPerPixel >= 4 else { return nil }
@@ -116,20 +127,30 @@ struct LyricsEmphasisAnimationTests {
 
         return TracedFrame(
             timeMs: timeMs,
+            elapsedMs: elapsedMs,
             minX: minX,
             maxX: maxX,
+            peak: peak,
             sungReach: Double(min(max(lit, minX), maxX) - minX) / Double(maxX - minX)
         )
     }
 
-    /// Plays into the wide line and across the moment the highlight leaves it, recording what the
-    /// panel drew on the way.
-    private func traceDeparture(sheet: SyncedLyrics, playFromMs: Int, flipTimeMs: Int) -> DepartureTrace {
+    /// Plays into the wide line and across the moment the sheet travels away from it, recording what
+    /// the panel drew on the way.
+    private func traceDeparture(sheet: SyncedLyrics, playFromMs: Int, leavingLineAt: Int) -> DepartureTrace {
+        let changes = KaraokeFillModel.lineChanges(in: sheet)
+        guard changes.indices.contains(leavingLineAt + 1) else {
+            Issue.record("the sheet has no line after the one under test")
+            return DepartureTrace(frames: [], leadStartMs: 0, batonMs: 0, fullWidth: 0, fullPeak: 0, departureIndex: nil)
+        }
+        let leadStartMs = Int(changes[leavingLineAt + 1].scrollStartMs.rounded())
+        let batonMs = Int(changes[leavingLineAt + 1].batonMs.rounded())
+
         let driver = EmphasisDriver()
         let window = self.host(driver, lyrics: sheet)
         guard let hosting = window.contentView as? NSHostingView<EmphasisHarness> else {
             Issue.record("the harness did not install its content view")
-            return DepartureTrace(frames: [], flipTimeMs: flipTimeMs, fullWidth: 0, departureIndex: nil)
+            return DepartureTrace(frames: [], leadStartMs: leadStartMs, batonMs: batonMs, fullWidth: 0, fullPeak: 0, departureIndex: nil)
         }
         defer { window.orderOut(nil) }
 
@@ -141,11 +162,11 @@ struct LyricsEmphasisAnimationTests {
         self.pump(0.6)
         frames += self.record(hosting, at: playFromMs, for: 0.05)
 
-        // Then the 100 ms steps the WebView's lyrics poll reports at, up to the sample the highlight
-        // moves on. One capture per window is enough here: nothing on this row moves while it is the
-        // line being sung, and all this stretch has to establish is the width it holds.
+        // Then the 100 ms steps the WebView's lyrics poll reports at, up to the last one before the
+        // sheet starts travelling. One capture per window is enough here: nothing on this row moves
+        // until the travel begins.
         var time = playFromMs + 100
-        while time < flipTimeMs - 100 {
+        while time < leadStartMs - 100 {
             driver.currentTimeMs = time
             self.pump(0.1)
             if let frame = Self.capture(hosting, at: time) {
@@ -154,26 +175,31 @@ struct LyricsEmphasisAnimationTests {
             time += 100
         }
 
-        // The last sample before the baton, ten milliseconds out: the baton passes when the line
-        // below starts being sung, so this is the frame the departing line has to have finished on.
-        // Without it the frame before the change would be a whole poll (100 ms) early, and would ask
-        // the row how far it had filled in a window that is not the one it left in.
-        driver.currentTimeMs = flipTimeMs - 10
-        self.pump(0.1)
-        frames += self.record(hosting, at: flipTimeMs - 10, for: 0.05)
+        // The last sample before the travel, ten milliseconds out: this is the frame the line under
+        // test is still at its sung size on, and the one the fill it has reached is measured on.
+        driver.currentTimeMs = leadStartMs - 10
+        self.pump(0.15)
+        frames += self.record(hosting, at: leadStartMs - 10, for: 0.05)
 
-        // The change itself, and the departure it starts.
-        driver.currentTimeMs = flipTimeMs
-        frames += self.record(hosting, at: flipTimeMs, for: 0.6)
+        // The change itself: the sheet starts travelling to the line below, and the row under test
+        // leaves with it. The whole lead is recorded — and the baton is never published, so nothing
+        // the trace measures can be the change that used to arrive after the sheet had moved.
+        let leadStartedAt = Date()
+        driver.currentTimeMs = leadStartMs
+        frames += self.record(hosting, at: leadStartMs, for: 0.6, since: leadStartedAt)
 
-        let fullWidth = frames.filter { $0.timeMs < flipTimeMs }.map(\.maxX).max() ?? 0
+        let before = frames.filter { $0.timeMs < leadStartMs }
+        let fullWidth = before.map(\.maxX).max() ?? 0
+        let fullPeak = before.map(\.peak).max() ?? 0
         let tolerance = max(2, fullWidth / 400)
         let departureIndex = frames.firstIndex { $0.maxX <= fullWidth - tolerance }
 
         return DepartureTrace(
             frames: frames,
-            flipTimeMs: flipTimeMs,
+            leadStartMs: leadStartMs,
+            batonMs: batonMs,
             fullWidth: fullWidth,
+            fullPeak: fullPeak,
             departureIndex: departureIndex
         )
     }
@@ -239,8 +265,8 @@ struct LyricsEmphasisAnimationTests {
     /// The wide line's word timings: a one-letter first word, and a last word that fills only in the
     /// line's last 180 ms (its ramp ends 40 ms before the line does, from the release tail). A last
     /// word that fills that late is what makes "was this line still being sung when it left?" a
-    /// question the pixels can answer: the baton passes at the next line's first word, 10000 ms, and
-    /// it used to pass on the scroll lead 120 ms before that, where this word is still 65% swept.
+    /// question the pixels can answer: the sheet starts travelling for the next line a whole scroll
+    /// lead before that line's baton, and this word is still about two thirds swept when it does.
     private static let wideLineWords = [
         TimedWord(timeInMs: 8000, word: "W"),
         TimedWord(timeInMs: 9850, word: " WWWWWWWWWWWWWWW"),
@@ -263,10 +289,33 @@ struct LyricsEmphasisAnimationTests {
         return window
     }
 
-    // MARK: - The line that leaves has finished being sung
+    // MARK: - The line that leaves rides the scroll
 
-    @Test("The line that has just been sung has finished filling before it starts to leave")
-    func departureBeginsOnAFullySungFrame() {
+    @Test("A row being sung is bright in the anchor and on the falloff once the sheet travels past it")
+    func sungRowLeavesWithTheScroll() {
+        // With the sheet still anchored on it, the line being sung has the sung look.
+        #expect(
+            LyricLineEmphasis.emphasis(forLineAt: 3, status: .current, focusIndex: 3) == .current,
+            "the line being sung, with the sheet anchored on it, is not drawn at its sung look"
+        )
+
+        // The moment the sheet travels to the line below, the sung row is that anchor's neighbour and
+        // takes the falloff — the same move its neighbours make, starting with the scroll.
+        let leaving = LyricLineEmphasis.emphasis(forLineAt: 3, status: .current, focusIndex: 4)
+        #expect(leaving == LyricLineEmphasis.values(distance: -1))
+        #expect(leaving.scale < LyricLineEmphasis.current.scale, "the row the sheet travelled past kept its full size")
+        #expect(leaving.opacity < LyricLineEmphasis.current.opacity, "…and its full brightness")
+
+        // The baton changes nothing on the row it has left: its move is the scroll's, so there is no
+        // second animation left to interrupt the page once the sheet has arrived.
+        #expect(
+            LyricLineEmphasis.emphasis(forLineAt: 3, status: .previous, focusIndex: 4) == leaving,
+            "the departing row changed shape again when the baton passed"
+        )
+    }
+
+    @Test("The line the sheet has travelled past starts to shrink while it is still being sung")
+    func departureStartsWithTheScroll() {
         let wideLine = Self.sheet(wideLineWords: Self.wideLineWords).lines[4]
         let layout = KaraokeLineLayout(line: wideLine, fontSize: 16)
         let rowWidth = zip(layout.textWidths, layout.gaps).reduce(CGFloat(0)) { $0 + $1.0 + $1.1 }
@@ -275,24 +324,36 @@ struct LyricsEmphasisAnimationTests {
         let trace = self.traceDeparture(
             sheet: Self.sheet(wideLineWords: Self.wideLineWords),
             playFromMs: 8200,
-            flipTimeMs: 10_000
+            leavingLineAt: 4
         )
-        guard let lastSungFrame = trace.lastFrameBeforeLeaving else {
-            Issue.record("the departing line never moved, so there was no departure to measure")
+        guard let startOfLead = trace.frames.first(where: { $0.timeMs >= trace.leadStartMs }),
+              let endOfLead = trace.endOfLead
+        else {
+            Issue.record("the sheet drew nothing while it was travelling")
             return
         }
 
-        // The last word of this line fills until 9960 ms and the baton passes on the next line's
-        // first word (10000 ms less the attack lead), so on the frame the line starts to leave it has
-        // nothing left to fill. Taking the emphasis off on a scroll lead — which is what the sheet
-        // did — is a line that starts to dim and shrink with its last word still sweeping, which is
-        // the bug this pins.
+        // On the frame the sheet starts travelling, this row is still in the middle of its fill — the
+        // last word of the line only fills in its final 180 ms, just before the line below begins.
         #expect(
-            lastSungFrame.sungReach >= 0.93,
-            "the departing line was only \(lastSungFrame.sungReach.formatted(.number.precision(.fractionLength(2)))) sung when it left"
+            startOfLead.sungReach < 0.5,
+            "the row had finished filling before the sheet travelled (\(startOfLead.sungReach.formatted(.number.precision(.fractionLength(2)))) sung), so this is not the case being pinned"
         )
 
-        // And the departure is still a spring.
+        // The column is anchored on the scroll, so the row the sheet leaves has to have left with it.
+        // It used to keep its full size and full brightness until the next line's baton — half a second
+        // after the page had already arrived — and then shrink and fade on an animation of its own:
+        // the second, interrupting move. By the time the lead runs out, its move is finished.
+        #expect(
+            endOfLead.maxX <= trace.fullWidth - max(3, trace.fullWidth / 100),
+            "the row was still \(endOfLead.maxX)px of \(trace.fullWidth)px wide at the end of the scroll lead (baton at \(trace.batonMs) ms)"
+        )
+        #expect(
+            endOfLead.peak <= trace.fullPeak * 3 / 4,
+            "the row was still at \(endOfLead.peak) of \(trace.fullPeak) alpha at the end of the scroll lead (baton at \(trace.batonMs) ms)"
+        )
+
+        // The departure across the lead is still a spring, not a snap.
         _ = self.expectSmoothDeparture(trace)
     }
 
@@ -303,7 +364,7 @@ struct LyricsEmphasisAnimationTests {
         let trace = self.traceDeparture(
             sheet: Self.sheet(wideLineWords: nil),
             playFromMs: 8200,
-            flipTimeMs: 10_000
+            leavingLineAt: 4
         )
 
         _ = self.expectSmoothDeparture(trace)

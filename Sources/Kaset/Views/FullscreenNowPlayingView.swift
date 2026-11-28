@@ -1072,15 +1072,16 @@ private struct FullscreenSyncedLyricsView: View {
                         let plan = self.plan(forLineAt: index)
                         // Anchored on the line the sheet has travelled to, not the one still being
                         // sung: the scale-in belongs to the scroll, the brightness waits for the
-                        // first word, and a row the model calls current keeps the full look.
-                        let focusIndex = self.scrollLineIndex ?? self.currentLineIndex
-                        let resolvedEmphasis = status == .current
-                            ? LyricLineEmphasis.current
-                            : LyricLineEmphasis.values(
-                                distance: index - (focusIndex ?? -1),
-                                surfaceBlur: 1.3,
-                                isHovered: self.hoveredLineId == line.id
-                            )
+                        // first word, and the row being sung loses the full look as soon as the sheet
+                        // travels past it — its scale-back is the scroll's, not a second animation
+                        // arriving after the page has already moved (`LyricLineEmphasis.emphasis`).
+                        let resolvedEmphasis = LyricLineEmphasis.emphasis(
+                            forLineAt: index,
+                            status: status,
+                            focusIndex: self.scrollLineIndex ?? self.currentLineIndex,
+                            surfaceBlur: 1.3,
+                            isHovered: self.hoveredLineId == line.id
+                        )
                         // Reduce Motion keeps the brightness and drops the travel.
                         let lineEmphasis = self.reduceMotion ? resolvedEmphasis.settled : resolvedEmphasis
                         if self.lyrics.isPauseLine(at: index) {

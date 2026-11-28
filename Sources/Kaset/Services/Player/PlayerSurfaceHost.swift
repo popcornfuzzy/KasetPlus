@@ -146,6 +146,16 @@ enum PlayerWebViewHosting {
         guard let best = candidates.map(rank).max() else { return nil }
         return candidates.indices.last { rank(candidates[$0]) == best }
     }
+
+    /// Whether a container has been laid out enough to hold the page.
+    ///
+    /// Showing the page in a 0×0 view builds its viewport — and the video's own layer — at that
+    /// size, and resizes both when layout finally arrives (the band of black around the picture).
+    /// A host is laid out after SwiftUI creates it and calls back on its own layout, so a host that
+    /// is not laid out yet is simply not ready to take the WebView.
+    static func canHold(_ size: CGSize) -> Bool {
+        size.width >= 1 && size.height >= 1
+    }
 }
 
 // MARK: - SidebarVideoHosting

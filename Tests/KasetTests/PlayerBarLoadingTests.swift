@@ -272,6 +272,21 @@ struct PlayerBarLoadingTests {
         #expect(PlayerWebViewPreload.canLoadPreload(currentVideoId: "video-1", page: .shell) == false)
     }
 
+    @Test("A host delivers the page only while the WebView has no track in it")
+    func hostLoadRule() {
+        // The first host to mount after a play that had no WebView to load into still brings the page.
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: nil, page: .empty))
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: nil, page: .shell))
+
+        // A skip asks the player for its track once; every surface that mounts or re-renders after
+        // that finds a page with a track in it and must leave it alone. This is the rule that kept one
+        // skip from becoming three navigations.
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: "video-1", page: .playback) == false)
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: "video-1", page: .preloaded) == false)
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: "video-1", page: .shell) == false)
+        #expect(PlayerWebViewPreload.canLoadTrackPage(currentVideoId: nil, page: .preloaded) == false)
+    }
+
     @Test("Only a page Kaset is playing from reports, and only the shell and a preload stay quiet")
     func pagePurposes() {
         #expect(PlayerWebViewPage.playback.isAuthoritative)

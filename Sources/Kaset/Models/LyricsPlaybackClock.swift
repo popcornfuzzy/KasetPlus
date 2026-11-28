@@ -69,13 +69,13 @@ struct KaraokeTiming: Equatable, Sendable {
     /// be scrolled to on the frame its first word lands. The value is Better Lyrics' own
     /// (`--blyrics-lyric-ending-threshold` / `--blyrics-scroll-timing-offset`, both `0.5 s`).
     ///
-    /// It is deliberately **not** the lead on the emphasis. The line being sung keeps the
-    /// highlight until the next line's first content opens, which is the moment the baton passes:
-    /// the line being read keeps the highlight, and it never starts to leave while it is still
-    /// filling.
+    /// It is **not** the lead on the baton: which line is being sung changes when that line's own
+    /// first content opens, so a row is bright for as long as it is being sung. It is the lead on
+    /// the column's **shape**, though — the emphasis is anchored on the scroll, so the row the sheet
+    /// has travelled past starts to scale back and fade with the travel, even if it is still filling.
     ///
-    /// It is also the length of the line-change animation (`AppAnimation.lyricEmphasis`), so the
-    /// arriving row starts its move with the scroll and finishes it on the frame its first word
+    /// It is also the length of the line-change animation (`AppAnimation.lyricEmphasis`), so every
+    /// row's move starts with the scroll and finishes on the frame the arriving line's first word
     /// opens. The two are one number: change this and the animations follow.
     var scrollLeadMs: Double = 500
 

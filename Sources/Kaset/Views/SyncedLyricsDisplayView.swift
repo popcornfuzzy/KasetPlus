@@ -176,11 +176,14 @@ struct SyncedLyricsDisplayView: View {
                         let plan = self.plan(forLineAt: index)
                         // Anchored on the line the sheet has travelled to, not the one still being
                         // sung: the scale-in belongs to the scroll, the brightness waits for the
-                        // first word, and a row the model calls current keeps the full look.
-                        let focusIndex = self.scrollLineIndex ?? self.currentLineIndex
-                        let resolvedEmphasis = status == .current
-                            ? LyricLineEmphasis.current
-                            : LyricLineEmphasis.values(distance: index - (focusIndex ?? -1))
+                        // first word, and the row being sung loses the full look as soon as the sheet
+                        // travels past it — its scale-back is the scroll's, not a second animation
+                        // arriving after the page has already moved (`LyricLineEmphasis.emphasis`).
+                        let resolvedEmphasis = LyricLineEmphasis.emphasis(
+                            forLineAt: index,
+                            status: status,
+                            focusIndex: self.scrollLineIndex ?? self.currentLineIndex
+                        )
                         // Reduce Motion keeps the brightness and drops the travel.
                         let lineEmphasis = self.reduceMotion ? resolvedEmphasis.settled : resolvedEmphasis
                         // A line with nothing to sing is a pause, and a pause is the dots. The
@@ -639,6 +642,14 @@ struct KaraokeTimeSource<Content: View>: View {
 /// the first word. Past and future rows share the falloff and differ only in the **sign** of the
 /// drift, since the fill already says which side of the song a row is on.
 ///
+/// The anchor is the **scroll**, so a row leaves with the page rather than after it. The bright look
+/// belongs to the row in the anchor: a row being sung is `current` only while the sheet is still
+/// anchored on it, and the moment the sheet starts travelling to the line below
+/// (`KaraokeTiming.scrollLeadMs` before that line's first word) it is the anchor's neighbour and takes
+/// the falloff like any other neighbour. So its scale-back, fade and drift *are* the scroll's motion.
+/// It used to keep the bright look until the next line's baton, half a second after the page had
+/// already arrived: the sheet moved, the old line still sat at full size, and then shrank on its own.
+///
 /// See [ADR-0018](../../docs/adr/0018-karaoke-lyrics-animation.md) for why the sheet steps as a body
 /// and why the falloff is spent as an offset.
 @available(macOS 26.0, *)
@@ -676,7 +687,22 @@ struct LyricLineEmphasis: Equatable {
         LyricLineEmphasis(scale: 1, opacity: self.opacity, drift: 0, blur: 0)
     }
 
-    /// - Parameters:
+    /// The look for a row, which is `values(distance:)` except for the one row that is both being sung
+    /// and in the anchor: that one is `current`. A sung row the sheet has travelled past is a neighbour
+    /// like any other, which is what keeps its departure the scroll's own move (see the type's doc).
+    /// Both sheets resolve their rows through this, so the two cannot disagree about the rule.
+    static func emphasis(
+        forLineAt index: Int,
+        status: SyncedLyrics.LineStatus,
+        focusIndex: Int?,
+        surfaceBlur: CGFloat = 0,
+        isHovered: Bool = false
+    ) -> LyricLineEmphasis {
+        let distance = index - (focusIndex ?? -1)
+        if status == .current, distance == 0 { return .current }
+        return self.values(distance: distance, surfaceBlur: surfaceBlur, isHovered: isHovered)
+    }
+
     /// - Parameters:
     ///   - distance: signed distance from the line the sheet is anchored on, in lines — negative
     ///     above it, positive below, `0` for the line it has travelled to.

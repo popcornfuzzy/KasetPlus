@@ -105,15 +105,24 @@ struct PersistentPlayerView: NSViewRepresentable {
             return
         }
 
-        if self.playerService.shouldAutoloadPendingVideo,
-           SingletonPlayerWebView.shared.currentVideoId != videoId
-        {
+        // A surface draws the page; it does not choose it. The player asks for the track it was told
+        // to play, and a page that already has a track in it is that request. Loading whenever the
+        // page was not on *this surface's* id made every host that mounted or re-rendered during a
+        // track change issue its own navigation for the same change. Only the first host to mount
+        // after a play that had no WebView to load into delivers the page.
+        let shared = SingletonPlayerWebView.shared
+        let pageHasNoTrack = PlayerWebViewPreload.canLoadTrackPage(
+            currentVideoId: shared.currentVideoId,
+            page: shared.page
+        )
+
+        if self.playerService.shouldAutoloadPendingVideo, pageHasNoTrack {
             self.logger.info("Initial load for videoId: \(videoId)")
-            SingletonPlayerWebView.shared.loadVideo(videoId: videoId)
+            shared.loadVideo(videoId: videoId)
             return
         }
 
-        SingletonPlayerWebView.shared.preloadVideo(
+        shared.preloadVideo(
             videoId: videoId,
             startAt: self.playerService.deferredResumePosition
         )

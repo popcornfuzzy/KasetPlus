@@ -464,9 +464,10 @@ place the moment the scroll begins — the travel leads the line by `scrollLeadM
 belongs to that lead rather than to the first word. That makes **two active looks**: the line the
 sheet has travelled to is full size and dimmer (`0.82`, `focusedOpacity`), and the line being sung is
 full size at full opacity with its fill running. The baton still passes on the line's own first
-content, and its arrival is told by brightness alone: a row does not grow or move at that moment. The
-one row that changes shape at the baton is the one that has just finished, and only because it cannot
-leave while it is still being sung (`KaraokeFillModel.isLiveRow`).
+content, and its arrival is told by brightness alone: a row does not grow or move at that moment —
+including the row that has just finished, which left the anchor the moment the sheet travelled, while
+it was still being sung (see the last amendment), so there is no shape left for it to change on the
+baton.
 
 The column's **spacing is part of the change** as well. The drift is not a flat parallax: it is
 `driftReach` (`12 pt`) spent on `1 − 1 / (depth + 1)`, so the gap next to the line in focus widens
@@ -702,9 +703,9 @@ edge ends further out, without it neither edge moves by more than the pixel a ce
   (`KaraokeLyricsRenderTests`) that assert fill position, dim-vs-sung alpha, edge feathering, a halo
   that blooms past the text box instead of being cut off at it, character cells landing where the text
   draws them, the characters at rest not moving while the edge crosses the word, word gaps, and wrapping.
-- A line that has finished is sung to the end of its own content *before* it starts to leave, and it
-  leaves on a frozen raster in a subtree that keeps its identity — the two halves of the hand-off are
-  covered by `KaraokeRowHandoffTests` and the panel-level `LyricsEmphasisAnimationTests`.
+- A line leaves *with* the scroll that leaves it (see the last amendment), on a frozen raster in a
+  subtree that keeps its identity — the two halves of the hand-off are covered by
+  `KaraokeRowHandoffTests` and the panel-level `LyricsEmphasisAnimationTests`.
 - Exactly one line is the line being sung at any moment, and it is the one that is being sung *now*:
   the baton passes on that line's first word, not half a second before it. The row it lands on is
   already in position and already filling, and the row it leaves is the row that has just finished.
@@ -732,8 +733,11 @@ edge ends further out, without it neither edge moves by more than the pixel a ce
   the early departure.
 - **The emphasis change is a few tens of milliseconds after the incoming line's first word starts
   filling** (the incoming line is armed, so its fill is already running). Erred deliberately in that
-  direction: a line briefly dim at its first word is much less noticeable than a line that starts to
-  leave while it is still being sung.
+  direction: a line briefly dim at its first word is much less noticeable than a row that changes shape
+  on a frame nobody chose.
+- **A line may leave while it is still being sung** (the last amendment): its place in the column
+  follows the scroll, so on a fast sheet the row above is already a neighbour while its last word is
+  still filling. The fill keeps running; the brightness does not wait for it.
 - **Provider timings are onsets**: the fill compensates with a fixed lead and tail rather than per-song
   calibration, so a badly timed provider still looks badly timed.
 - **Two lyric looks, by capability**: word-synced lyrics fill word by word, line-synced lyrics appear
@@ -760,3 +764,38 @@ edge ends further out, without it neither edge moves by more than the pixel a ce
   the feature, and Reduce Motion is the accessibility escape hatch.
 - **Driving the fill with SwiftUI animations instead of a display-rate clock.** An animation restarts
   on every sample, which is exactly the lag-and-restart behaviour being removed.
+
+## Amendment: the line being sung leaves with the scroll, not after it
+
+The column is anchored on the scroll, so the arriving row takes the current line's size and place the
+moment the sheet begins to travel. The row that has just been sung did not: it kept `.current` — full
+size, full brightness — until the next line's first content opened, half a second after the page had
+already arrived. So the sheet moved, the old line sat at full size at the top of the new position, and
+then shrank and faded on an animation of its own, which had nothing to do with the scroll. On a fast
+sheet, where a line is still filling as the sheet travels for the next one, that second animation is
+the one the eye notices: the page has left, and then the row above recedes after it.
+
+The rule now reads the other way round: **the bright look belongs to the row in the anchor.** A row
+being sung is `.current` only while the anchor is its own index; once the sheet has started travelling
+to the line below — `scrollLeadMs` before that line's first word, on the emphasis animation whose
+duration *is* the lead — the sung row is the anchor's neighbour and takes the falloff like any other
+neighbour. Its scale-back, fade and drift are the scroll's own motion, starting and finishing with it.
+
+Two consequences, both intended:
+
+- **A line may leave while it is still being sung.** Its fill keeps running (the row stays on the display
+  clock until `settleBoundaryMs`); only its place in the column's falloff moves, and it moves with the
+  page. Being sung no longer means being at full brightness while the sheet has already moved on.
+- **The baton changes nothing about a row's shape.** When the next line's first content opens, the
+  departing row's emphasis is already the falloff's, so the pass is brightness on the arriving row only
+  (`focusedOpacity` → `1`). That is what removes the interrupting scale-back: there is no animation
+  left at the baton for the row that has left.
+
+`LyricLineEmphasis.emphasis(forLineAt:status:focusIndex:)` is that rule in one place, because both
+sheets carried the same `status == .current ? .current : …` expression and would have drifted apart.
+`LyricsEmphasisAnimationTests` pins both halves: that a sung row in the anchor is `.current` and the
+same row one line above the anchor is the falloff's neighbour, that the baton leaves that emphasis
+untouched, and — through the pixels, with the baton never published — that the row's shrink and fade
+have finished by the end of the scroll lead, while its last word is still filling, and that the
+shrink is still a spring rather than a snap. Reverting the rule to `status == .current ? .current : …`
+fails all three pixel assertions, which is how it was checked.

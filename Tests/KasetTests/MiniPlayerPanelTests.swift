@@ -186,6 +186,17 @@ struct SidebarVideoAspectTests {
         )
     }
 
+    @Test("A host that has not been laid out cannot hold the page")
+    func anUnlaidOutHostCannotHoldThePage() {
+        #expect(PlayerWebViewHosting.canHold(CGSize(width: 300, height: 169)))
+        #expect(PlayerWebViewHosting.canHold(CGSize(width: 1, height: 1)))
+
+        // The handoff used to move the WebView into a freshly mounted surface before its layout
+        // arrived, which laid the page out at 0×0 — the size the hosting guard exists to avoid.
+        #expect(PlayerWebViewHosting.canHold(.zero) == false)
+        #expect(PlayerWebViewHosting.canHold(CGSize(width: 300, height: 0)) == false)
+    }
+
     /// The box is only the picture's shape once the page has reported it. Until then it is the 16:9
     /// fallback, and `contain` in it is a letterbox around anything that is not 16:9 — the black
     /// bars around the video right after switching to it. Filling instead is invisible.

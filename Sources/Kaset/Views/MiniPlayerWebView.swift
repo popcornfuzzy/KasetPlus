@@ -588,7 +588,7 @@ final class SingletonPlayerWebView {
         // viewport — and the video's layer — at that size and resizes both once layout arrives,
         // which paints the picture in a box that is not the surface yet (the black band around it
         // right after switching to the video). The host calls back on layout.
-        guard container.bounds.width >= 1, container.bounds.height >= 1 else { return }
+        guard PlayerWebViewHosting.canHold(container.bounds.size) else { return }
 
         guard PlayerSurfaceOwnership.mayHost(
             isExpanded: isExpanded,
@@ -639,13 +639,24 @@ final class SingletonPlayerWebView {
     private func rehomeWebViewAfterHostRemoval() {
         guard let webView else { return }
 
-        let candidates = self.hosts.map {
-            PlayerWebViewHosting.Candidate(isExpanded: $0.isExpanded, isInWindow: $0.container?.window != nil)
+        // A host SwiftUI has not laid out yet cannot hold the page: handing the WebView to a 0×0
+        // container builds its viewport at that size — the very thing `ensureInHierarchy` waits for
+        // a host's layout to avoid. That host mounts and lays out moments later, and its own layout
+        // callback is what puts the page there.
+        let sized = self.hosts.enumerated().filter { entry in
+            guard let container = entry.element.container else { return false }
+            return PlayerWebViewHosting.canHold(container.bounds.size)
         }
-        guard let index = PlayerWebViewHosting.preferredHost(candidates),
-              let target = self.hosts[index].container
+        let candidates = sized.map { entry in
+            PlayerWebViewHosting.Candidate(
+                isExpanded: entry.element.isExpanded,
+                isInWindow: entry.element.container?.window != nil
+            )
+        }
+        guard let chosen = PlayerWebViewHosting.preferredHost(candidates),
+              let target = sized[chosen].element.container
         else {
-            self.logger.info("Player host removed; no surviving host to hand the WebView to yet")
+            self.logger.info("Player host removed; no laid-out host to hand the WebView to yet")
             return
         }
 
@@ -656,7 +667,7 @@ final class SingletonPlayerWebView {
         target.addSubview(webView)
 
         let message = "Player host removed; WebView moved to a surviving host"
-            + " (expanded: \(self.hosts[index].isExpanded), inWindow: \(target.window != nil),"
+            + " (expanded: \(sized[chosen].element.isExpanded), inWindow: \(target.window != nil),"
             + " size: \(Int(target.bounds.width))x\(Int(target.bounds.height)))"
         self.logger.info("\(message, privacy: .public)")
     }
