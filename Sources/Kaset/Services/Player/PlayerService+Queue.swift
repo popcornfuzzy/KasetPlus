@@ -170,17 +170,24 @@ extension PlayerService {
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
         let safeIndex = max(0, min(index, songs.count - 1))
-        let startingVideoId = songs[safe: safeIndex]?.videoId
+        let startingSong = songs[safe: safeIndex]
         // Play the song version of every video track, before any of them starts.
         let preparedSongs = self.normalizedVariants(songs)
         self.queue = preparedSongs
         self.manualQueueCount = 0
-        self.currentIndex = preparedSongs.firstIndex(where: { $0.videoId == startingVideoId }) ?? 0
+        // The clicked row can have a different id once it is resolved to its song, so the starting
+        // row is found by that preferred id rather than by the id in the list that was clicked.
+        // Searching for the original id made a clicked music video restart the queue at index 0 —
+        // Next then walked the playlist from the top instead of from the row that was playing.
+        let startingPreferredVideoId = startingSong.map { self.audioPreferredVariant($0).videoId }
+        self.currentIndex = startingPreferredVideoId.flatMap { preferredVideoId in
+            preparedSongs.firstIndex(where: { $0.videoId == preferredVideoId })
+        } ?? min(safeIndex, preparedSongs.count - 1)
         // Clear mix continuation since this is not a mix queue
         self.mixContinuationToken = nil
         self.setQueueTunerChips([])
-        if let song = songs[safe: safeIndex] {
-            await self.play(song: song)
+        if let startingSong {
+            await self.play(song: startingSong)
         }
         self.saveQueueForPersistence()
     }
@@ -203,8 +210,10 @@ extension PlayerService {
         self.manualQueueCount = 0
         await self.play(song: song)
 
-        // Fetch radio queue in background
-        await self.fetchAndApplyRadioQueue(for: song.videoId)
+        // A video seed plays as its song, so the radio is seeded by the row that is actually playing.
+        // Asking for the video's id failed the "still the same song" check in `fetchAndApplyRadioQueue`
+        // and discarded the fetched station, leaving a one-song queue.
+        await self.fetchAndApplyRadioQueue(for: self.currentTrack?.videoId ?? song.videoId)
         self.saveQueueForPersistence()
     }
 
@@ -216,6 +225,10 @@ extension PlayerService {
     ///   - startVideoId: Optional video ID to start with. If nil, API picks a random starting point.
     func playWithMix(playlistId: String, startVideoId: String?) async {
         self.logger.info("Playing mix playlist: \(playlistId), startVideoId: \(startVideoId ?? "nil (random)")")
+        // The queue is fetched before anything can play. Claim the playback request now, so a song
+        // clicked while the mix is loading is not replaced by the mix that was asked for first.
+        self.playbackRequestGeneration += 1
+        let requestGeneration = self.playbackRequestGeneration
         self.clearYouTubeAutoplayState()
         self.clearForwardSkipNavigationStack()
         self.recordQueueStateForUndo()
@@ -228,6 +241,10 @@ extension PlayerService {
         do {
             // Fetch mix queue from API
             let result = try await client.getMixQueue(playlistId: playlistId, startVideoId: startVideoId)
+            guard requestGeneration == self.playbackRequestGeneration else {
+                self.logger.info("Mix request was superseded while loading; not starting it")
+                return
+            }
             guard !result.songs.isEmpty else {
                 self.logger.warning("Mix queue returned empty")
                 return

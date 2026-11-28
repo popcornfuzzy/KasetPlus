@@ -87,9 +87,11 @@ extension PlayerService {
             return self.currentTrack?.videoId ?? observedVideoId
         }
 
-        if let entry = self.queue[safe: self.currentIndex],
-           observedVideoId == entry.counterpart?.videoId
-        {
+        // Any queue entry's paired video names that entry, not just the playing row's: the page that
+        // was loaded for the previous row can keep reporting its video for a moment after the queue
+        // moved on. Folding it back onto its song is what lets the departure window recognise it as a
+        // report of the track that was left instead of reading it as a new, unknown track.
+        if let entry = self.queue.first(where: { $0.counterpart?.videoId == observedVideoId }) {
             return entry.videoId
         }
 
@@ -99,7 +101,7 @@ extension PlayerService {
         if let learned = self.observedVideoVariantVideoId,
            let scope = self.observedVideoVariantForVideoId,
            observedVideoId == learned,
-           scope == (self.pendingPlayVideoId ?? self.currentTrack?.videoId)
+           scope == self.playbackItemVideoId
         {
             return scope
         }
@@ -126,7 +128,7 @@ extension PlayerService {
         artist: String
     ) -> String? {
         guard self.isSidebarVideoShowing,
-              let itemId = self.pendingPlayVideoId ?? self.currentTrack?.videoId,
+              let itemId = self.playbackItemVideoId,
               observedVideoId != itemId,
               !self.queue.contains(where: { $0.videoId == observedVideoId })
         else { return nil }
@@ -149,7 +151,7 @@ extension PlayerService {
     /// Whether an observation names the item that is playing: same title and artist, or a
     /// track still showing the "Loading..." placeholder (nothing to compare yet).
     private func observedMetadataMatchesCurrentItem(title: String, artist: String) -> Bool {
-        let itemId = self.pendingPlayVideoId ?? self.currentTrack?.videoId
+        let itemId = self.playbackItemVideoId
         let items = [self.queue.first(where: { $0.videoId == itemId }), self.currentTrack].compactMap { $0 }
         let isPlaceholder = items.contains {
             $0.title.isEmpty || $0.title == "Loading..." || $0.artists.isEmpty
@@ -318,6 +320,7 @@ extension PlayerService {
             videoId: song.videoId,
             hasVideo: song.hasVideo,
             musicVideoType: song.musicVideoType,
+            counterpart: song.counterpart,
             likeStatus: song.likeStatus,
             isInLibrary: song.isInLibrary,
             feedbackTokens: song.feedbackTokens
@@ -489,7 +492,11 @@ extension PlayerService {
         self.markPlaybackEnded()
         self.logger.info("Suppressing unexpected autoplay after native queue ended")
         self.keepQueueSongVisible(currentQueueSong, thumbnailUrl: thumbnailUrl)
+        let generation = self.playbackRequestGeneration
         Task {
+            // A track started in the meantime is the reader's latest choice; this pause was decided
+            // for the page's old track and must not silence the new one.
+            guard self.playbackRequestGeneration == generation else { return }
             await self.pause()
         }
         return true
@@ -566,7 +573,11 @@ extension PlayerService {
             "YouTube loaded different track '\(title)' (\(resolvedVideoId)), re-playing intended track '\(intendedSong.title)'"
         )
         self.isKasetInitiatedPlayback = false
+        let generation = self.playbackRequestGeneration
         Task {
+            // The report this replay answers may be a beat old. A song clicked since then is the
+            // latest request, and replaying the older row is heard as the wrong song starting.
+            guard self.playbackRequestGeneration == generation else { return }
             await self.play(song: intendedSong, webLoadStrategy: .forceFullPageWhenSameVideoId)
         }
         return true
@@ -612,7 +623,9 @@ extension PlayerService {
                     self.logger.info(
                         "YouTube autoplay near end during repeat one; re-asserting current queue track (not advancing)"
                     )
+                    let generation = self.playbackRequestGeneration
                     Task {
+                        guard self.playbackRequestGeneration == generation else { return }
                         await self.replayCurrentQueueSongForRepeatOneAfterTrackEnd()
                     }
                     return true
@@ -651,7 +664,9 @@ extension PlayerService {
         if self.canAdvanceNativeQueueAfterTrackEnd {
             if self.repeatMode == .one {
                 self.logger.info("Near-end track change with repeat one; re-asserting current queue track")
+                let generation = self.playbackRequestGeneration
                 Task {
+                    guard self.playbackRequestGeneration == generation else { return }
                     await self.replayCurrentQueueSongForRepeatOneAfterTrackEnd()
                 }
                 return true
@@ -733,7 +748,9 @@ extension PlayerService {
             return
         }
         self.lastNearEndAdvanceInstant = now
+        let generation = self.playbackRequestGeneration
         Task {
+            guard self.playbackRequestGeneration == generation else { return }
             await self.advanceQueueForObservedTrackEnd()
         }
     }
@@ -794,7 +811,9 @@ extension PlayerService {
         self.lastRepeatOneRecoveryInstant = now
 
         self.logger.info("Repeat one: safety net re-asserting queue track (observed=\(observedNorm ?? "nil"))")
+        let generation = self.playbackRequestGeneration
         Task {
+            guard self.playbackRequestGeneration == generation else { return }
             await self.play(song: queued, webLoadStrategy: .forceFullPageWhenSameVideoId)
         }
         return true
@@ -827,7 +846,9 @@ extension PlayerService {
             self.logger.info(
                 "Repeat one: observed \(observedVideoId) diverged from queue; re-playing without advancing queue index"
             )
+            let generation = self.playbackRequestGeneration
             Task {
+                guard self.playbackRequestGeneration == generation else { return }
                 await self.play(song: currentQueueSong, webLoadStrategy: .forceFullPageWhenSameVideoId)
             }
             return true
@@ -896,7 +917,10 @@ extension PlayerService {
         self.logger.info(
             "Observed track \(observedVideoId) diverged from native queue track \(currentQueueSong.videoId); re-playing intended queue track"
         )
+        let generation = self.playbackRequestGeneration
         Task {
+            // A newer start is the reader's choice; this report describes the row they left.
+            guard self.playbackRequestGeneration == generation else { return }
             await self.play(song: currentQueueSong, webLoadStrategy: .forceFullPageWhenSameVideoId)
         }
         return true
@@ -906,8 +930,9 @@ extension PlayerService {
     private func replayCurrentQueueSongForRepeatOneAfterTrackEnd() async {
         guard let currentSong = self.queue[safe: self.currentIndex] else { return }
         self.songNearingEnd = false
-        let kasetAlignedWithQueue = self.pendingPlayVideoId == currentSong.videoId
-            && SingletonPlayerWebView.shared.currentVideoId == currentSong.videoId
+        let pageVideoId = self.playbackPageVideoId(for: currentSong)
+        let kasetAlignedWithQueue = self.pendingPlayVideoId == pageVideoId
+            && SingletonPlayerWebView.shared.currentVideoId == pageVideoId
         if self.hasUserInteractedThisSession, kasetAlignedWithQueue {
             SingletonPlayerWebView.shared.restartInPlaceFromBeginning()
             if self.state == .ended || self.state == .loading {
@@ -1486,6 +1511,7 @@ extension PlayerService {
             videoId: song.videoId,
             hasVideo: song.hasVideo,
             musicVideoType: song.musicVideoType,
+            counterpart: song.counterpart,
             likeStatus: song.likeStatus,
             isInLibrary: song.isInLibrary,
             feedbackTokens: song.feedbackTokens

@@ -150,6 +150,123 @@ extension SingletonPlayerWebView {
         }
     }
 
+    /// Puts the page's playback at `time` once its media can seek, and leaves it playing or paused.
+    ///
+    /// A variant switch loads a different upload of the same track, which begins at zero like any
+    /// track load, so the position has to be put back. The media element exists before it can seek
+    /// (and before it has a duration), hence the bounded retry rather than one attempt.
+    func seekWhenReady(to time: Double, resumesPlayback: Bool) {
+        guard let webView else { return }
+
+        let script = """
+            (function() {
+                const target = \(time);
+                const shouldPlay = \(resumesPlayback ? "true" : "false");
+                const maxAttempts = 48;
+                const holdTicks = 12;
+                let attempts = 0;
+                let applied = false;
+                let ticksSinceApply = 0;
+
+                function applyPosition(video) {
+                    if (target > 0) {
+                        video.currentTime = Math.min(target, Math.max(0, video.duration - 0.5));
+                    }
+                    if (shouldPlay) {
+                        const play = video.play();
+                        if (play && typeof play.catch === 'function') play.catch(function() {});
+                    } else {
+                        video.pause();
+                    }
+                }
+
+                const timer = setInterval(function() {
+                    attempts += 1;
+                    const video = document.querySelector('video');
+                    const playable = video && video.readyState >= 1
+                        && isFinite(video.duration) && video.duration > 0;
+
+                    if (playable && !applied) {
+                        applied = true;
+                        applyPosition(video);
+                        return;
+                    }
+
+                    if (playable && applied) {
+                        // The page can restart the media after the switch (its own tab
+                        // selection does). The position belongs to the track, not to the upload.
+                        ticksSinceApply += 1;
+                        if (target > 0 && video.currentTime < 2 && Math.abs(video.currentTime - target) > 3) {
+                            applyPosition(video);
+                        }
+                        if (ticksSinceApply > holdTicks) { clearInterval(timer); }
+                        return;
+                    }
+
+                    if (attempts >= maxAttempts) { clearInterval(timer); }
+                }, 250);
+            })();
+            """
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    /// Pauses the page as soon as it has media to pause.
+    ///
+    /// A pause asked for while a track is loading cannot be applied yet: the document's player may
+    /// not exist, and YouTube Music starts the track itself as soon as it can. This keeps the request
+    /// and takes the first media it sees, for a bounded time, so the track does not start sounding
+    /// after the reader paused it.
+    func pauseWhenReady() {
+        guard let webView else { return }
+        webView.evaluateJavaScript(
+            """
+            (function() {
+                window.__kasetPauseWhenReady = true;
+
+                function pauseMedia() {
+                    try {
+                        const videos = document.querySelectorAll('video');
+                        for (let index = 0; index < videos.length; index++) {
+                            const video = videos[index];
+                            if (!video.paused) { video.pause(); }
+                        }
+                    } catch (error) {}
+                }
+
+                pauseMedia();
+                if (window.__kasetPauseWhenReadyTimer) { return; }
+
+                let attempts = 0;
+                window.__kasetPauseWhenReadyTimer = setInterval(function() {
+                    attempts += 1;
+                    if (!window.__kasetPauseWhenReady || attempts >= 80) {
+                        clearInterval(window.__kasetPauseWhenReadyTimer);
+                        window.__kasetPauseWhenReadyTimer = null;
+                        return;
+                    }
+                    pauseMedia();
+                }, 250);
+            })();
+            """,
+            completionHandler: nil
+        )
+    }
+
+    /// Cancels a pending ``pauseWhenReady()`` (a play request replaced it).
+    func cancelPauseWhenReady() {
+        guard let webView else { return }
+        webView.evaluateJavaScript(
+            """
+            window.__kasetPauseWhenReady = false;
+            if (window.__kasetPauseWhenReadyTimer) {
+                clearInterval(window.__kasetPauseWhenReadyTimer);
+                window.__kasetPauseWhenReadyTimer = null;
+            }
+            """,
+            completionHandler: nil
+        )
+    }
+
     /// Seeks to the start and resumes playback without a full page load (repeat-one, same-URL recovery).
     func restartInPlaceFromBeginning() {
         self.seek(to: 0)

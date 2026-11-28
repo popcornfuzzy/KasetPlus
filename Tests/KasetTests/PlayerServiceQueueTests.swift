@@ -50,6 +50,32 @@ struct PlayerServiceQueueTests {
         #expect(self.playerService.currentTrackHasVideo == true)
     }
 
+    @Test("A page metadata refresh keeps the playing song's video pairing")
+    func keepQueueSongVisibleKeepsCounterpart() {
+        let video = Song(
+            id: "video-id",
+            title: "Song",
+            artists: [Artist(id: "UC1", name: "Artist")],
+            duration: 200,
+            videoId: "video-id",
+            musicVideoType: .omv
+        )
+        let audio = Song(
+            id: "audio-id",
+            title: "Song",
+            artists: [Artist(id: "UC1", name: "Artist")],
+            duration: 200,
+            videoId: "audio-id",
+            musicVideoType: .atv
+        ).paired(with: video)
+
+        self.playerService.currentTrack = audio
+        self.playerService.keepQueueSongVisible(audio, thumbnailUrl: "")
+
+        #expect(self.playerService.currentTrack?.videoId == "audio-id")
+        #expect(self.playerService.currentTrack?.counterpart?.videoId == "video-id")
+    }
+
     // MARK: - Queue Reordering Tests
 
     @Test("Reorder queue moves song from source to destination")

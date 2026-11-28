@@ -618,6 +618,23 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         !self.isPendingRestoredLoadDeferred
     }
 
+    /// A variant switch waiting for its page to load (see ``switchPlaybackVariant(toVideo:)``).
+    @ObservationIgnored var pendingPlaybackVariantSeek: PendingPlaybackVariantSeek?
+
+    /// Whether a pause asked for while a track was loading still has to be applied to the page.
+    ///
+    /// The transport shows a loading track as "not playing", so a pause at that moment is the
+    /// reader asking for the track to stay quiet. It cannot be applied to a page that has no media
+    /// yet, and YouTube's own autoplay would otherwise start it. The intent is kept here until the
+    /// page can take it (see `SingletonPlayerWebView.pauseWhenReady()`), and cleared by any play.
+    @ObservationIgnored var pauseWhenPageReady = false
+
+    /// The newest playback request. A request that had to wait for metadata before it could start
+    /// (a video whose song variant is being looked up) must not start if another request replaced it
+    /// meanwhile: the older, slower request used to set `currentTrack` and load its page after the
+    /// newer one, which is heard as the app picking a song by itself after a quick skip.
+    @ObservationIgnored var playbackRequestGeneration = 0
+
     /// Whether the currently active track is a podcast episode.
     var isCurrentTrackPodcast: Bool {
         self.currentPlaybackIsPodcast || self.isPodcastTrack(self.currentTrack)
@@ -653,6 +670,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
         self.isSidebarVideoEnabled = enabled
         self.logger.info("Sidebar video \(enabled ? "enabled" : "disabled")")
+
+        // The video is a different upload from the song, so showing it means playing it. The
+        // queue entry stays the song either way; see `switchPlaybackVariant(toVideo:)`.
+        self.switchPlaybackVariant(toVideo: enabled)
     }
 
     func isPodcastTrack(_ song: Song?) -> Bool {
@@ -933,6 +954,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     func play(videoId: String) async {
         self.logger.debug("play() called with videoId: \(videoId)")
         self.logger.info("Playing video: \(videoId)")
+        self.playbackRequestGeneration += 1
+        self.cancelPendingPauseIntent()
         self.clearRestoredPlaybackSessionState()
         self.deactivateYouTubeAutoplayOutsideQueueState()
         self.currentEpisode = nil
@@ -975,6 +998,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.currentTrackHasVideo = self.currentTrackVideoVariant != nil
 
         self.pendingPlayVideoId = videoId
+        self.pendingPlaybackVariantSeek = nil
         self.applyPendingStartGrace()
         self.noteTrackStart(from: previousTrack, to: videoId)
 
@@ -995,6 +1019,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         self.resolveUpcomingVariants()
     }
 
+    /// Whether a row carries only an id: the placeholder a link, or any caller that knows only a
+    /// video id, builds before the API has said what the track is.
+    private func isUnidentified(_ song: Song) -> Bool {
+        song.title == "Loading..." && song.artists.isEmpty && song.musicVideoType == nil
+    }
+
     /// Plays a song.
     func play(song: Song) async {
         await self.play(song: song, webLoadStrategy: .standard)
@@ -1009,9 +1039,57 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         webLoadStrategy: SingletonPlayerWebView.VideoLoadStrategy,
         episode: ArtistEpisode? = nil
     ) async {
+        self.playbackRequestGeneration += 1
+        let requestGeneration = self.playbackRequestGeneration
+        self.cancelPendingPauseIntent()
+
+        let requestedVideoId = song.videoId
+
+        // A link, and any caller that knows only an id, starts as a placeholder row: no title, no
+        // artists and no type. Without its record a linked music video is indistinguishable from a
+        // song here, so resolution below never ran and the link played the video even when its song
+        // version exists. `getSong` is the same request `fetchSongMetadata` makes after the load and
+        // is cached, so this moves that fetch ahead of the page choice rather than adding one.
+        var identifiedSong = song
+        if self.isUnidentified(identifiedSong), self.preferAudioVersions, let client = self.ytMusicClient,
+           let record = try? await client.getSong(videoId: identifiedSong.videoId)
+        {
+            identifiedSong = record
+        }
+        guard requestGeneration == self.playbackRequestGeneration else {
+            self.logger.debug(
+                "Playback request for \(requestedVideoId) was superseded while identifying it; not starting it"
+            )
+            return
+        }
+
+        // Resolve a video's song counterpart *before* choosing the page, so the track starts once, on
+        // the version that should play. Resolution used to happen behind playback; when the answer
+        // arrived the app reloaded the page to move the already-playing video onto its song — the
+        // mid-song restart that could also surface a match decided after the fact. If the lookup is
+        // already in flight elsewhere the entry stays on its video, which is still the right track.
+        if self.preferAudioVersions, identifiedSong.isVideoVariant, identifiedSong.counterpart == nil {
+            await self.variantMatcher.resolveAudioVariant(for: identifiedSong, client: self.ytMusicClient)
+            guard requestGeneration == self.playbackRequestGeneration else {
+                self.logger.debug(
+                    "Playback request for \(requestedVideoId) was superseded while resolving its song; not starting it"
+                )
+                return
+            }
+        }
+
         // Always play the song/audio variant when one exists; the video is kept as the
         // counterpart for the sidebar video (see ``currentTrackVideoVariant``).
-        let song = self.audioPreferredVariant(song)
+        let song = self.audioPreferredVariant(identifiedSong)
+
+        // The queue row for the entry that was asked for follows it onto the version that is about
+        // to play. Without this the queue kept the video's id while the page played the song's, which
+        // the drift handlers read as two different tracks.
+        if requestedVideoId != song.videoId,
+           let queueIndex = self.queue.firstIndex(where: { $0.videoId == requestedVideoId })
+        {
+            self.queue[queueIndex] = song
+        }
         self.currentTrackVideoVariant = self.preferAudioVersions
             ? self.variantMatcher.videoVariant(of: song)
             : nil
@@ -1069,7 +1147,10 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         // service (the cache is written on every rating, but a state a surface set directly is not in
         // it). `fetchSongMetadata` below, and the WebView's own observation, fill an unknown status in.
 
-        self.pendingPlayVideoId = song.videoId
+        // The queue row is the song; the page is the variant the sidebar is showing. Normally that
+        // is the song too, which is what gives the track its album art and album-version master.
+        self.pendingPlayVideoId = self.playbackPageVideoId(for: song)
+        self.pendingPlaybackVariantSeek = nil
         self.applyPendingStartGrace()
         self.noteTrackStart(from: previousTrack, to: song.videoId)
 
@@ -1082,7 +1163,8 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
 
         self.applyPlaybackKindForPlayback(
             videoId: song.videoId, isPodcast: self.isPodcastTrack(song))
-        SingletonPlayerWebView.shared.loadVideo(videoId: song.videoId, strategy: webLoadStrategy)
+        SingletonPlayerWebView.shared.loadVideo(
+            videoId: self.pendingPlayVideoId ?? song.videoId, strategy: webLoadStrategy)
 
         // Ask for the structured record when the row does not already state all of it. The like status
         // and the library state are what the transport draws, and a row parsed from a page carries
@@ -1225,6 +1307,12 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
             self.currentTrack = promoted
             self.currentTrackVideoVariant = videoSong.strippingCounterpart()
             self.currentTrackHasVideo = true
+
+            // The page keeps playing the upload it started, at its own position. Moving an
+            // already-playing track onto another upload means a page load in the middle of the
+            // song — the restart that was heard as a stutter and as the app choosing a track by
+            // itself. The queue row and the now-playing metadata already show the song, which is
+            // what the listener sees; the next track starts on its song version from the first note.
         }
 
         self.saveQueueForPersistence()
@@ -1296,6 +1384,16 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     func playPause() async {
         self.logger.debug("Toggle play/pause")
 
+        // Follow the app's own playback state, not the mere existence of a page. Every track leaves a
+        // `pendingPlayVideoId` behind, so using "a page exists" as "toggle the page" made this button
+        // click YouTube's control whatever Kaset believed: from a stale `.loading` state it showed Play
+        // and then paused the page, and the state never moved, so the next press played it again. The
+        // transport and the page disagreed about a single press.
+        if self.isPlaying || self.state == .buffering {
+            await self.pause()
+            return
+        }
+
         if self.isPendingRestoredLoadDeferred
             || self.pendingPlayVideoId != nil && self.shouldLoadPendingVideoBeforePlayback
         {
@@ -1304,15 +1402,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
 
         self.clearRestoredPlaybackSessionState()
-
-        // Use singleton WebView if we have a pending video
-        if self.pendingPlayVideoId != nil {
-            SingletonPlayerWebView.shared.playPause()
-        } else if self.isPlaying {
-            await self.pause()
-        } else {
-            await self.resume()
-        }
+        await self.resume()
     }
 
     /// Pauses playback.
@@ -1325,6 +1415,20 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         }
 
         self.clearRestoredPlaybackSessionState()
+        // A pause is the reader's decision, so it is reflected at once instead of waiting for the
+        // page's next report: a page that is still loading never reports "paused" (the state guard in
+        // `applyObservedPlaybackState` keeps a load a load), which left the transport on Play while the
+        // pause had been asked for.
+        if self.state == .loading || self.state.isPlaying || self.state == .buffering {
+            self.state = .paused
+        }
+        let pauseNeedsThePage = self.pendingPlayVideoId != nil
+            && (self.state == .loading || self.shouldLoadPendingVideoBeforePlayback)
+        if pauseNeedsThePage {
+            // The page has no media to pause yet. Keep the request and apply it as soon as it has.
+            self.pauseWhenPageReady = true
+            SingletonPlayerWebView.shared.pauseWhenReady()
+        }
         if self.pendingPlayVideoId != nil {
             SingletonPlayerWebView.shared.pause()
         } else {
@@ -1335,6 +1439,7 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
     /// Resumes playback.
     func resume() async {
         self.logger.debug("Resuming playback")
+        self.cancelPendingPauseIntent()
 
         guard let pendingPlayVideoId = self.pendingPlayVideoId else {
             self.clearRestoredPlaybackSessionState()
@@ -1378,9 +1483,11 @@ final class PlayerService: NSObject, PlayerServiceProtocol {
         if !self.queue.isEmpty {
             // Repeat-one for natural **track end** is handled in `handleTrackEnded` (replay). The Next button advances the queue.
 
-            // Handle shuffle mode - pick random track
+            // Handle shuffle mode - pick random track. The row that is playing is excluded: a draw
+            // that landed on it made Next restart the current song instead of moving on.
             if self.shuffleEnabled {
-                let randomIndex = Int.random(in: 0..<self.queue.count)
+                let candidates = self.queue.indices.filter { $0 != self.currentIndex }
+                let randomIndex = candidates.randomElement() ?? self.currentIndex
                 self.pushForwardSkipStackIfLeavingIndex(for: randomIndex)
                 self.currentIndex = randomIndex
                 if let nextSong = queue[safe: currentIndex] {

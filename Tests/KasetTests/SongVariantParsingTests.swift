@@ -46,6 +46,68 @@ struct SongVariantParsingTests {
         ]
     }
 
+    /// A track row as a playlist, artist or home shelf delivers it: the video type sits on the
+    /// row's own watch endpoint.
+    private func makeRow(videoId: String, title: String, musicVideoType: String) -> [String: Any] {
+        [
+            "musicResponsiveListItemRenderer": [
+                "playlistItemData": ["videoId": videoId],
+                "navigationEndpoint": [
+                    "watchEndpoint": [
+                        "videoId": videoId,
+                        "watchEndpointMusicSupportedConfigs": [
+                            "watchEndpointMusicConfig": ["musicVideoType": musicVideoType],
+                        ],
+                    ],
+                ],
+                "flexColumns": [
+                    [
+                        "musicResponsiveListItemFlexColumnRenderer": [
+                            "text": ["runs": [["text": title]]],
+                        ],
+                    ],
+                    [
+                        "musicResponsiveListItemFlexColumnRenderer": [
+                            "text": [
+                                "runs": [
+                                    [
+                                        "text": "Test Artist",
+                                        "navigationEndpoint": [
+                                            "browseEndpoint": ["browseId": "UC-test-artist"],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
+
+    private func makeShelfPage(row: [String: Any]) -> [String: Any] {
+        [
+            "header": ["musicImmersiveHeaderRenderer": ["title": ["runs": [["text": "Page"]]]]],
+            "contents": [
+                "singleColumnBrowseResultsRenderer": [
+                    "tabs": [
+                        [
+                            "tabRenderer": [
+                                "content": [
+                                    "sectionListRenderer": [
+                                        "contents": [
+                                            ["musicShelfRenderer": ["contents": [row]]],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+    }
+
     private func makeWatchNextResponse(item: [String: Any]) -> [String: Any] {
         [
             "contents": [
@@ -133,6 +195,111 @@ struct SongVariantParsingTests {
         #expect(tracks[0].videoId == "video-id")
         #expect(tracks[0].musicVideoType == .omv)
         #expect(tracks[0].counterpart?.videoId == "audio-id")
+    }
+
+    @Test("A row's video type is read from its navigation endpoint, play button or flex column")
+    func rowVideoTypeShapes() {
+        let endpointRow: [String: Any] = [
+            "navigationEndpoint": [
+                "watchEndpoint": [
+                    "watchEndpointMusicSupportedConfigs": [
+                        "watchEndpointMusicConfig": ["musicVideoType": "MUSIC_VIDEO_TYPE_OMV"],
+                    ],
+                ],
+            ],
+        ]
+        #expect(ParsingHelpers.extractMusicVideoType(fromRow: endpointRow) == .omv)
+
+        let playButtonRow: [String: Any] = [
+            "overlay": [
+                "musicItemThumbnailOverlayRenderer": [
+                    "content": [
+                        "musicPlayButtonRenderer": [
+                            "playNavigationEndpoint": [
+                                "watchEndpoint": [
+                                    "watchEndpointMusicSupportedConfigs": [
+                                        "watchEndpointMusicConfig": ["musicVideoType": "MUSIC_VIDEO_TYPE_UGC"],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        #expect(ParsingHelpers.extractMusicVideoType(fromRow: playButtonRow) == .ugc)
+
+        let flexRow: [String: Any] = [
+            "flexColumns": [
+                [
+                    "musicResponsiveListItemFlexColumnRenderer": [
+                        "text": [
+                            "runs": [
+                                [
+                                    "text": "Song",
+                                    "navigationEndpoint": [
+                                        "watchEndpoint": [
+                                            "watchEndpointMusicSupportedConfigs": [
+                                                "watchEndpointMusicConfig": ["musicVideoType": "MUSIC_VIDEO_TYPE_ATV"],
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        #expect(ParsingHelpers.extractMusicVideoType(fromRow: flexRow) == .atv)
+        #expect(ParsingHelpers.extractMusicVideoType(fromRow: [:]) == nil)
+    }
+
+    @Test("A playlist row keeps the video type so its song version plays")
+    func playlistDetailRowCarriesVideoType() {
+        let data = self.makeShelfPage(
+            row: self.makeRow(videoId: "video-id", title: "Song", musicVideoType: "MUSIC_VIDEO_TYPE_OMV")
+        )
+
+        let detail = PlaylistParser.parsePlaylistDetail(data, playlistId: "VL-test")
+
+        #expect(detail.tracks.map(\.videoId) == ["video-id"])
+        #expect(detail.tracks.first?.musicVideoType == .omv)
+        #expect(detail.tracks.first?.isVideoVariant == true)
+    }
+
+    @Test("An artist page's songs keep the video type")
+    func artistSongsCarryVideoType() {
+        let data = self.makeShelfPage(
+            row: self.makeRow(videoId: "video-id", title: "Song", musicVideoType: "MUSIC_VIDEO_TYPE_OMV")
+        )
+
+        let detail = ArtistParser.parseArtistDetail(data, artistId: "UC-test-artist")
+
+        #expect(detail.songs.first?.videoId == "video-id")
+        #expect(detail.songs.first?.musicVideoType == .omv)
+    }
+
+    @Test("A home row keeps the video type")
+    func homeRowCarriesVideoType() throws {
+        let sectionData: [String: Any] = [
+            "musicShelfRenderer": [
+                "title": ["runs": [["text": "Songs"]]],
+                "contents": [
+                    self.makeRow(videoId: "video-id", title: "Song", musicVideoType: "MUSIC_VIDEO_TYPE_OMV"),
+                ],
+            ],
+        ]
+
+        let section = try #require(HomeResponseParser.parseHomeSection(sectionData))
+        guard case let .song(song)? = section.items.first else {
+            Issue.record("Expected a song row")
+            return
+        }
+
+        #expect(song.videoId == "video-id")
+        #expect(song.musicVideoType == .omv)
+        #expect(song.isVideoVariant == true)
     }
 
     @Test("A song counterpairs with its video")

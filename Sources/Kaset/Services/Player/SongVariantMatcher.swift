@@ -36,7 +36,10 @@ final class SongVariantMatcher {
     /// The result carries the video variant as `counterpart` (when known) so the PiP toggle
     /// can switch to it.
     func audioPreferred(_ song: Song) -> Song {
-        if song.isVideoVariant {
+        // A pairing already says which side is which: when the counterpart is the audio variant this
+        // entry is the video, even if its own type was missing from the page it came from.
+        let isVideo = song.isVideoVariant || song.counterpart.map { !$0.isVideoVariant } == true
+        if isVideo {
             // A wrapper may already carry the song as its counterpart.
             if let counterpart = song.counterpart, !counterpart.isVideoVariant {
                 return counterpart.asSong.paired(with: song)

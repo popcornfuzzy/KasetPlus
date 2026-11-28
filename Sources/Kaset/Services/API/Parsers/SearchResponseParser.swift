@@ -350,7 +350,7 @@ enum SearchResponseParser {
             duration: ParsingHelpers.extractDurationFromFlexColumns(data),
             thumbnailURL: thumbnailURL,
             videoId: videoId,
-            musicVideoType: ParsingHelpers.extractMusicVideoTypeFromFlexColumns(data)
+            musicVideoType: ParsingHelpers.extractMusicVideoType(fromRow: data)
         )
         return .song(song)
     }

@@ -278,6 +278,33 @@ enum ParsingHelpers {
         return nil
     }
 
+    /// Extracts a row's music video type from whichever endpoint the row carries.
+    ///
+    /// A row puts the type in one of three places depending on the surface: its own
+    /// `navigationEndpoint` (playlist and artist rows), the overlay play button's
+    /// `playNavigationEndpoint` (a card), or a flex column's run (search rows). Reading only one
+    /// of them left the other surfaces' entries without a type, so they were never recognised as
+    /// music videos and never matched to their song version.
+    static func extractMusicVideoType(fromRow data: [String: Any]) -> MusicVideoType? {
+        if let type = Self.extractMusicVideoType(from: data["navigationEndpoint"] as? [String: Any]) {
+            return type
+        }
+
+        for key in ["overlay", "thumbnailOverlay"] {
+            guard let overlay = data[key] as? [String: Any],
+                  let thumbnailOverlay = overlay["musicItemThumbnailOverlayRenderer"] as? [String: Any],
+                  let content = thumbnailOverlay["content"] as? [String: Any],
+                  let playButton = content["musicPlayButtonRenderer"] as? [String: Any]
+            else { continue }
+
+            if let type = Self.extractMusicVideoType(from: playButton["playNavigationEndpoint"] as? [String: Any]) {
+                return type
+            }
+        }
+
+        return Self.extractMusicVideoTypeFromFlexColumns(data)
+    }
+
     /// Extracts browse ID from navigation endpoint.
     static func extractBrowseId(from data: [String: Any]) -> String? {
         if let endpoint = data["navigationEndpoint"] as? [String: Any],

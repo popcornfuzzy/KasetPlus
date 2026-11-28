@@ -166,6 +166,22 @@ private extension PlayerService {
         duration: Double,
         previousProgress: TimeInterval
     ) {
+        // A pause the reader asked for while the page was loading outranks the page's own report:
+        // YouTube Music may start the track before the pause script reaches it, and that report must
+        // not turn the transport back on. The page-side poll keeps it paused until a command replaces
+        // the intent (see `cancelPendingPauseIntent()`).
+        if self.pauseWhenPageReady {
+            self.progress = progress
+            self.duration = duration
+            if isPlaying {
+                SingletonPlayerWebView.shared.pauseWhenReady()
+            }
+            if self.state != .paused {
+                self.state = .paused
+            }
+            return
+        }
+
         let wasPlaying = self.state == .playing
         self.progress = progress
         self.duration = duration

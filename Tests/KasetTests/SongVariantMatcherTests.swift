@@ -46,6 +46,21 @@ struct SongVariantMatcherTests {
         #expect(preferred.counterpart?.videoId == "video-id")
     }
 
+    @Test("A pairing with the audio variant makes an untyped entry the video")
+    func counterpartIdentifiesVideo() {
+        // A page can omit the video's own type while its wrapper still names the audio side.
+        let audio = self.makeSong(videoId: "audio-id", title: "Song", musicVideoType: .atv)
+        let untypedVideo = self.makeSong(
+            videoId: "video-id", title: "Song",
+            counterpart: SongCounterpart(song: audio)
+        )
+
+        let preferred = SongVariantMatcher().audioPreferred(untypedVideo)
+
+        #expect(preferred.videoId == "audio-id")
+        #expect(preferred.counterpart?.videoId == "video-id")
+    }
+
     @Test("Song with a video counterpart stays the song and keeps the video")
     func audioPreferredFromSong() {
         let video = self.makeSong(videoId: "video-id", title: "Song", musicVideoType: .omv)

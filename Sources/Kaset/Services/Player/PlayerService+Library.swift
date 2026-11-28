@@ -429,6 +429,11 @@ extension PlayerService {
                     if needsUpdate {
                         var enrichedQueueSong = songData
                         enrichedQueueSong.likeStatus = resolvedLikeStatus
+                        // The record describes the video it was asked for; the row is the entry.
+                        // A row's own variant pairing and type are what the matcher runs on, so
+                        // they survive enrichment the record cannot improve on.
+                        enrichedQueueSong.musicVideoType = songData.musicVideoType ?? currentQueueSong.musicVideoType
+                        enrichedQueueSong.counterpart = songData.counterpart ?? currentQueueSong.counterpart
                         self.queue[queueIndex] = enrichedQueueSong
                         self.logger.debug("Enriched queue entry at index \(queueIndex): '\(enrichedQueueSong.title)' with artists: \(enrichedQueueSong.artistsDisplay)")
                         // Save the enriched queue to persistence

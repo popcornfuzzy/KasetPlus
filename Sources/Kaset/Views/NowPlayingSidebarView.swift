@@ -521,6 +521,7 @@ struct NowPlayingSidebarView: View {
                 NowPlayingSidebarVideo(
                     videoId: videoId,
                     height: self.sidebarVideoHeight,
+                    prefersVideo: self.playerService.isSidebarVideoShowing,
                     fillsSurface: self.sidebarVideoFillsSurface(for: videoId)
                 )
                 .opacity(self.playerService.isSidebarVideoShowing ? 1 : 0)

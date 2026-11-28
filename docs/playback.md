@@ -265,6 +265,26 @@ checks about a second later which track the page's player actually holds. If it 
 the page is asked once more; if it still is not, the watch page is loaded (`WebQueueSettleRules`). A
 page that never starts the track at all is loaded by a 3 s watchdog.
 
+### A newer click is the newest request
+
+Every start takes a playback generation (`PlayerService.playbackRequestGeneration`). A start that had
+to wait — a video whose song variant is looked up — checks the generation before it touches the page,
+so a slower earlier click cannot start after a newer one.
+
+The page's reports are handled a beat after they are sent, and the automatic corrections they trigger
+(replaying the intended row, advancing at a near end, the repeat-one recoveries, silencing autoplay
+after the queue ends) are scheduled rather than run in place. Each captures the generation when it is
+decided and does nothing if a newer start has claimed playback since. Without that, a correction aimed
+at the row the page had just reported could run after the reader clicked another song, and the older
+row is what started — the wrong song after a quick second click.
+
+Two more waits follow the same rule: the pause before a watch-page navigation only navigates if its
+track is still the one requested, and loading a mix claims the generation when it starts, so a mix
+that arrives after a song click is discarded instead of replacing it. After an in-place correction,
+the settle check runs once more (without a second in-place try) and loads the row if the page still
+holds the earlier track. It compares the page's id folded through the track's pairing, so a video
+page played for the song item is the same track, not a correction.
+
 ### The page's own end-of-track advance
 
 YouTube Music finishes its own advance after reporting `ended`, so a row Kaset starts in that gap can be
@@ -684,10 +704,20 @@ queue show the album art, and keeps the video for the sidebar video. See
 - The pairing is the API's song/video switcher when present, else a filtered song search scored on
 title, artist and length (`searchSongs`).
 - Resolution runs ahead of playback for the next `PlayerService.variantResolutionWindow` entries,
-so a video is swapped before it starts.
-- A known video counterpart makes `hasVideoSurface` true; enabling the sidebar video clicks
-YouTube's Video tab. `PlayerService+WebQueueSync.canonicalPlaybackVideoId(for:)` folds the video
-page's id back onto the song so the queue does not see drift and the album art is kept.
+and `play(song:)` resolves the row it is about to play before choosing a page, replacing that row in
+the queue. A clicked video row therefore keeps its queue position, and the track loads once, on the
+song version.
+- A list row of either variant is the playing row: `PlaylistDetailView` asks
+`PlayerService.isPlaybackTrack(videoId:)`, which folds the row's id through
+`canonicalPlaybackVideoId`. A generated playlist that lists the video keeps its playing indicator
+while the queue and the player carry the song.
+- A known video counterpart makes `hasVideoSurface` true. Enabling the sidebar video **loads the
+video variant's page** (and disabling it loads the song's again) from the position that was
+playing; the queue entry stays the song. `PlayerService+WebQueueSync.canonicalPlaybackVideoId(for:)`
+folds the video page's id back onto the song so the queue does not see drift and the album art is kept.
+- A video entry the matcher resolves while it is already playing is **not** reloaded onto the song:
+the queue row and metadata become the song, the page finishes the upload it started, and the next
+track starts on its song version. Only the reader's Video/Artwork toggle changes the stream mid-track.
 - The behavior is gated by **Settings → General → Prefer Audio (Song) Versions** (default on).
 
 ## Video Mode

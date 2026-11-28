@@ -307,6 +307,23 @@ struct VideoPresentationScriptTests {
         #expect(await harness.evalBool(Self.liveVideoExpr))
     }
 
+    /// The sidebar keeps the video surface mounted while the artwork is on screen, because the host
+    /// must not change. The page behind it was deliberately loaded as the song, so that hidden surface
+    /// must not click the Video tab and move the page back onto the video.
+    @Test("A surface showing artwork never selects the page's Video tab")
+    func artworkPresentationDoesNotSelectVideoTab() async {
+        let harness = await self.makeHarness()
+        await harness.run("document.getElementById('videotab').setAttribute('aria-selected', 'false')")
+
+        await harness.applyPresentation(isExpanded: true, prefersVideo: false)
+        try? await Task.sleep(for: .milliseconds(800))
+
+        #expect(await harness.evalBool(
+            "document.getElementById('videotab').getAttribute('aria-selected') === 'false'"
+        ))
+        #expect(await harness.evalBool("window.__kasetVideoTabClicked !== true"))
+    }
+
     /// A navigation replaces the whole document, taking the container and blackout with it.
     /// The presentation state is remembered, so the next document covers itself at parse time
     /// rather than painting YouTube Music's own player chrome into the video surface.

@@ -128,16 +128,20 @@ extension PlayerService {
     func reassertCurrentRowInPage() {
         guard let row = self.queue[safe: self.currentIndex] else { return }
         self.keepQueueSongVisible(row, thumbnailUrl: "")
-        SingletonPlayerWebView.shared.playInPage(videoId: row.videoId) { [weak self] status in
-            guard let self, self.pendingPlayVideoId == row.videoId else { return }
+        // Put back the upload the app is playing, not the row's id: with the sidebar video showing, the
+        // row is the song while the page is the video, and asking for the song would switch the stream
+        // behind the video surface (and blank it) just to undo a stray advance.
+        let pageVideoId = self.playbackPageVideoId(for: row)
+        SingletonPlayerWebView.shared.playInPage(videoId: pageVideoId) { [weak self] status in
+            guard let self, self.pendingPlayVideoId == pageVideoId else { return }
             self.updatePagePlaybackCapability(status)
             guard WebPagePlaybackStatus.succeeded(status) else {
-                self.loadExpectedTrackPage(videoId: row.videoId)
+                self.loadExpectedTrackPage(videoId: pageVideoId)
                 return
             }
             // The advance that took the track away is still the page's own business: check again
             // shortly after putting the row back, this time without a second in-place correction.
-            self.beginPageSettleCheck(videoId: row.videoId, reassertionsLeft: 0)
+            self.beginPageSettleCheck(videoId: pageVideoId, reassertionsLeft: 0)
         }
     }
 
@@ -195,6 +199,8 @@ extension PlayerService {
     /// the track Kaset started, and nothing else would notice — a metadata observation of the wrong
     /// song is treated as drift, not as a failed command.
     func beginPageSettleCheck(videoId: String, reassertionsLeft: Int = 1) {
+        // The check belongs to the page that was asked: another pending page is a newer start's.
+        guard self.pendingPlayVideoId == videoId else { return }
         self.pageSettleTask?.cancel()
         self.pageSettleVideoId = videoId
         self.pageSettleReassertionsLeft = reassertionsLeft
@@ -213,11 +219,15 @@ extension PlayerService {
     /// Applies what the page reported about the track it is playing.
     func settlePagePlayback(expectedVideoId: String, observedVideoId: String?) {
         // A paired video page plays the same track under another id; that is not a different track.
+        // The expected page can itself be either side of the pairing (the sidebar video loads the
+        // video's page while the item stays the song), so all three ids are compared folded.
+        let expected = self.canonicalPlaybackVideoId(for: expectedVideoId) ?? expectedVideoId
+        let settled = self.pageSettleVideoId.map { self.canonicalPlaybackVideoId(for: $0) ?? $0 }
         let observed = observedVideoId.map { self.canonicalPlaybackVideoId(for: $0) ?? $0 }
 
         let decision = WebQueueSettleRules.decision(
-            expectedVideoId: expectedVideoId,
-            settledVideoId: self.pageSettleVideoId,
+            expectedVideoId: expected,
+            settledVideoId: settled,
             observedVideoId: observed,
             reassertionsLeft: self.pageSettleReassertionsLeft
         )
@@ -236,7 +246,13 @@ extension PlayerService {
             SingletonPlayerWebView.shared.playInPage(videoId: expectedVideoId) { [weak self] status in
                 guard let self, self.pageSettleVideoId == expectedVideoId else { return }
                 self.updatePagePlaybackCapability(status)
-                guard !WebPagePlaybackStatus.succeeded(status) else { return }
+                guard !WebPagePlaybackStatus.succeeded(status) else {
+                    // Accepting the correction is not playing it. Check again shortly, without a
+                    // second in-place try: a player that ignored it is then loaded the long way
+                    // instead of the earlier track playing on after a quick second click.
+                    self.beginPageSettleCheck(videoId: expectedVideoId, reassertionsLeft: 0)
+                    return
+                }
                 self.pageSettleVideoId = nil
                 self.loadExpectedTrackPage(videoId: expectedVideoId)
             }

@@ -394,7 +394,8 @@ enum HomeResponseParser {
                 album: nil,
                 duration: nil,
                 thumbnailURL: thumbnailURL,
-                videoId: videoId
+                videoId: videoId,
+                musicVideoType: ParsingHelpers.extractMusicVideoType(from: navigationEndpoint)
             )
             return .song(song)
         }
@@ -443,7 +444,8 @@ enum HomeResponseParser {
             album: album,
             duration: duration,
             thumbnailURL: thumbnailURL,
-            videoId: videoId
+            videoId: videoId,
+            musicVideoType: ParsingHelpers.extractMusicVideoType(fromRow: data)
         )
         return .song(song)
     }

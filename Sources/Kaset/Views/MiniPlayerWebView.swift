@@ -1152,7 +1152,10 @@ final class SingletonPlayerWebView {
                 ensureStyle();
                 ensureBlackout();
                 ensureHealing();
-                startTabAttempts();
+                // A surface showing artwork is hosted but not asking for the video: any tab attempt
+                // left from the video state stops here, before it can move the page onto a stream
+                // the app did not choose.
+                if (prefersVideo) { startTabAttempts(); } else { clearTabTimer(); }
 
                 // The picture and the page's own chrome never share the surface: the blackout
                 // stays up (and the next document covers itself, see `presentationCoverScript`)
@@ -1319,7 +1322,13 @@ final class SingletonPlayerWebView {
         // Stop current playback first, then load new video. A playback load carries no preload hold:
         // this page is meant to play.
         webView.evaluateJavaScript("document.querySelector('video')?.pause()") { [weak self] _, _ in
-            guard let self, let webView = self.webView else { return }
+            // The pause is asynchronous. A newer track requested while it was in flight is the page
+            // this WebView must end on; loading the older track here is how a quick second click
+            // ended up playing the first one.
+            guard let self, let webView = self.webView,
+                  self.currentVideoId == videoId,
+                  self.page == .playback
+            else { return }
 
             // Set target volume BEFORE loading so it's ready when video element appears
             let setTargetScript = "window.__kasetTargetVolume = \(currentVolume);"
@@ -1618,6 +1627,16 @@ final class SingletonPlayerWebView {
                     DiagnosticsLogger.player.debug("Volume apply result: \(resultString)")
                 }
             }
+
+            // A pause asked for during the load belongs to this new document, which is where it can
+            // finally be applied; YouTube Music starts the track itself otherwise.
+            if self.playerService.pauseWhenPageReady {
+                SingletonPlayerWebView.shared.pauseWhenReady()
+            }
+
+            // A variant switch is a page load of the other upload; the position it was playing
+            // from belongs to the track, not to the upload.
+            self.playerService.applyPendingPlaybackVariantSeek()
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

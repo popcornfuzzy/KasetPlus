@@ -1694,7 +1694,8 @@ enum PlaylistParser {
             album: album,
             duration: duration,
             thumbnailURL: thumbnailURL,
-            videoId: videoId
+            videoId: videoId,
+            musicVideoType: ParsingHelpers.extractMusicVideoType(fromRow: responsiveRenderer)
         )
     }
 

@@ -1233,6 +1233,42 @@ struct PlayerServiceWebQueueSyncTests {
         #expect(self.playerService.currentIndex == 0)
     }
 
+    @Test("Play with radio seeds a video by the song that is playing")
+    func playWithRadioSeedsResolvedVideoByItsSong() async {
+        let mockClient = MockYTMusicClient()
+        let video = Song(
+            id: "video-seed",
+            title: "Seed Song",
+            artists: [Artist(id: "artist-1", name: "Artist 1")],
+            duration: 180,
+            videoId: "video-seed",
+            musicVideoType: .omv
+        )
+        let audio = Song(
+            id: "audio-seed",
+            title: "Seed Song",
+            artists: [Artist(id: "artist-1", name: "Artist 1")],
+            duration: 180,
+            videoId: "audio-seed",
+            musicVideoType: .atv
+        )
+        let radioSongs = [
+            Song(id: "radio-1", title: "Radio Song 1", artists: [], videoId: "radio-video-1"),
+            Song(id: "radio-2", title: "Radio Song 2", artists: [], videoId: "radio-video-2"),
+        ]
+        mockClient.searchResponse = SearchResponse(songs: [audio], albums: [], artists: [], playlists: [])
+        mockClient.radioQueueSongs["audio-seed"] = radioSongs
+        mockClient.songResponses["audio-seed"] = audio
+        self.playerService.setYTMusicClient(mockClient)
+
+        await self.playerService.playWithRadio(song: video)
+
+        // The station is fetched for the song that is actually playing, not the video it replaced.
+        #expect(mockClient.getRadioQueueVideoIds.first == "audio-seed")
+        #expect(self.playerService.queue.map(\.videoId) == ["audio-seed", "radio-video-1", "radio-video-2"])
+        #expect(self.playerService.currentIndex == 0)
+    }
+
     @Test("Play with radio keeps seed song at front when not in radio")
     func playWithRadioKeepsSeedSongAtFrontWhenNotInRadio() async {
         let mockClient = MockYTMusicClient()

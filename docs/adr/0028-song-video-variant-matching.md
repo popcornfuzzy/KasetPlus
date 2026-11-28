@@ -53,8 +53,23 @@ is accepted; a same-title/different-artist result (a cover) is rejected. Results
 video id, and lookups that found nothing are remembered so a track is not retried on every pass.
 
 Resolution happens **ahead of playback**, for the next `variantResolutionWindow` (4) queue
-entries, so a video is swapped for its song before it starts. Entries that arrive already paired
-cost no extra request.
+entries, so a video is swapped for its song before it starts. `play(song:)` also resolves the row
+that is about to play, and replaces that row in the queue, before it chooses a page: the track
+starts exactly once, on the version that should play. If a lookup is already in flight for another
+entry the starting row keeps its video for this play; it is still the same track, and the next
+track is prepared normally. Entries that arrive already paired cost no extra request.
+
+A row that carries only an id has no type to read. That is the case for a track played from a
+`music.youtube.com/watch?...` link: `AppDelegate` hands `play(song:)` the `"Loading..."`
+placeholder, which used to look like an ordinary song to the check above, so a linked music video
+played as a video even when its song version existed. `play(song:)` now asks for that track's
+record (`getSong`) before choosing a page when the row is a bare placeholder, then resolves it
+like any other video. The record is the request `fetchSongMetadata` makes after the load and the
+response is cached, so this moves that fetch ahead of the page choice rather than adding one.
+
+Verified against `1x1wjGKHjBI` ("Tongue Tied"): `swift run api-explorer variants` reports
+`MUSIC_VIDEO_TYPE_OMV` with no counterpart, while the filtered song search for "Tongue Tied
+GROUPLOVE" returns the ATV `UCcGuJzewCo` as its first result.
 
 ### Model
 
@@ -68,6 +83,11 @@ video as its counterpart when one was chosen.
 - Every queue entry point (`playQueue`, `playWithRadio`, `playWithMix`, radio application,
   infinite-mix continuations, insert/append, tuner chips, session restore) runs songs through the
   matcher, and `play(song:)`/`play(videoId:)` always load the audio variant.
+- A list row is the playing row when either side of the pairing is `currentTrack`.
+  `PlayerService.isPlaybackTrack(videoId:)` folds the row's id through
+  `canonicalPlaybackVideoId`; `PlaylistDetailView` asks it instead of comparing ids, so a
+  YouTube-generated playlist that lists the music video keeps its playing indicator after the
+  entry is swapped to the song.
 - A known video counterpart makes `currentTrackHasVideo` true, so the miniplayer's existing
   `prefersVideo` path clicks YouTube's "Video" tab when the miniplayer is expanded. The page then
   reports the video's id; `canonicalPlaybackVideoId(for:)` folds that observation back onto the
@@ -75,6 +95,30 @@ video as its counterpart when one was chosen.
   replace the album art with the video still.
 - `SettingsManager.preferAudioVersionsEnabled` (General → "Prefer Audio (Song) Versions", default
   on) gates the whole behavior. When off, Kaset plays whatever the API returns, as before.
+
+### The sidebar video switches the stream
+
+Showing the video is a playback decision, not a presentation one: the video is a different upload
+from the song. `PlayerService.setSidebarVideoEnabled(_:)` therefore loads the video variant's page,
+and disabling it loads the song's again, both from the position that was playing
+(`PendingPlaybackVariantSeek`, applied by `SingletonPlayerWebView.seekWhenReady(to:resumesPlayback:)`
+after the page loads). The queue entry and `currentTrack` stay the song, so the album art, the
+like/library state and the queue row do not change; `canonicalPlaybackVideoId(for:)` folds the video
+page's id back onto the song so the switch is not read as queue drift.
+
+A video entry that is already playing when its song is found is **not** moved onto the song. Doing
+that meant loading a second page in the middle of the song: the restart that was heard as a stutter,
+and one the page could answer by playing something else. The queue row and the now-playing metadata
+are updated to the song (so its album art is shown), the page finishes the upload it started, and
+the next track begins on its song version from the first note. Only the reader's explicit
+Video/Artwork toggle reloads a stream.
+
+The page's own Song/Video tab is not the switch either: it is a control of the page, it chooses the
+stream behind the app's back, and when the tab could not be found the surface stayed black. The
+sidebar keeps the video surface mounted while the artwork is on screen (the host must not change),
+but that hidden surface asks the page for the Video tab only while the video is actually shown. It
+used to ask on the song page too, which moved the page back onto the video just after the switch to
+artwork had loaded the song.
 
 ## Consequences
 

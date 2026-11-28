@@ -87,6 +87,8 @@ final class MockYTMusicClient: YTMusicClientProtocol {
     /// Tuning row returned alongside `radioQueueSongs`.
     var radioQueueTunerChips: [QueueTunerChip] = []
     var mixQueueResult = RadioQueueResult(songs: [], continuationToken: nil)
+    /// Latency for the mix fetch, so tests can start another track while it is in flight.
+    var mixQueueDelay: Duration?
     /// Result returned by `getTunedMixQueue`, keyed by the chip's playlist ID.
     var tunedMixQueueResults: [String: RadioQueueResult] = [:]
     var mixQueueContinuationResults: [RadioQueueResult] = []
@@ -980,6 +982,7 @@ final class MockYTMusicClient: YTMusicClientProtocol {
 
     func getMixQueue(playlistId _: String, startVideoId _: String?) async throws -> RadioQueueResult {
         self.getMixQueueCalled = true
+        if let mixQueueDelay { try? await Task.sleep(for: mixQueueDelay) }
         if let error = shouldThrowError { throw error }
         return self.mixQueueResult
     }

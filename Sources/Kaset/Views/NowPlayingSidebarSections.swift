@@ -416,6 +416,10 @@ struct NowPlayingSidebarArtwork: View {
 struct NowPlayingSidebarVideo: View {
     let videoId: String
     let height: CGFloat
+    /// Whether the video is the one on screen. The surface stays mounted while the artwork is shown
+    /// (the host must not change), but it must not ask the page for its Video tab then: the page was
+    /// loaded as the song on purpose, and a tab click would move it back to the video behind the app.
+    let prefersVideo: Bool
     /// Whether the surface is the video's own shape (so the picture fills it) or one the column
     /// imposed (so the whole picture is letterboxed inside it).
     var fillsSurface: Bool = false
@@ -424,7 +428,7 @@ struct NowPlayingSidebarVideo: View {
         PersistentPlayerView(
             videoId: self.videoId,
             isExpanded: true,
-            prefersVideo: true,
+            prefersVideo: self.prefersVideo,
             fillsSurface: self.fillsSurface
         )
         .frame(maxWidth: .infinity)

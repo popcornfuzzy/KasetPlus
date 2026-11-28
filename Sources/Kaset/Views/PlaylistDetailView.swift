@@ -1100,9 +1100,9 @@ struct PlaylistDetailView: View {
     @ViewBuilder
     private func trackRows(_ detail: PlaylistDetail, tracks: [Song]) -> some View {
         let isAlbum = detail.isAlbum
-        // Read the player state once per pass: each row only needs to know whether *it* is the
-        // current track, which keeps rows out of the observation dependency for playback.
-        let currentVideoId = self.playerService.currentTrack?.videoId
+        // Each row only needs to know whether *it* is the current track, which keeps rows out of
+        // the observation dependency for playback. The check is variant-aware: a generated playlist
+        // lists the video while the queue plays its song.
         let isPlaying = self.playerService.isPlaying
 
         ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
@@ -1110,7 +1110,7 @@ struct PlaylistDetailView: View {
                 song: track,
                 index: index,
                 isAlbum: isAlbum,
-                isCurrentTrack: currentVideoId == track.videoId,
+                isCurrentTrack: self.playerService.isPlaybackTrack(videoId: track.videoId),
                 isPlaying: isPlaying,
                 showsSeparator: index < tracks.count - 1,
                 isScrolling: self.isScrolling,
@@ -1155,7 +1155,6 @@ struct PlaylistDetailView: View {
     /// menu and no removal, only one button that adds them to this playlist.
     @ViewBuilder
     private func recommendationsSection(_ recommendations: PlaylistRecommendations) -> some View {
-        let currentVideoId = self.playerService.currentTrack?.videoId
         let isPlaying = self.playerService.isPlaying
 
         Text(verbatim: recommendations.title)
@@ -1174,7 +1173,7 @@ struct PlaylistDetailView: View {
                 song: track,
                 index: index,
                 isAlbum: false,
-                isCurrentTrack: currentVideoId == track.videoId,
+                isCurrentTrack: self.playerService.isPlaybackTrack(videoId: track.videoId),
                 isPlaying: isPlaying,
                 showsSeparator: index < recommendations.tracks.count - 1,
                 showsIndex: false,
@@ -1320,6 +1319,7 @@ struct PlaylistDetailView: View {
                 videoId: song.videoId,
                 hasVideo: song.hasVideo,
                 musicVideoType: song.musicVideoType,
+                counterpart: song.counterpart,
                 likeStatus: finalLikeStatus,
                 isInLibrary: song.isInLibrary,
                 feedbackTokens: song.feedbackTokens
